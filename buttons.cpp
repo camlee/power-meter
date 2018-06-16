@@ -2,8 +2,9 @@
 
 #include "buttons.h"
 
-// read the buttons
-int read_LCD_buttons(){
+const unsigned long debounceDelay = 50;
+
+int readButton(){
     int adc_key_in = analogRead(BUTTONS_PIN);
     // my buttons when read are centered at these valies: 0, 144, 329, 504, 741
     // we add approx 50 to those values and check to see if we are close
@@ -15,4 +16,34 @@ int read_LCD_buttons(){
     if (adc_key_in < 850)  return SELECT_BUTTON;
 
     return NONE_BUTTON;  // when all others fail, return this...
+}
+
+ButtonManager::ButtonManager() : previousButton(NO_BUTTON), currentButton(NO_BUTTON), buttonPopped(true){}
+
+void ButtonManager::setup(){};
+
+void ButtonManager::refresh(){
+    int button;
+
+    button = readButton();
+
+    if (button != previousButton){
+        lastDebounceTime = millis();
+    } else if (millis() - lastDebounceTime > debounceDelay){ // TODO: Handle overflow
+        if (button != currentButton){
+            currentButton = button;
+            buttonPopped = false;
+        }
+    }
+
+    previousButton = button;
+}
+
+int ButtonManager::popPressedButton(){
+    if (!buttonPopped){
+        buttonPopped = true;
+        return currentButton;
+    } else {
+        return NO_BUTTON;
+    }
 }

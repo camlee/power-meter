@@ -7,8 +7,25 @@
 #define SELECT_BUTTON 4
 #define NONE_BUTTON   5
 
-#ifndef BUTTONS_PIN
-    #define BUTTONS_PIN 0
-#endif
+#define NO_BUTTON -1
 
-int read_LCD_buttons();
+#define BUTTONS_PIN 0
+
+// typedef void (*onButtonCallback)();
+
+class ButtonManager {
+private:
+    int previousButton;
+    int currentButton;
+    unsigned long lastDebounceTime;
+
+    bool buttonPopped;
+
+public:
+    // void onButton(int button, onButtonCallback callback);
+    ButtonManager();
+    void setup();
+    void refresh();
+
+    int popPressedButton();
+};
