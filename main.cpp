@@ -10,6 +10,7 @@ int button;
 float voltage;
 float current;
 float power;
+float energy;
 unsigned long nextRefresh = 0;
 
 Display display = Display();
@@ -50,15 +51,20 @@ void loop(){
         voltage = sensorManager.getVoltage();
         current = sensorManager.getCurrent();
         power = sensorManager.getPower();
+        energy = sensorManager.getEnergy();
 
         display.lcd.setCursor(0, 0);
-        display.lcd.print(power);
-        display.lcd.print(" W");
+        display.lcd.print("Out: ");
+        display.lcd.print(power, 0);
+        display.lcd.print(" W ");
+        display.lcd.print(energy / 3600.0, 1);
+        display.lcd.print(" Wh");
+
         display.lcd.print(DISPLAY_NOTHING);
 
         display.lcd.setCursor(0, 1);
         display.lcd.print(current * 1000.0, 0);
-        display.lcd.print(" mA, ");
+        display.lcd.print(" mA ");
         display.lcd.print(voltage, 1);
         display.lcd.print(" V");
         display.lcd.print(DISPLAY_NOTHING);

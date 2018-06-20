@@ -6,6 +6,8 @@ class SensorManager {
 private:
     float voltage;
     float current;
+    float energy;
+    unsigned long nextRead;
 
 public:
     SensorManager();
@@ -15,4 +17,5 @@ public:
     float getPower();
     float getVoltage();
     float getCurrent();
+    float getEnergy();
 };
