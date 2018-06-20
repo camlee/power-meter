@@ -3,6 +3,8 @@
 
 #include "hardware.h"
 
+#define DISPLAY_NOTHING "                "
+
 class Display {
 private:
     int brightness;
@@ -10,6 +12,8 @@ private:
 
 public:
     LiquidCrystal lcd;
+
+    const int brightnessIncrements;
 
     Display();
     void setup();

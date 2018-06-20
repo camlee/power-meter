@@ -1,10 +1,6 @@
 #include "display.h"
 
-#define DISPLAY_NOTHING "                "
-
-const int brightnessIncrements = 10;
-
-Display::Display() : brightness(1), appliedBrightness(-1), lcd(LIQUID_CRYSTAL_ARGS){}
+Display::Display() : brightness(1), appliedBrightness(-1), brightnessIncrements(10), lcd(LIQUID_CRYSTAL_ARGS){}
 
 void Display::setup(){
     pinMode(BACKLIGHT_PIN, OUTPUT);
@@ -35,6 +31,10 @@ bool Display::brightnessDown(){
 int Display::getBrightness(){
     return brightness;
 }
+
+// void Display::persistPrint(){
+
+// }
 
 void Display::refresh(){
     if (appliedBrightness != brightness){
