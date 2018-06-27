@@ -11,9 +11,9 @@ private:
     int appliedBrightness;
 
 public:
-    LiquidCrystal lcd;
-
     const int brightnessIncrements;
+
+    LiquidCrystal lcd;
 
     Display();
     void setup();

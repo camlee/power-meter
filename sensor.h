@@ -2,11 +2,14 @@
 
 #include "hardware.h"
 
+#define LOAD 0
+#define PANEL 1
+
 class SensorManager {
 private:
-    float voltage;
-    float current;
-    float energy;
+    float voltage[2];
+    float current[2];
+    float energy[2];
     unsigned long nextRead;
 
 public:
@@ -14,8 +17,8 @@ public:
     void setup();
     void refresh();
 
-    float getPower();
-    float getVoltage();
-    float getCurrent();
-    float getEnergy();
+    float getPower(int);
+    float getVoltage(int);
+    float getCurrent(int);
+    float getEnergy(int);
 };
