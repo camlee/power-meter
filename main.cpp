@@ -74,6 +74,17 @@ void loop(){
         nextRefresh = millis();
     }
 
+    #ifdef ENABLE_ZERO_CURRENT
+        if (button == SELECT_BUTTON){
+            if (page == LOAD_PAGE){
+                sensorManager.zeroCurrent(LOAD);
+            }
+            if (page == PANEL_PAGE){
+                sensorManager.zeroCurrent(PANEL);
+            }
+        }
+    #endif
+
     if (millis() > nextRefresh ){
         nextRefresh = millis() + refreshPeriodMillis;
 
@@ -98,6 +109,9 @@ void loop(){
         }
 
         if (page == LOAD_PAGE || page == PANEL_PAGE){
+            if (power >= 0){
+                display.lcd.print(" ");
+            }
             display.lcd.print(power, 0);
             display.lcd.print(" W ");
             display.lcd.print(energy / 3600.0, 1);
@@ -105,8 +119,11 @@ void loop(){
             display.lcd.print(DISPLAY_NOTHING);
 
             display.lcd.setCursor(0, 1);
-            display.lcd.print(current * 1000.0, 0);
-            display.lcd.print(" mA ");
+            if (current >= 0){
+                display.lcd.print(" ");
+            }
+            display.lcd.print(current, 2);
+            display.lcd.print(" A ");
             display.lcd.print(voltage, 2);
             display.lcd.print(" V");
             display.lcd.print(DISPLAY_NOTHING);
