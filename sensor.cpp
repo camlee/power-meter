@@ -1,6 +1,6 @@
 #include "sensor.h"
 
-#define F SENSOR_ADC_FACTOR
+#define FACTOR SENSOR_ADC_FACTOR
 
 SensorManager::SensorManager() : voltage(), current(), energy(), nextRead(0){}
 
@@ -11,18 +11,18 @@ void SensorManager::setup(){
 void SensorManager::refresh(){
     if (millis() > nextRead){
         #ifdef LOAD_VOLTAGE_PIN
-            voltage[LOAD] = float(analogRead(LOAD_VOLTAGE_PIN)) * F * LOAD_VOLTAGE_FACTOR;
+            voltage[LOAD] = float(analogRead(LOAD_VOLTAGE_PIN)) * FACTOR * LOAD_VOLTAGE_FACTOR;
         #endif
         #ifdef LOAD_CURRENT_PIN
-            current[LOAD] = ((float(analogRead(LOAD_CURRENT_PIN)) * F) - LOAD_CURRENT_ZERO) * LOAD_CURRENT_FACTOR;
+            current[LOAD] = ((float(analogRead(LOAD_CURRENT_PIN)) * FACTOR) - LOAD_CURRENT_ZERO) * LOAD_CURRENT_FACTOR;
         #endif
         energy[LOAD] += voltage[LOAD] * current[LOAD] * (SENSOR_PERIOD_MILLIS + millis() - nextRead) / 1000.0;
 
         #ifdef PANEL_VOLTAGE_PIN
-            voltage[PANEL] = float(analogRead(PANEL_VOLTAGE_PIN)) * F;
+            voltage[PANEL] = float(analogRead(PANEL_VOLTAGE_PIN)) * FACTOR;
         #endif
         #ifdef PANEL_CURRENT_PIN
-            current[PANEL] = float(analogRead(PANEL_CURRENT_PIN)) * F;
+            current[PANEL] = float(analogRead(PANEL_CURRENT_PIN)) * FACTOR;
         #endif
         energy[PANEL] += voltage[PANEL] * current[PANEL] * (SENSOR_PERIOD_MILLIS + millis() - nextRead) / 1000.0;
 
