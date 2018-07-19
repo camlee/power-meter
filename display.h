@@ -22,4 +22,6 @@ public:
     bool brightnessUp();
     bool brightnessDown();
     int getBrightness();
+
+    void leftPad(float value, int maxSpaces);
 };

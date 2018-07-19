@@ -42,3 +42,21 @@ void Display::refresh(){
         analogWrite(BACKLIGHT_PIN, brightness * 255 / brightnessIncrements);
     }
 }
+
+void Display::leftPad(float value, int maxSpaces){
+    int spaces = maxSpaces; // How many spaces to print. Printing at most maxSpaces
+    if (value < 0.0){
+        spaces -= 1; // Leaving a space for the minus sign
+    }
+    value = abs(value);
+    while (value >= 10 && spaces > 0){
+        spaces -= 1;
+        value = value / 10;
+    }
+
+    while (spaces > 0){
+        lcd.print(" ");
+        spaces -= 1;
+    }
+    return;
+}

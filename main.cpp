@@ -19,7 +19,7 @@ unsigned long nextRefresh = 0;
 #define PANEL_PAGE 2
 #define MAX_PAGE 2
 
-int page = LOAD_PAGE;
+int page = SUMMARY_PAGE;
 
 Display display = Display();
 ButtonManager buttonManager = ButtonManager();
@@ -95,7 +95,7 @@ void loop(){
             energy = sensorManager.getEnergy(LOAD);
 
             display.lcd.setCursor(0, 0);
-            display.lcd.print("Out: ");
+            display.lcd.print("Out:");
         }
 
         if (page == PANEL_PAGE){
@@ -105,25 +105,23 @@ void loop(){
             energy = sensorManager.getEnergy(PANEL);
 
             display.lcd.setCursor(0, 0);
-            display.lcd.print("In:  ");
+            display.lcd.print("In: ");
         }
 
         if (page == LOAD_PAGE || page == PANEL_PAGE){
-            if (power >= 0){
-                display.lcd.print(" ");
-            }
-            display.lcd.print(power, 0);
-            display.lcd.print(" W ");
-            display.lcd.print(energy / 3600.0, 1);
+            display.leftPad((float)(int)power, 2);
+            display.lcd.print((int)power);
+            display.lcd.print(" W");
+            display.leftPad(energy / 3600.0, 3);
+            display.lcd.print(energy / 3600.0, 0);
             display.lcd.print(" Wh");
             display.lcd.print(DISPLAY_NOTHING);
 
             display.lcd.setCursor(0, 1);
-            if (current >= 0){
-                display.lcd.print(" ");
-            }
-            display.lcd.print(current, 2);
-            display.lcd.print(" A ");
+            display.leftPad(current, 2);
+            display.lcd.print(current, 1);
+            display.lcd.print(" A");
+            display.leftPad(voltage, 3);
             display.lcd.print(voltage, 2);
             display.lcd.print(" V");
             display.lcd.print(DISPLAY_NOTHING);
@@ -134,20 +132,24 @@ void loop(){
             energy = sensorManager.getEnergy(PANEL);
 
             display.lcd.setCursor(0, 0);
-            display.lcd.print("In:  ");
-            display.lcd.print(power, 0);
-            display.lcd.print(" W ");
-            display.lcd.print(energy / 3600.0, 1);
+            display.lcd.print("In: ");
+            display.leftPad((float)(int)power, 2);
+            display.lcd.print((int)power);
+            display.lcd.print(" W");
+            display.leftPad(energy / 3600.0, 3);
+            display.lcd.print(energy / 3600.0, 0);
             display.lcd.print(" Wh");
             display.lcd.print(DISPLAY_NOTHING);
 
             power = sensorManager.getPower(LOAD);
             energy = sensorManager.getEnergy(LOAD);
             display.lcd.setCursor(0, 1);
-            display.lcd.print("Out: ");
-            display.lcd.print(power, 0);
-            display.lcd.print(" W ");
-            display.lcd.print(energy / 3600.0, 1);
+            display.lcd.print("Out:");
+            display.leftPad((float)(int)power, 2);
+            display.lcd.print((int)power);
+            display.lcd.print(" W");
+            display.leftPad(energy / 3600.0, 3);
+            display.lcd.print(energy / 3600.0, 0);
             display.lcd.print(" Wh");
             display.lcd.print(DISPLAY_NOTHING);
         }

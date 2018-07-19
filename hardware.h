@@ -17,17 +17,27 @@
 #define SENSOR_ADC_REFERENCE_VOLTAGE 5.07
 
 // Specific sensors:
-#define LOAD_VOLTAGE_FACTOR 6.5277
-#define LOAD_CURRENT_ZERO 2.53
-#define LOAD_CURRENT_FACTOR 4.79
+#define LOAD_VOLTAGE_FACTOR 7.126
+#define LOAD_CURRENT_ZERO 2.546
+#define LOAD_CURRENT_FACTOR 14.776
 
-#define PANEL_VOLTAGE_FACTOR 7.0797
-#define PANEL_CURRENT_ZERO 2.53
-#define PANEL_CURRENT_FACTOR 14.68
+#define PANEL_VOLTAGE_FACTOR 7.297
+#define PANEL_CURRENT_ZERO 2.546
+#define PANEL_CURRENT_FACTOR 14.776
 
 // Voltage factors:
 // Long one: 7.2497
 // 1: 6.5277
 // 2: 7.0797
+
+// Current zeros:
+// Long one:
+// 1: 2.53
+// 2: 2.53
+
+// Current factors:
+// Long one:
+// 1: 4.79
+// 2: 14.68
 
 #define SENSOR_ADC_FACTOR SENSOR_ADC_REFERENCE_VOLTAGE / SENSOR_ADC_MAX_VALUE
