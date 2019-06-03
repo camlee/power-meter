@@ -15,9 +15,10 @@ unsigned long nextRefresh = 0;
 
 #define MIN_PAGE 0
 #define SUMMARY_PAGE 0
-#define LOAD_PAGE 1
-#define PANEL_PAGE 2
-#define MAX_PAGE 2
+#define AC_PAGE 1
+#define DC_PAGE 2
+#define PANEL_PAGE 3
+#define MAX_PAGE 3
 
 int page = SUMMARY_PAGE;
 
@@ -76,8 +77,11 @@ void loop(){
 
     #ifdef ENABLE_ZERO_CURRENT
         if (button == SELECT_BUTTON){
-            if (page == LOAD_PAGE){
+            if (page == AC_PAGE){
                 sensorManager.zeroCurrent(LOAD);
+            }
+            if (page == DC_PAGE){
+                sensorManager.zeroCurrent(LOAD2);
             }
             if (page == PANEL_PAGE){
                 sensorManager.zeroCurrent(PANEL);
@@ -88,14 +92,24 @@ void loop(){
     if (millis() > nextRefresh ){
         nextRefresh = millis() + refreshPeriodMillis;
 
-        if (page == LOAD_PAGE){
+        if (page == AC_PAGE){
             voltage = sensorManager.getVoltage(LOAD);
             current = sensorManager.getCurrent(LOAD);
             power = sensorManager.getPower(LOAD);
             energy = sensorManager.getEnergy(LOAD);
 
             display.lcd.setCursor(0, 0);
-            display.lcd.print("Out:");
+            display.lcd.print("AC: ");
+        }
+
+        if (page == DC_PAGE){
+            voltage = sensorManager.getVoltage(LOAD2);
+            current = sensorManager.getCurrent(LOAD2);
+            power = sensorManager.getPower(LOAD2);
+            energy = sensorManager.getEnergy(LOAD2);
+
+            display.lcd.setCursor(0, 0);
+            display.lcd.print("DC: ");
         }
 
         if (page == PANEL_PAGE){
@@ -108,7 +122,7 @@ void loop(){
             display.lcd.print("In: ");
         }
 
-        if (page == LOAD_PAGE || page == PANEL_PAGE){
+        if (page == AC_PAGE || page == DC_PAGE || page == PANEL_PAGE){
             display.leftPad((float)(int)power, 2);
             display.lcd.print((int)power);
             display.lcd.print(" W");
@@ -141,8 +155,8 @@ void loop(){
             display.lcd.print(" Wh");
             display.lcd.print(DISPLAY_NOTHING);
 
-            power = sensorManager.getPower(LOAD);
-            energy = sensorManager.getEnergy(LOAD);
+            power = sensorManager.getPower(LOAD) + sensorManager.getPower(LOAD2);
+            energy = sensorManager.getEnergy(LOAD) + sensorManager.getEnergy(LOAD2);
             display.lcd.setCursor(0, 1);
             display.lcd.print("Out:");
             display.leftPad((float)(int)power, 2);

@@ -5,14 +5,15 @@
 
 #define LOAD 0
 #define PANEL 1
+#define LOAD2 2
 
 class SensorManager {
 private:
-    float voltage[2];
-    float current[2];
-    float energy[2];
+    float voltage[3];
+    float current[3];
+    float energy[3];
     unsigned long nextReadTime;
-    float currentOffset[2];
+    float currentOffset[3];
 
 public:
     SensorManager();

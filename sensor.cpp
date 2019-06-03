@@ -29,18 +29,35 @@ void SensorManager::refresh(){
         energy[PANEL] += voltage[PANEL] * current[PANEL]
                 * (SENSOR_PERIOD_MILLIS + millis() - nextReadTime) / 1000.0;
 
+        #ifdef LOAD2_VOLTAGE_PIN
+            voltage[LOAD2] = float(analogRead(LOAD2_VOLTAGE_PIN)) * FACTOR * LOAD2_VOLTAGE_FACTOR;
+        #endif
+        #ifdef LOAD2_CURRENT_PIN
+            current[LOAD2] = (((float(analogRead(LOAD2_CURRENT_PIN)) * FACTOR)
+                - LOAD2_CURRENT_ZERO) * LOAD2_CURRENT_FACTOR) + currentOffset[LOAD2];
+        #endif
+        energy[LOAD2] += voltage[LOAD2] * current[LOAD2]
+                * (SENSOR_PERIOD_MILLIS + millis() - nextReadTime) / 1000.0;
+
+
         nextReadTime += SENSOR_PERIOD_MILLIS;
 
         #ifdef LOG_READINGS
             Serial.print(getVoltage(LOAD), 2);
             Serial.print(", ");
+            Serial.print(getVoltage(LOAD2), 2);
+            Serial.print(", ");
             Serial.print(getVoltage(PANEL), 2);
             Serial.print(", ");
             Serial.print(getCurrent(LOAD), 2);
             Serial.print(", ");
+            Serial.print(getCurrent(LOAD2), 2);
+            Serial.print(", ");
             Serial.print(getCurrent(PANEL), 2);
             Serial.print(", ");
             Serial.print(getPower(LOAD), 2);
+            Serial.print(", ");
+            Serial.print(getPower(LOAD2), 2);
             Serial.print(", ");
             Serial.print(getPower(PANEL), 2);
             Serial.print("\n");
