@@ -11,7 +11,7 @@ reboot_now = False
 
 # Settings:
 settings = {
-    "wifi_mode": "station",
+    "wifi_mode": "ap",
     "ap": {
         "ssid": "power-meter",
         "password": "power-meter",
@@ -21,6 +21,17 @@ settings = {
         "password": "power-meter",
         },
     }
+
+with open("settings.json") as f:
+    try:
+        custom_settings = json.loads(f.read())
+    except ValueError:
+        custom_settings = {}
+
+    settings.update(custom_settings)
+
+print(settings)
+
 
 # Setting up the display:
 i2c = machine.I2C(scl=machine.Pin(4), sda=machine.Pin(5))
