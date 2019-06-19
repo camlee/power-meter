@@ -120,6 +120,7 @@ def upload(httpClient, httpResponse):
 
 
 mws = MicroWebSrv(port=80, webPath="static")
+mws.LetCacheStaticContentLevel = 0 # Disable cache headers for now as they aren't fully functional
 mws.Start(threaded=True)
 print("Web server started.")
 

@@ -1,0 +1,16 @@
+{
+  "name": "esp32-micropython",
+  "version": "0.0.1",
+  "description": "(in development)",
+  "main": "index.js",
+  "scripts": {
+    "start": "parcel client/index.html",
+    "prebuild": "rm -rf dist/*",
+    "build": "parcel build client/index.html"
+  },
+  "author": "cam.w.lee@gmail.com",
+  "license": "MIT",
+  "devDependencies": {
+    "parcel-bundler": "^1.12.3"
+  }
+}

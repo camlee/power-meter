@@ -15,10 +15,22 @@ The flash storage built into the ESP32 allows recording around (TBD) days of dat
 
 Flash the ESP32 with Micropython: https://micropython.org/download#esp32
 
-Update the makefile to match your serial port settings, then:
+To upload both the server and client code to the flash memory, you need rshell. Install Python, then the required packages:
+`pip install -r requirements.txt`
+
+To build and package the client code, you need node.js. Install that.
+
+Then, update the makefile to match your serial port settings.
+
+Finally, to update the ESP32 with the client and server code, do:
 `make upload`
 
 #### Development
 
 To get a Python REPL on the ESP32, do:
 `make repl`
+
+This uses picocom, so to exit, do Ctrl+A then Ctrl+X.
+
+To run the client code locally (helps speed up development), do:
+`npm run start`
