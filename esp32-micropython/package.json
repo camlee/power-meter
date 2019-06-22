@@ -6,11 +6,15 @@
   "scripts": {
     "start": "parcel client/index.html",
     "prebuild": "rm -rf dist/*",
-    "build": "parcel build client/index.html"
+    "build": "parcel build client/index.html",
+    "postbuild": "rm dist/*.map* && find dist -type f ! -name '*.gz' -exec rm {} \\;"
   },
   "author": "cam.w.lee@gmail.com",
   "license": "MIT",
   "devDependencies": {
-    "parcel-bundler": "^1.12.3"
+    "@outboxcraft/beauter": "^0.3.0",
+    "chartist": "^0.11.2",
+    "parcel-bundler": "^1.12.3",
+    "parcel-plugin-compress": "^1.0.10"
   }
 }
