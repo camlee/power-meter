@@ -179,6 +179,7 @@ class MicroWebSrv :
         self.WebSocketThreaded          = True
         self.AcceptWebSocketCallback    = None
         self.LetCacheStaticContentLevel = 2
+        self.StaticHeaders = {}
 
         self._routeHandlers = []
         routeHandlers += self._docoratedRouteHandlers
@@ -617,6 +618,8 @@ class MicroWebSrv :
                 self._writeContentTypeHeader(contentType, contentCharset)
                 self._writeHeader("Content-Length", contentLength)
             self._writeServerHeader()
+            for header, value in self._client._microWebSrv.StaticHeaders.items() :
+                self._writeHeader(header, value)
             self._writeHeader("Connection", "close")
             self._writeEndHeader()
 

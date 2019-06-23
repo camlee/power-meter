@@ -83,6 +83,23 @@ elif wifi_mode == "station":
 # disp.text(" %s" % PASSWORD, 0, 30)
 # disp.show()
 
+def file_size(path, exclude=[]):
+    path = path.rstrip("/")
+    try:
+        stats = os.stat(path)
+    except OSError:
+        return 0 # Files that don't exist don't take up any space
+
+    if stats[0] & 0o040000: # Is a directory
+        total_size = 0
+        for file in os.listdir(path):
+            subpath = "%s/%s" % (path, file)
+            if subpath in exclude:
+                continue
+            total_size += file_size(subpath, exclude)
+        return total_size
+    else:
+        return stats[6]
 
 @MicroWebSrv.route("/stats")
 def hello(httpClient, httpResponse):
@@ -92,6 +109,11 @@ def hello(httpClient, httpResponse):
     "mem_free": gc.mem_free(),
     "disk_size": disk_stats[0] * disk_stats[2], # Block size times total blocks
     "disk_free": disk_stats[0] * disk_stats[3], # Block size times free blocks
+    "disk_usage": {
+        "static": file_size("/static"),
+        "data": file_size("/data"),
+        "server": file_size("/", ["/static", "/data"]),
+        }
     })
 
 # (disabled for now)
@@ -121,6 +143,7 @@ def upload(httpClient, httpResponse):
 
 mws = MicroWebSrv(port=80, webPath="static")
 mws.LetCacheStaticContentLevel = 0 # Disable cache headers for now as they aren't fully functional
+mws.StaticHeaders = {"Access-Control-Allow-Origin": "*"}
 mws.Start(threaded=True)
 print("Web server started.")
 

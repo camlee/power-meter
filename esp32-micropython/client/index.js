@@ -1,51 +1,62 @@
-console.log("Hello World from Javascript!");
+var API_URL = process.env.API_URL;
 
-import Chartist from "chartist/dist/chartist.min.js";
-import "../node_modules/chartist/dist/chartist.min.css";
-import "./index.css";
+function formatBytes(bytes, decimals=2) {
+    if (bytes === 0) return '0 Bytes';
 
-new Chartist.Bar('#chart1', {
-  labels: ['Sat', 'Sun', 'Mon', 'Today'],
-  series: [
-    [1, 2, 3, 4],
-    [1.2, 1.3, 1.1, 1.35]
-  ]
-}, {
-  stackBars: true,
-  axisY: {
-    type: Chartist.FixedScaleAxis,
-    ticks: [0, 1, 2, 3, 4, 5],
-    low: 0,
-    labelInterpolationFnc: function(value) {
-      return value + ' wH';
-    }
-  }
-}).on('draw', function(data) {
-  if(data.type === 'bar') {
-    data.element.attr({
-      style: 'stroke-width: 5em'
-    });
-  }
+    const k = 1024;
+    const dm = decimals < 0 ? 0 : decimals;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB', 'PB', 'EB', 'ZB', 'YB'];
+
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
+}
+
+async function drawDataUsage(){
+  var response = await fetch(API_URL + 'stats');
+  var stats = await response.json();
+
+  var ctx = document.getElementById('disk_usage_chart').getContext('2d');
+  var myChart = new Chart(ctx, {
+      type: 'pie',
+      data: {
+          labels: ['Server Code', 'Client Code', 'Data', 'Free',],
+          datasets: [{
+              data: [
+                stats.disk_usage.server,
+                stats.disk_usage.static,
+                stats.disk_usage.data,
+                stats.disk_free,],
+              backgroundColor: [
+                  '#2196f3',
+                  '#ff9800',
+                  '#90ee90',
+                  '#f0f0f0',
+              ],
+          }]
+      },
+      options: {
+        tooltips: {
+          callbacks: {
+            label: function(tooltipItem, data) {
+              var allData = data.datasets[tooltipItem.datasetIndex].data;
+              var tooltipLabel = data.labels[tooltipItem.index];
+              var tooltipData = allData[tooltipItem.index];
+              var tooltipPercentage = ((tooltipData / stats.disk_size) * 100).toFixed(1);
+              return tooltipLabel + ': ' + formatBytes(tooltipData, 1) + ' (' + tooltipPercentage + '%)';
+            }
+          }
+        }
+      }
+  });
+}
+
+async function main(){
+  drawDataUsage();
+}
+
+console.log('Loading...');
+import('chart.js').then(function(Chart){
+  console.log('ready.');
+  main();
 });
-
-new Chartist.Bar('#chart2', {
-  labels: ['9:00 AM', '10:00 AM', '11:00 AM', '12:00 PM', '1:00 PM', '2:00 PM'],
-  series: [
-    [4, 5, 5, 4, 5, 5]
-  ]
-}, {
-  stackBars: true,
-  axisY: {
-    labelInterpolationFnc: function(value) {
-      return value + ' wH';
-    }
-  }
-})
-// .on('draw', function(data) {
-//   if(data.type === 'bar') {
-//     data.element.attr({
-//       style: 'stroke-width: 30px'
-//     });
-//   }
-// });
-

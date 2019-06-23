@@ -13,8 +13,13 @@
   "license": "MIT",
   "devDependencies": {
     "@outboxcraft/beauter": "^0.3.0",
-    "chartist": "^0.11.2",
+    "babel-core": "^6.26.3",
+    "babel-preset-env": "^1.7.0",
+    "chart.js": "^2.8.0",
     "parcel-bundler": "^1.12.3",
     "parcel-plugin-compress": "^1.0.10"
-  }
+  },
+  "browserslist": [
+    "last 1 Chrome version"
+  ]
 }

@@ -3,18 +3,21 @@
     <link rel="stylesheet" type="text/css" href="../node_modules/@outboxcraft/beauter/beauter.min.css">
 </head>
 <body>
-  <h1>Hello World!</h1>
-
-    <div class="progressbar _dark">
-        <div class="-bar _danger" style="width:70%">
-        <div class="-label">70%</div>
+  <h1>Power Meter</h1>
+    <div class="row">
+        <div class="col m6">
+            <h2>Today's Power Usage</h2>
+            <canvas id="chart1"/>
+        </div>
+        <div class="col m6">
+            <h2>Disk Usage</h2>
+            <canvas id="disk_usage_chart"/>
         </div>
     </div>
-
     <div class="row">
-        <div class="col m6"><div class="ct-chart ct-golden-section" id="chart1"></div></div>
-        <div class="col m6"><div class="ct-chart ct-golden-section" id="chart2"></div></div>
+        <div class="col m6"><canvas id="chart3"></canvas></div>
     </div>
+
 
   <script src="./index.js"></script>
 </body>
