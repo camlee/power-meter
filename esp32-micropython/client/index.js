@@ -52,6 +52,9 @@ async function drawDataUsage(){
 }
 
 async function main(){
+  var time = ((new Date).getTime() / 1000).toFixed(); // Unix epoch time in seconds
+  fetch(API_URL + "set_time?time=" + time, {"method": "POST"});
+
   drawDataUsage();
 }
 
