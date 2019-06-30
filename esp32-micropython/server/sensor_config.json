@@ -1,0 +1,18 @@
+{
+  "out": {
+    "current_factor": 14.776,
+    "current_pin": 39,
+    "current_zero": 2.529,
+    "nominal_voltage": 12,
+    "voltage_factor": 7.126,
+    "voltage_pin": null
+  },
+  "in": {
+    "current_factor": 14.776,
+    "current_pin": 36,
+    "current_zero": 2.529,
+    "nominal_voltage": 22,
+    "voltage_factor": 7.126,
+    "voltage_pin": null
+  }
+}

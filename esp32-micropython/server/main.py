@@ -11,6 +11,7 @@ from lib import ssd1306
 from lib.microWebSrv import MicroWebSrv
 
 from sensor import SensorLogger
+from util import set_time_from_epoch, file_size
 
 reboot_now = False
 ssid = ""
@@ -92,58 +93,43 @@ elif wifi_mode == "station":
 # disp.text(" %s" % PASSWORD, 0, 30)
 # disp.show()
 
-def file_size(path, exclude=[]):
-    """
-    Returns the number of bytes in the file or directory specified by path.
-    Recursively checks all subdirectories. Optionally, ommits the directories
-    specified in exclude.
-    """
-    path = path.rstrip("/")
-    try:
-        stats = os.stat(path)
-    except OSError:
-        return 0 # Files that don't exist don't take up any space
+with open("sensor_config.json") as f:
+    sensor_config = json.loads(f.read())
 
-    if stats[0] & 0o040000: # Is a directory
-        total_size = 0
-        for file in os.listdir(path):
-            subpath = "%s/%s" % (path, file)
-            if subpath in exclude:
-                continue
-            total_size += file_size(subpath, exclude)
-        return total_size
-    else:
-        return stats[6]
+sense = SensorLogger("static/data/", sensor_config, max_files=5)
+sense.start(threaded=True)
+
+
+
+def set_time_if_provided(httpClient):
+    params = httpClient.GetRequestQueryParams()
+    client_time = params.get("time")
+    if client_time is not None:
+        set_time_from_epoch(client_time)
+        sense.time_updated()
 
 
 @MicroWebSrv.route("/stats")
 def hello(httpClient, httpResponse):
-  disk_stats = os.statvfs("/")
-  httpResponse.WriteResponseJSONOk({
-    "time": time.time(),
-    "datetime": "%04d-%02d-%02d %02d:%02d:%02d" % time.localtime()[0:6],
-    "uptime": int(time.ticks_ms() / 1000),
-    "mem_free": gc.mem_free(),
-    "disk_size": disk_stats[0] * disk_stats[2], # Block size times total blocks
-    "disk_free": disk_stats[0] * disk_stats[3], # Block size times free blocks
-    "disk_usage": {
-        "static": file_size("/static"),
-        "data": file_size("/data"),
-        "server": file_size("/", ["/static", "/data"]),
-        }
+    set_time_if_provided(httpClient)
+    disk_stats = os.statvfs("/")
+    httpResponse.WriteResponseJSONOk({
+        "time": time.time(),
+        "datetime": "%04d-%02d-%02d %02d:%02d:%02d" % time.localtime()[0:6],
+        "uptime": int(time.ticks_ms() / 1000),
+        "mem_free": gc.mem_free(),
+        "disk_size": disk_stats[0] * disk_stats[2], # Block size times total blocks
+        "disk_free": disk_stats[0] * disk_stats[3], # Block size times free blocks
+        "disk_usage": {
+            "static": file_size("/static", ["/static/data"]),
+            "data": file_size("/static/data"),
+            "server": file_size("/", ["/static"]),
+            }
     })
-
 
 @MicroWebSrv.route("/set_time", "POST")
 def set_time(httpClient, httpResponse):
-    params = httpClient.GetRequestQueryParams()
-    client_time = params.get("time")
-    # converting from unix epoch to ours (2000-01-01 00:00:00 UTC):
-    EPOCH_DELTA = 946684800 # (date(2000, 1, 1) - date(1970, 1, 1)).days * 24*60*60
-    epoch_time = int(client_time) - EPOCH_DELTA
-    tm = time.localtime(epoch_time)
-    tm = tm[0:3] + (0,) + tm[3:6] + (0,)
-    machine.RTC().datetime(tm)
+    set_time_if_provided(httpClient)
     httpResponse.WriteResponse(202, None, None, None, None)
 
 # (disabled for now)
@@ -177,25 +163,6 @@ mws.StaticHeaders = {"Access-Control-Allow-Origin": "*"}
 mws.Start(threaded=True)
 print("Web server started.")
 
-sense = SensorLogger("data", {
-    "panel": {
-        "nominal_voltage": 22,
-        "voltage_pin": None,
-        "current_pin": 36,
-        "voltage_factor": 7.126,
-        "current_zero": 2.529,
-        "current_factor": 14.776,
-        },
-    "load": {
-        "nominal_voltage": 12,
-        "voltage_pin": None,
-        "current_pin": 39,
-        "voltage_factor": 7.126,
-        "current_zero": 2.529,
-        "current_factor": 14.776,
-        }
-    })
-sense.start(threaded=True)
 
 def check_for_reboot():
     if reboot_now:
@@ -220,8 +187,8 @@ while True:
 
     disp.fill_rect(0, 20, 128, 128, 0)
 
-    disp.text("In:  %.1fV %.1fA" % (sense.get_voltage("panel"), sense.get_current("panel")), 0, 22)
-    disp.text("Out: %.1fV %.1fA" % (sense.get_voltage("load"), sense.get_current("load")), 0, 32)
+    disp.text("In:  %.1fV %.1fA" % (sense.get_voltage("in") or 0, sense.get_current("in") or 0), 0, 22)
+    disp.text("Out: %.1fV %.1fA" % (sense.get_voltage("out") or 0, sense.get_current("out") or 0), 0, 32)
     disp.show()
 
     gc.collect()
