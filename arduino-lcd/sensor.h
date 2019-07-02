@@ -12,6 +12,7 @@ private:
     float voltage[3];
     float current[3];
     float energy[3];
+    unsigned long lastReadTime[3];
     unsigned long nextReadTime;
     float currentOffset[3];
 
