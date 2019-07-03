@@ -140,8 +140,8 @@ void loop(){
             display.lcd.print(DISPLAY_NOTHING);
 
             display.lcd.setCursor(0, 1);
-            display.leftPad(current, 2);
-            display.lcd.print(current, 1);
+            display.leftPad(current, 1);
+            display.lcd.print(current, 2);
             display.lcd.print(" A");
             display.leftPad(voltage, 3);
             display.lcd.print(voltage, 2);

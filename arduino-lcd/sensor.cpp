@@ -109,7 +109,11 @@ void SensorManager::zeroCurrent(int sensor){
 }
 
 float SensorManager::getPower(int sensor){
-    return getCurrent(sensor) * getVoltage(sensor);
+    float total = 0;
+    for (unsigned int i=0; i<SENSOR_READINGS_WINDOW; ++i){
+        total += voltage_buffer[sensor][i] * current_buffer[sensor][i];
+    }
+    return total / SENSOR_READINGS_WINDOW;
 }
 
 float SensorManager::getVoltage(int sensor){
