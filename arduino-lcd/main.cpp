@@ -11,6 +11,7 @@ float voltage;
 float current;
 float power;
 float energy;
+float duty;
 unsigned long nextRefresh = 0;
 
 #define MIN_PAGE 0
@@ -116,7 +117,7 @@ void loop(){
             voltage = sensorManager.getVoltage(PANEL);
             current = sensorManager.getCurrent(PANEL);
             power = sensorManager.getPower(PANEL);
-            energy = sensorManager.getEnergy(PANEL);
+            duty = sensorManager.getDuty(PANEL) * 100.0;
 
             display.lcd.setCursor(0, 0);
             display.lcd.print("In: ");
@@ -126,9 +127,16 @@ void loop(){
             display.leftPad((float)(int)power, 2);
             display.lcd.print((int)power);
             display.lcd.print(" W");
-            display.leftPad(energy / 3600.0, 3);
-            display.lcd.print(energy / 3600.0, 0);
-            display.lcd.print(" Wh");
+            if (page == AC_PAGE || page == DC_PAGE){
+                display.leftPad(energy / 3600.0, 3);
+                display.lcd.print(energy / 3600.0, 0);
+                display.lcd.print(" Wh");
+            } else if (page == PANEL_PAGE){
+                display.lcd.print(" (");
+                display.leftPad(duty, 2);
+                display.lcd.print(duty, 0);
+                display.lcd.print("%)");
+            }
             display.lcd.print(DISPLAY_NOTHING);
 
             display.lcd.setCursor(0, 1);

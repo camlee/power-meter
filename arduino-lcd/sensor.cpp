@@ -9,7 +9,14 @@
 #define VOLTAGE_READING(pin, factor) (THROW1AVG5(analogRead(pin)) * FACTOR * factor)
 #define CURRENT_READING(pin, zero, factor, offset) ((((THROW1AVG5(analogRead(pin)) * FACTOR) - zero) * factor) + offset)
 
-SensorManager::SensorManager() : voltage(), current(), energy(), lastReadTime(), nextReadTime(0), currentOffset() {}
+SensorManager::SensorManager() :
+    voltage_buffer(),
+    current_buffer(),
+    buffer_index(0),
+    energy(),
+    lastReadTime(),
+    nextReadTime(0),
+    currentOffset() {}
 
 void SensorManager::setup(){
 }
@@ -17,75 +24,79 @@ void SensorManager::setup(){
 void SensorManager::refresh(){
     if (millis() > nextReadTime){
         #ifdef LOAD_VOLTAGE_PIN
-            voltage[LOAD] = VOLTAGE_READING(LOAD_VOLTAGE_PIN, LOAD_VOLTAGE_FACTOR);
+            voltage_buffer[LOAD][buffer_index] = VOLTAGE_READING(LOAD_VOLTAGE_PIN, LOAD_VOLTAGE_FACTOR);
         #endif
         #ifdef LOAD_CURRENT_PIN
-            current[LOAD] = CURRENT_READING(LOAD_CURRENT_PIN, LOAD_CURRENT_ZERO, LOAD_CURRENT_FACTOR, currentOffset[LOAD]);
+            current_buffer[LOAD][buffer_index] = CURRENT_READING(LOAD_CURRENT_PIN, LOAD_CURRENT_ZERO, LOAD_CURRENT_FACTOR, currentOffset[LOAD]);
         #endif
         #if defined(LOAD_VOLTAGE_PIN) && defined(LOAD_CURRENT_PIN)
-        energy[LOAD] += voltage[LOAD] * current[LOAD] * (millis() - lastReadTime[LOAD]) / 1000.0;
+        energy[LOAD] += voltage_buffer[LOAD][buffer_index] * current_buffer[LOAD][buffer_index] * (millis() - lastReadTime[LOAD]) / 1000.0;
         lastReadTime[LOAD] = millis();
         #endif
 
         #ifdef PANEL_VOLTAGE_PIN
-            voltage[PANEL] =VOLTAGE_READING(PANEL_VOLTAGE_PIN, PANEL_VOLTAGE_FACTOR);
+            voltage_buffer[PANEL][buffer_index] = VOLTAGE_READING(PANEL_VOLTAGE_PIN, PANEL_VOLTAGE_FACTOR);
         #endif
         #ifdef PANEL_CURRENT_PIN
-            current[PANEL] = CURRENT_READING(PANEL_CURRENT_PIN, PANEL_CURRENT_ZERO, PANEL_CURRENT_FACTOR, currentOffset[PANEL]);
+            current_buffer[PANEL][buffer_index] = CURRENT_READING(PANEL_CURRENT_PIN, PANEL_CURRENT_ZERO, PANEL_CURRENT_FACTOR, currentOffset[PANEL]);
         #endif
         #if defined(PANEL_VOLTAGE_PIN) && defined(PANEL_CURRENT_PIN)
-        energy[PANEL] += voltage[PANEL] * current[PANEL] * (millis() - lastReadTime[PANEL]) / 1000.0;
+        energy[PANEL] += voltage_buffer[PANEL][buffer_index] * current_buffer[PANEL][buffer_index] * (millis() - lastReadTime[PANEL]) / 1000.0;
         lastReadTime[PANEL] = millis();
         #endif
 
         #ifdef LOAD2_VOLTAGE_PIN
-            voltage[LOAD2] = VOLTAGE_READING(LOAD2_VOLTAGE_PIN, LOAD2_VOLTAGE_FACTOR);
+            voltage_buffer[LOAD2][buffer_index] = VOLTAGE_READING(LOAD2_VOLTAGE_PIN, LOAD2_VOLTAGE_FACTOR);
         #endif
         #ifdef LOAD2_CURRENT_PIN
-            current[LOAD2] = CURRENT_READING(LOAD2_CURRENT_PIN, LOAD2_CURRENT_ZERO, LOAD2_CURRENT_FACTOR, currentOffset[LOAD2]);
+            current_buffer[LOAD2][buffer_index] = CURRENT_READING(LOAD2_CURRENT_PIN, LOAD2_CURRENT_ZERO, LOAD2_CURRENT_FACTOR, currentOffset[LOAD2]);
         #endif
         #if defined(LOAD2_VOLTAGE_PIN) && defined(LOAD2_CURRENT_PIN)
-        energy[LOAD2] += voltage[LOAD2] * current[LOAD2] * (millis() - lastReadTime[LOAD2]) / 1000.0;
+        energy[LOAD2] += voltage_buffer[LOAD2][buffer_index] * current_buffer[LOAD2][buffer_index] * (millis() - lastReadTime[LOAD2]) / 1000.0;
         lastReadTime[LOAD2] = millis();
         #endif
 
         nextReadTime += SENSOR_PERIOD_MILLIS;
+        buffer_index += 1;
+        if (buffer_index >= SENSOR_READINGS_WINDOW){
+            buffer_index = 0;
+        }
 
         #ifdef LOG_READINGS
             #ifdef LOAD_VOLTAGE_PIN
-            Serial.print(getVoltage(LOAD), 2);
+            Serial.print(voltage_buffer[LOAD][buffer_index], 2);
             Serial.print(", ");
             #endif
             #ifdef LOAD2_VOLTAGE_PIN
-            Serial.print(getVoltage(LOAD2), 2);
+            Serial.print(voltage_buffer[LOAD2][buffer_index], 2);
             Serial.print(", ");
             #endif
             #ifdef PANEL_VOLTAGE_PIN
-            Serial.print(getVoltage(PANEL), 2);
+            Serial.print(voltage_buffer[PANEL][buffer_index], 2);
             Serial.print(", ");
             #endif
             #ifdef LOAD_CURRENT_PIN
-            Serial.print(getCurrent(LOAD), 2);
+            Serial.print(current_buffer[LOAD][buffer_index], 2);
             Serial.print(", ");
             #endif
             #ifdef LOAD2_CURRENT_PIN
-            Serial.print(getCurrent(LOAD2), 2);
+            Serial.print(current_buffer[LOAD2][buffer_index], 2);
             Serial.print(", ");
             #endif
             #ifdef PANEL_CURRENT_PIN
-            Serial.print(getCurrent(PANEL), 2);
+            Serial.print(current_buffer[PANEL][buffer_index], 2);
             Serial.print(", ");
             #endif
             #if defined(LOAD_VOLTAGE_PIN) && defined(LOAD_CURRENT_PIN)
-            Serial.print(getPower(LOAD), 2);
+            Serial.print(voltage_buffer[LOAD][buffer_index] * current_buffer[LOAD][buffer_index], 2);
             Serial.print(", ");
             #endif
             #if defined(LOAD2_VOLTAGE_PIN) && defined(LOAD2_CURRENT_PIN)
-            Serial.print(getPower(LOAD2), 2);
+            Serial.print(voltage_buffer[LOAD2][buffer_index] * current_buffer[LOAD2][buffer_index], 2);
             Serial.print(", ");
             #endif
             #if defined(PANEL_VOLTAGE_PIN) && defined(PANEL_CURRENT_PIN)
-            Serial.print(getPower(PANEL), 2);
+            Serial.print(voltage_buffer[PANEL][buffer_index] * current_buffer[PANEL][buffer_index], 2);
             Serial.print("\n");
             #endif
         #endif
@@ -102,15 +113,86 @@ float SensorManager::getPower(int sensor){
 }
 
 float SensorManager::getVoltage(int sensor){
-    return voltage[sensor];
+    float total = 0;
+    for (unsigned int i=0; i<SENSOR_READINGS_WINDOW; ++i){
+        total += voltage_buffer[sensor][i];
+    }
+    return total / SENSOR_READINGS_WINDOW;
 }
 
 float SensorManager::getCurrent(int sensor){
-    return current[sensor];
+    float total = 0;
+    for (unsigned int i=0; i<SENSOR_READINGS_WINDOW; ++i){
+        total += current_buffer[sensor][i];
+    }
+    return total / SENSOR_READINGS_WINDOW;
 }
 
 float SensorManager::getEnergy(int sensor){
     return energy[sensor];
 }
 
+float SensorManager::getDuty(int sensor){
+    /*
+    Average power divided by maximum power.
+    */
+    float total_power = 0;
+    // Accumulating several maximum powers so we can throw out anomalies (think: ~ 99 percentile):
+    float max_power1 = 0;
+    float max_power2 = 0;
+    float max_power3 = 0;
+    float max_power4 = 0;
+    float max_power5 = 0;
+    float max_power6 = 0;
 
+    float power;
+
+    for (unsigned int i=0; i<SENSOR_READINGS_WINDOW; ++i){
+        total_power += voltage_buffer[sensor][i] * current_buffer[sensor][i];
+        power = voltage_buffer[sensor][i] * current_buffer[sensor][i];
+        if (power >= max_power1){
+            max_power6 = max_power5;
+            max_power5 = max_power4;
+            max_power4 = max_power3;
+            max_power3 = max_power2;
+            max_power2 = max_power1;
+            max_power1 = power;
+        } else if (power >= max_power2){
+            max_power6 = max_power5;
+            max_power5 = max_power4;
+            max_power4 = max_power3;
+            max_power3 = max_power2;
+            max_power2 = power;
+        } else if (power >= max_power3){
+            max_power6 = max_power5;
+            max_power5 = max_power4;
+            max_power4 = max_power3;
+            max_power3 = power;
+        } else if (power >= max_power4){
+            max_power6 = max_power5;
+            max_power5 = max_power4;
+            max_power4 = power;
+        } else if (power >= max_power5){
+            max_power6 = max_power5;
+            max_power5 = power;
+        } else if (power >= max_power6){
+            max_power6 = power;
+        }
+    }
+
+    if (SENSOR_READINGS_WINDOW >= 500){
+        power = max_power6;
+    } else if (SENSOR_READINGS_WINDOW >= 400){
+        power = max_power5;
+    } else if (SENSOR_READINGS_WINDOW >= 300){
+        power = max_power4;
+    } else if (SENSOR_READINGS_WINDOW >= 200){
+        power = max_power3;
+    } else if (SENSOR_READINGS_WINDOW >= 100){
+        power = max_power2;
+    } else {
+        power = max_power1;
+    }
+
+    return (abs(total_power) / SENSOR_READINGS_WINDOW) / abs(power);
+}
