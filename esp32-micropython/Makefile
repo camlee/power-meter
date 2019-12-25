@@ -23,3 +23,4 @@ repl:
 
 static:
 	 npm run build
+
