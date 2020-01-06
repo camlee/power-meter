@@ -7,7 +7,6 @@ import esp32
 import ntptime
 import machine
 import network
-from _thread import start_new_thread
 
 import ssd1306
 from microWebSrv import MicroWebSrv
@@ -31,13 +30,17 @@ settings = {
         },
     }
 
-with open("settings.json") as f:
-    try:
-        custom_settings = json.loads(f.read())
-    except ValueError:
-        custom_settings = {}
-
-    settings.update(custom_settings)
+try:
+    with open("settings.json") as f:
+        try:
+            custom_settings = json.loads(f.read())
+        except ValueError:
+            pass
+        else:
+            settings.update(custom_settings)
+except OSError as e:
+    print("Unable to read settings.json:")
+    print(e)
 
 # Setting up the display:
 i2c = machine.I2C(scl=machine.Pin(4), sda=machine.Pin(5))
@@ -50,35 +53,50 @@ disp.show()
 # Network:
 wifi_mode = settings.get("wifi_mode", "ap")
 
-if wifi_mode == "ap":
-    wlan = network.WLAN(network.AP_IF)
-    ssid = settings.get("ap", {}).get("ssid", "esp32")
-    wlan.config(
-        essid=ssid,
-        authmode=network.AUTH_WPA2_PSK,
-        password=settings.get("ap", {}).get("password", "esp32"))
-    wlan.active(True)
-    print("Access point enabled: %s" % ssid)
-    print("IP: %s" % wlan.ifconfig()[0])
-    disp.text("AP: %s" % ssid, 0, 10)
-    disp.text(" %s" % wlan.ifconfig()[0], 0, 20)
-    disp.show()
-
-elif wifi_mode == "station":
+station_failed = None
+if wifi_mode == "station":
     wlan = network.WLAN(network.STA_IF)
     wlan.active(True)
     ssid = settings.get("station", {}).get("ssid")
     wlan.connect(ssid, settings.get("station", {}).get("password"))
     print("Connecting to %s..." % ssid)
+    disp.text("Connecting to", 0, 10)
+    disp.text("%s..." % ssid, 0, 20)
+    disp.show()
     start_time = time.ticks_ms()
     while wlan.isconnected() == False:
         if time.ticks_ms() - start_time > 5000:
             wlan.active(False)
-            raise Exception("Failed to connect to %s in %.0f seconds." % (ssid, (time.ticks_ms() - start_time)/1000))
-    print("Connected to %s" % ssid)
+            del wlan
+            print("Failed to connect to %s in %.0f seconds." % (ssid, (time.ticks_ms() - start_time)/1000))
+            disp.text("Failed", 0, 30)
+            disp.show()
+            station_failed = True
+            break
+    else:
+        station_failed = False
+
+    if station_failed is not True:
+        print("Connected to %s" % ssid)
+        print("IP: %s" % wlan.ifconfig()[0])
+        disp.fill(0)
+        disp.text("Client: %s" % ssid, 0, 0)
+        disp.text(" %s" % wlan.ifconfig()[0], 0, 10)
+        disp.show()
+
+
+if station_failed is True or wifi_mode == "ap":
+    wlan = network.WLAN(network.AP_IF)
+    wlan.active(True)
+    ssid = settings.get("ap", {}).get("ssid", "esp32")
+    wlan.config(
+        essid=ssid,
+        authmode=network.AUTH_WPA2_PSK,
+        password=settings.get("ap", {}).get("password", "esp32"))
+    print("Access point enabled: %s" % ssid)
     print("IP: %s" % wlan.ifconfig()[0])
-    disp.text("Client: %s" % ssid, 0, 10)
-    disp.text(" %s" % wlan.ifconfig()[0], 0, 20)
+    disp.text("AP: %s" % ssid, 0, 0)
+    disp.text(" %s" % wlan.ifconfig()[0], 0, 10)
     disp.show()
 
 # Try to set the clock if we have internet:
@@ -102,12 +120,16 @@ sense = SensorLogger("static/data/", sensor_config)
 # sense.start(threaded=True)
 
 
+time_already_set = False
 def set_time_if_provided(httpClient):
-    params = httpClient.GetRequestQueryParams()
-    client_time = params.get("time")
-    if client_time is not None:
-        set_time_from_epoch(client_time)
-        sense.time_updated()
+    global time_already_set
+    if not time_already_set:
+        params = httpClient.GetRequestQueryParams()
+        client_time = params.get("time")
+        if client_time is not None:
+            set_time_from_epoch(client_time)
+            sense.time_updated()
+            time_already_set = True
 
 
 @MicroWebSrv.route("/stats")

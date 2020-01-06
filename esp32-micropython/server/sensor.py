@@ -243,7 +243,7 @@ class SensorLogger:
         if time_till_next_work <= 0:
             # Reading:
             self.read_all()
-            print("%s,%s" % (self.sensors["out"].current_buffer.latest(), self.sensors["in"].current_buffer.latest()))
+            # print("%s,%s" % (self.sensors["out"].current_buffer.latest(), self.sensors["in"].current_buffer.latest()))
 
             #Logging:
             self.reads_since_last_log += 1

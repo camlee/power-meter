@@ -19,6 +19,8 @@ function getTimeParameter(){
 }
 
 async function drawRealtime(){
+  var minutes_to_show = 2;
+  var max_minutes_to_show = 10;
 
   var min_time = new Date();
   min_time.setSeconds(0);
@@ -42,6 +44,9 @@ async function drawRealtime(){
       }]
     },
     options: {
+      tooltips: {
+        enabled: false,
+      },
       scales: {
         xAxes: [{
           type: "time",
@@ -49,8 +54,7 @@ async function drawRealtime(){
           time: {
             unit: 'minute',
             stepSize: 1,
-            min: min_time
-          }
+          },
         }],
         yAxes: [{
           scaleLabel: {
@@ -64,6 +68,15 @@ async function drawRealtime(){
       }
     }
   });
+
+  function adjustAxisForTimeProgression(chart, minutes_to_show){
+    var ticks = chart.options.scales.xAxes[0].ticks;
+    ticks.max = new Date();
+    ticks.min = new Date(ticks.max.getTime() - minutes_to_show*60000);
+    chart.update();
+  }
+
+  setInterval(function() {adjustAxisForTimeProgression(chart, minutes_to_show);}, 50);
 
   async function processData(data){
     var records = data.split("\n");
@@ -85,16 +98,20 @@ async function drawRealtime(){
     return [in_power, out_power];
   }
 
+  function addToRecentData(data, new_data){
+    data.push(...new_data);
+
+    // Removing data that won't be shown anymore:
+    var current_time = new Date();
+    while (data.length > 0 && (current_time - data[0].x.getTime())/1000/60 > max_minutes_to_show){
+      data.shift();
+    }
+  }
+
   async function updateChart(chart, in_power, out_power){
-    for (const value of in_power){
-      data = chart.data.datasets[0].data;
-      data.push(value);
-    }
-    for (const value of out_power){
-      data = chart.data.datasets[1].data;
-      data.push(value);
-    }
-    chart.update();
+    addToRecentData(chart.data.datasets[0].data, in_power);
+    addToRecentData(chart.data.datasets[1].data, out_power);
+    chart.update(0);
   }
 
   var socket = new WebSocket(WS_URL);
@@ -127,12 +144,12 @@ async function drawRealtime(){
 }
 
 async function drawPowerUsage(){
-  function processLogResponse(response_text, meta){
+  function processLogResponse(response_text, offset){
     var data = [];
     var records = response_text.split("\n");
     for (const record of records){
       var values = record.split(",");
-      values[0] = Number(values[0]) + meta["start_time_offset"];
+      values[0] = Number(values[0]) + offset;
       values[1] = Number(values[1]);
       values[2] = Number(values[2]);
       data.push(values);
@@ -140,22 +157,45 @@ async function drawPowerUsage(){
     return data;
   }
 
-  async function getData(){
+  async function* getData(){
     var response = await fetch(API_URL + '/data/meta.json');
     var meta = await response.json();
-    var data = [];
 
-    for (const [key, value] of Object.entries(meta["logs"])){
-      console.log("Downloading " + key + '.csv');
-      var response = await fetch(API_URL + '/data/' + key + '.csv');
-      var response_text = await response.text();
-      data = data.concat(await processLogResponse(response_text, value));
+    var logs = [];
+    for (const [log_number, log_meta] of Object.entries(meta["logs"])){
+      logs.push({
+        number: log_number,
+        start_time_offset: log_meta.start_time_offset,
+        start_time: log_meta.start_time,
+      })
     }
+    console.log("Number of log files:");
+    console.log(logs.length);
 
-    return data;
+
+    // Skip data that doesn't have complete time information:
+    logs = logs.filter(function(a){
+      return !(a.start_time_offset === null);
+    });
+
+    // Load the newest data first as that's most likely to be viewed first:
+    logs.sort(function(a, b) {
+      var a_value = a.start_time_offset + a.start_time;
+      var b_value = b.start_time_offset + b.start_time;
+      return b_value - a_value;
+    })
+
+    // Download the data:
+    for (const log of logs){
+      console.log(`Downloading ${log.number}.csv (${new Date(log.start_time_offset + log.start_time)})`);
+
+      var response = await fetch(API_URL + '/data/' + log.number + '.csv');
+      var response_text = await response.text();
+      yield await processLogResponse(response_text, log.start_time_offset);
+    }
   }
 
-  async function processData(data, bucketize){
+  function processData(data, bucketize){
     var buckets = {};
     var in_energy = [];
     var out_energy = [];
@@ -167,7 +207,7 @@ async function drawPowerUsage(){
         var bucket = bucketize(time);
         var bucket_value = buckets[bucket];
         if (typeof(bucket_value) == "undefined"){
-          console.log("Initializing bucket " + new Date(bucket));
+          // console.log("Initializing bucket " + new Date(bucket));
           bucket_value = {"in": 0, "out": 0};
           buckets[bucket] = bucket_value;
         }
@@ -178,12 +218,10 @@ async function drawPowerUsage(){
       }
     }
 
-    console.log(buckets);
-
     for (const key of Object.keys(buckets).sort()){
       var time = new Date(Number(key));
-      in_energy.push({x: time, y: buckets[key]["in"]});
-      out_energy.push({x: time, y: -buckets[key]["out"]});
+      in_energy.push({x: time, y: Math.round(buckets[key]["in"])});
+      out_energy.push({x: time, y: Math.round(-buckets[key]["out"])});
     }
 
     return [in_energy, out_energy];
@@ -198,66 +236,107 @@ async function drawPowerUsage(){
     return bucket_date.getTime();
   }
 
-  var data = await getData();
-  var [in_energy, out_energy] = await processData(data, bucketize_15_min);
+  function createChart(ctx, in_energy, out_energy){
+    var min_time = new Date();
+    min_time.setHours(0);
+    min_time.setMinutes(0);
+    min_time.setSeconds(0);
+    min_time.setMilliseconds(0);
 
-  var min_time = new Date();
-  min_time.setHours(0);
-  min_time.setMinutes(0);
-  min_time.setSeconds(0);
-  min_time.setMilliseconds(0);
+    var max_time = new Date(min_time);
+    max_time.setDate(min_time.getDate() + 1);
 
-  var max_time = new Date(min_time);
-  max_time.setDate(min_time.getDate() + 1);
 
-  var ctx = document.getElementById('today_power').getContext('2d');
-  var chart = new Chart(ctx, {
-    type: 'bar',
-    data: {
-      datasets: [{
-        label: "In",
-        data: in_energy,
-        fill: false,
-        borderColor: "blue",
-        backgroundColor: "blue",
-      }, {
-        label: "Out",
-        data: out_energy,
-        fill: false,
-        borderColor: "orange",
-        backgroundColor: "orange",
-      }]
-    },
-    options: {
-      scales: {
-        xAxes: [{
-          type: "time",
-          position: "bottom",
-          stacked: true,
-          gridLines: {
-            offsetGridLines: false
-          },
-          // barThickness: 2,
-          time: {
-            unit: 'hour',
-            stepSize: 3,
-            min: min_time,
-            max: max_time,
-          }
-        }],
-        yAxes: [{
-          stacked: true,
-          scaleLabel: {
-            display: true,
-            labelString: "Energy [Wh]"
-          },
-          ticks: {
-            beginAtZero: true
-          }
+    var chart = new Chart(ctx, {
+      type: 'bar',
+      data: {
+        datasets: [{
+          label: "In",
+          data: [],
+          fill: false,
+          borderColor: "blue",
+          backgroundColor: "blue",
+        }, {
+          label: "Out",
+          data: [],
+          fill: false,
+          borderColor: "orange",
+          backgroundColor: "orange",
         }]
+      },
+      options: {
+        scales: {
+          xAxes: [{
+            type: "time",
+            position: "bottom",
+            stacked: true,
+            gridLines: {
+              offsetGridLines: false
+            },
+            time: {
+              unit: 'hour',
+              stepSize: 3,
+            },
+            ticks: {
+              min: min_time,
+              max: max_time,
+            }
+          }],
+          yAxes: [{
+            stacked: true,
+            scaleLabel: {
+              display: true,
+              labelString: "Energy [Wh]"
+            },
+            ticks: {
+              beginAtZero: true
+            }
+          }]
+        }
+      }
+    });
+
+    energy_chart = chart;
+
+    return chart;
+  }
+
+  function updateDataInPlace(existing_data, new_data){
+    for (const new_value of new_data){
+      var found = false;
+      for (var existing_value of existing_data){
+        if (existing_value.x.getTime() == new_value.x.getTime()){
+          found = true;
+          existing_value.y = new_value.y;
+          break;
+        }
+      }
+      if (!found){
+        existing_data.push(new_value);
       }
     }
-  });
+  }
+
+  function updateChart(chart, in_energy, out_energy){
+    updateDataInPlace(chart.data.datasets[0].data, in_energy);
+    updateDataInPlace(chart.data.datasets[1].data, out_energy);
+    chart.update();
+  }
+
+  var ctx = document.getElementById('today_power').getContext('2d');
+  var chart = createChart(ctx);
+
+  var all_data = [];
+
+
+  for await (const data of getData()) {
+    all_data.push(...data);
+    var [in_energy, out_energy] = processData(all_data, bucketize_15_min);
+    updateChart(chart, in_energy, out_energy)
+  }
+
+  console.log("Done updating chart with with all the data!");
+
 }
 
 async function drawDiskUsage(){
@@ -303,9 +382,9 @@ async function drawDiskUsage(){
 async function main(){
   // await fetch(API_URL + "/set_time?" + getTimeParameter(), {"method": "POST"});
 
-  await drawRealtime();
-  await drawDiskUsage();
-  await drawPowerUsage();
+  drawRealtime();
+  drawDiskUsage();
+  drawPowerUsage();
 }
 
 console.log('Loading...');

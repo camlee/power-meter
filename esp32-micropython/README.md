@@ -18,7 +18,8 @@ Flash the ESP32 with Micropython: https://micropython.org/download#esp32
 To upload both the server and client code to the flash memory, you need rshell. Install Python, then the required packages:
 `pip install -r requirements.txt`
 
-To build and package the client code, you need node.js. Install that.
+To build and package the client code, you need node.js. Install that and do:
+`npm install`
 
 Then, update the makefile to match your serial port settings.
 
