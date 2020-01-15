@@ -4,9 +4,9 @@
   "description": "(in development)",
   "main": "index.js",
   "scripts": {
-    "start": "parcel client/index.html",
+    "start": "SASS_PATH=client/css:node_modules parcel client/index.html --no-cache",
     "prebuild": "rm -rf dist/*",
-    "build": "parcel build client/index.html",
+    "build": "SASS_PATH=client/css:node_modules parcel build client/index.html --no-cache",
     "postbuild": "rm dist/*.map* && find dist -type f ! -name '*.gz' -exec rm {} \\;"
   },
   "author": "cam.w.lee@gmail.com",
@@ -19,9 +19,14 @@
     "parcel-bundler": "^1.12.4",
     "parcel-plugin-compress": "^1.1.0",
     "parcel-plugin-svelte": "^4.0.5",
-    "svelte": "^3.16.7"
+    "sass": "^1.24.4",
+    "svelte": "^3.16.7",
+    "svelte-material-ui": "^1.0.0-beta.19"
   },
   "browserslist": [
     "last 1 Chrome version"
-  ]
+  ],
+  "dependencies": {
+    "@material/layout-grid": "^4.0.0"
+  }
 }
