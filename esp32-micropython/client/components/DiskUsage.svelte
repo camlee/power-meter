@@ -1,5 +1,11 @@
 <script>
+  import { onMount } from 'svelte';
+  import LinearProgress from '@smui/linear-progress';
+
   export let getting_stats;
+
+  let canvas;
+  let stats = null;
 
   function formatBytes(bytes, decimals=2) {
     if (bytes === 0) return '0 Bytes';
@@ -13,18 +19,13 @@
     return parseFloat((bytes / Math.pow(k, i)).toFixed(dm)) + ' ' + sizes[i];
   }
 
-  async function drawDiskUsage(stats){
-    var ctx = document.getElementById('disk_usage_chart').getContext('2d');
-    var myChart = new Chart(ctx, {
+  function createChart(ctx){
+    let chart = new Chart(ctx, {
         type: 'pie',
         data: {
             labels: ['Server Code', 'Client Code', 'Data', 'Free',],
             datasets: [{
-                data: [
-                  stats.disk_usage.server,
-                  stats.disk_usage.static,
-                  stats.disk_usage.data,
-                  stats.disk_free,],
+                data: [0, 0, 0, 1],
                 backgroundColor: [
                     '#2196f3',
                     '#ff9800',
@@ -37,26 +38,48 @@
           tooltips: {
             callbacks: {
               label: function(tooltipItem, data) {
-                var allData = data.datasets[tooltipItem.datasetIndex].data;
-                var tooltipLabel = data.labels[tooltipItem.index];
-                var tooltipData = allData[tooltipItem.index];
-                var tooltipPercentage = ((tooltipData / stats.disk_size) * 100).toFixed(1);
-                return tooltipLabel + ': ' + formatBytes(tooltipData, 1) + ' (' + tooltipPercentage + '%)';
+                if (stats != null){
+                  let allData = data.datasets[tooltipItem.datasetIndex].data;
+                  let tooltipLabel = data.labels[tooltipItem.index];
+                  let tooltipData = allData[tooltipItem.index];
+                  let tooltipPercentage = ((tooltipData / stats.disk_size) * 100).toFixed(1);
+                  return tooltipLabel + ': ' + formatBytes(tooltipData, 1) + ' (' + tooltipPercentage + '%)';
+                }
               }
             }
           }
         }
     });
+    return chart;
+  }
+
+  function updateChart(chart, stats){
+    chart.data.datasets[0].data = [
+      stats.disk_usage.server,
+      stats.disk_usage.static,
+      stats.disk_usage.data,
+      stats.disk_free,
+      ];
+      chart.update();
   }
 
   async function main(){
-    let stats = await getting_stats;
-    drawDiskUsage(stats);
+    const ctx = canvas.getContext('2d');
+    let chart = createChart(ctx);
+    stats = await getting_stats;
+    updateChart(chart, stats);
   };
 
-  main();
+  onMount(main);
 
 </script>
 
 <h2>Disk Usage</h2>
-<canvas id="disk_usage_chart"/>
+<canvas bind:this={canvas}/>
+{#await getting_stats}
+  <LinearProgress indeterminate/>
+{:then}
+  <LinearProgress indeterminate closed={1}/>
+{:catch error}
+  <LinearProgress class="error-progress-bar" progress={1}/>
+{/await}

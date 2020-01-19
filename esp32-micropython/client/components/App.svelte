@@ -36,7 +36,7 @@
       loading_error = e;
       return;
     }
-    if (response.status != 200){
+    if (response.status != 202){
       loading_error = "Couldn't set the time.";
       return;
     }

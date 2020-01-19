@@ -1,7 +1,7 @@
   @import "@material/linear-progress/mixins";
   @import "@material/theme/color-palette";
 
-  .my-error-bar {
+  .error-progress-bar {
     @include mdc-linear-progress-bar-color($mdc-theme-error);
     @include mdc-linear-progress-buffer-color($mdc-theme-error);
   }
