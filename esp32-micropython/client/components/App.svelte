@@ -1,8 +1,11 @@
 <script>
-  import DiskUsage from './DiskUsage.svelte';
-  import FullPageProgress from './FullPageProgress.svelte';
   import "@material/layout-grid/mdc-layout-grid";
 
+  import PowerUsage from './PowerUsage.svelte';
+  import DiskUsage from './DiskUsage.svelte';
+  import FullPageProgress from './FullPageProgress.svelte';
+
+  import {processLogResponse, processDataMeta} from '../common/DataProcessing.js';
 
   let API_URL = process.env.API_URL || "http://" + location.host;
   let WS_URL = process.env.WS_URL || "ws://" + location.host;
@@ -17,40 +20,97 @@
   let loading_action = "Connect";
   let loading_error = "";
 
-  let deferreds = [];
+  let getting_stats_handler;
   let getting_stats = new Promise(function(resolve, reject){
-    deferreds.push({resolve: resolve, reject: reject});
+    getting_stats_handler = {resolve: resolve, reject: reject};
   });
 
   async function get_stats(){
-    let response = await fetch(API_URL + '/stats');
-    console.log(response.status);
-    let stats = await response.json();
-    deferreds[0].resolve(stats);
+    try {
+      var response = await fetch(API_URL + '/stats');
+    } catch(e){
+      getting_stats_handler.reject(e);
+      return;
+    }
+    if (!response.ok){
+      getting_stats_handler.reject(response.statusText);
+      return;
+    }
+    try {
+      var stats = await response.json();
+    } catch(e){
+      getting_stats_handler.reject(e);
+    }
+    getting_stats_handler.resolve(stats);
+  }
+
+  let historical_data = []
+  let getting_data_progress = false;
+    // false for not getting data yet.
+    // null for getting data but don't know the progress
+    // Number between 0 and 1 to indicate progress.
+  let getting_data_error = null;
+
+  async function* getData(){
+    getting_data_progress = null;
+    let response = await fetch(API_URL + '/data/meta.json');
+    const meta = await response.json();
+    let logs = processDataMeta(meta);
+
+    // Load the newest data first as that's most likely to be viewed first:
+    logs.sort(function(a, b) {
+      let a_value = a.start_time_offset + a.start_time;
+      let b_value = b.start_time_offset + b.start_time;
+      return b_value - a_value;
+    })
+
+    getting_data_progress = 0;
+
+    // Download the data:
+    for (const [log_index, log] of logs.entries()){
+      console.log(`Downloading ${log.number}.csv (${new Date(log.start_time_offset + log.start_time)})`);
+
+      let response = await fetch(API_URL + '/data/' + log.number + '.csv');
+      const response_text = await response.text();
+      getting_data_progress = (log_index + 1) / logs.length;
+      yield await processLogResponse(response_text, log.start_time_offset);
+    }
+  }
+
+  async function get_historical_data(){
+    try{
+      for await (const data of getData()) {
+        historical_data = [...historical_data, ...data];
+      }
+    } catch(e){
+      getting_data_error = e.message;
+      console.log(`Error getting data: ${getting_data_error}`);
+    }
   }
 
   async function main(){
     try {
       var response = await fetch(API_URL + "/set_time?" + getTimeParameter(), {"method": "POST"});
     } catch(e){
-      loading_error = e;
+      loading_error = "Network Error.";
       return;
     }
-    if (response.status != 202){
-      loading_error = "Couldn't set the time.";
+    if (!response.ok){
+      loading_error = response.statusText;
       return;
     }
 
     loading_verb = "Loading";
     loading_action = "Load";
     try {
-      var response = await import('chart.js');
+      await import('chart.js');
     } catch(e){
       loading_error = e;
       return;
     }
     loading = false;
-    await get_stats();
+    get_stats();
+    get_historical_data();
   }
 
   main();
@@ -75,8 +135,7 @@
             <canvas id="realtime"/>
         </div>
         <div class="mdc-layout-grid__cell--span-6">
-            <h2>Today's Power Usage</h2>
-            <canvas id="today_power"/>
+            <PowerUsage progress={getting_data_progress} data={historical_data} error={getting_data_error}/>
         </div>
       </div>
     </div>
