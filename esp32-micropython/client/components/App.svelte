@@ -5,7 +5,7 @@
   import DiskUsage from './DiskUsage.svelte';
   import FullPageProgress from './FullPageProgress.svelte';
 
-  import {processLogResponse, processDataMeta} from '../common/DataProcessing.js';
+  import {processLogResponse, processDataMeta, readLogResponseWithProgress} from '../common/DataProcessing.js';
 
   let API_URL = process.env.API_URL || "http://" + location.host;
   let WS_URL = process.env.WS_URL || "ws://" + location.host;
@@ -71,8 +71,19 @@
       console.log(`Downloading ${log.number}.csv (${new Date(log.start_time_offset + log.start_time)})`);
 
       let response = await fetch(API_URL + '/data/' + log.number + '.csv');
-      const response_text = await response.text();
-      getting_data_progress = (log_index + 1) / logs.length;
+
+      const response_text = await readLogResponseWithProgress(response,
+        (downloading_progress) => {
+          let new_progress = (log_index / logs.length) + (downloading_progress / logs.length);
+          if (new_progress > getting_data_progress){
+            getting_data_progress = Math.round(new_progress * 100) / 100;
+              // Rounding seems to fix a really weird problem where ther progress bar jumps
+              // around slightly when during chart updates. It also smoothes things out a
+              // bit and makes it look better overall.
+          }
+        });
+
+      // const response_text = await response.text();
       yield await processLogResponse(response_text, log.start_time_offset);
     }
   }
