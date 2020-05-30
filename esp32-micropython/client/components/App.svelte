@@ -3,6 +3,7 @@
 
   import PowerUsage from './PowerUsage.svelte';
   import DiskUsage from './DiskUsage.svelte';
+  import Realtime from './Realtime.svelte';
   import FullPageProgress from './FullPageProgress.svelte';
 
   import {processLogResponse, processDataMeta, readLogResponseWithProgress} from '../common/DataProcessing.js';
@@ -54,6 +55,9 @@
   async function* getData(){
     getting_data_progress = null;
     let response = await fetch(API_URL + '/data/meta.json');
+    if (!response.ok){
+      throw new Error(response.statusText);
+    }
     const meta = await response.json();
     let logs = processDataMeta(meta);
 
@@ -73,7 +77,7 @@
       let response = await fetch(API_URL + '/data/' + log.number + '.csv');
 
       const response_text = await readLogResponseWithProgress(response,
-        (downloading_progress) => {
+         function(downloading_progress) {
           let new_progress = (log_index / logs.length) + (downloading_progress / logs.length);
           if (new_progress > getting_data_progress){
             getting_data_progress = Math.round(new_progress * 100) / 100;
@@ -99,6 +103,36 @@
     }
   }
 
+  let websocket = null;
+  let websocket_retry_period = 1;
+
+  function setup_realtime_websocket(){
+    websocket = new WebSocket(WS_URL);
+
+    websocket.addEventListener("open", function(event){
+      console.log("Websocket connected!");
+      websocket_retry_period = 1;
+      websocket.send(getTimeParameter());
+    });
+
+    websocket.addEventListener("error", function(event){
+      console.log(`Websocket error (${error.message}). closing.`);
+      websocket.close();
+    });
+
+    websocket.addEventListener("close", function(event){
+      if (websocket_retry_period < 10){
+        websocket_retry_period += 1;
+      }
+
+      console.log(`Websocket closed (${event.code}: ${event.reason}). Reconnecting in ${websocket_retry_period} seconds.`)
+      setTimeout(function() {
+        setup_realtime_websocket();
+      }, websocket_retry_period * 1000);
+    });
+  }
+
+
   async function main(){
     try {
       var response = await fetch(API_URL + "/set_time?" + getTimeParameter(), {"method": "POST"});
@@ -122,16 +156,11 @@
     loading = false;
     get_stats();
     get_historical_data();
+    setup_realtime_websocket();
   }
 
   main();
 </script>
-
-<style>
-  .progress-bar {
-    min-width: 300px;
-  }
-</style>
 
 <main>
 
@@ -142,11 +171,10 @@
     <div class="mdc-layout-grid">
       <div class="mdc-layout-grid__inner">
         <div class="mdc-layout-grid__cell--span-6">
-            <h2>Realtime</h2>
-            <canvas id="realtime"/>
+          <Realtime websocket={websocket}/>
         </div>
         <div class="mdc-layout-grid__cell--span-6">
-            <PowerUsage progress={getting_data_progress} data={historical_data} error={getting_data_error}/>
+          <PowerUsage progress={getting_data_progress} data={historical_data} error={getting_data_error}/>
         </div>
       </div>
     </div>

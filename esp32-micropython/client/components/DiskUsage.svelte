@@ -72,8 +72,8 @@
   }
 
   async function main(){
-    getting_stats.finally(() => {still_getting_stats = false});
-    getting_stats.catch(() => {error_getting_stats = true});
+    getting_stats.finally(function() {still_getting_stats = false});
+    getting_stats.catch(function() {error_getting_stats = true});
     let chart = createChart(canvas.getContext('2d'));
     try{
       stats = await getting_stats;

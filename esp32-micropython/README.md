@@ -33,5 +33,6 @@ To get a Python REPL on the ESP32, do:
 
 This uses picocom, so to exit, do Ctrl+A then Ctrl+X.
 
-To run the client code locally (helps speed up development), do:
+To run the client code locally (helps speed up development), edit `.env.development` to point to the server and do:
 `npm run start`
+
