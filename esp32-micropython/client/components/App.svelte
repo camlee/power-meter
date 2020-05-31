@@ -115,7 +115,7 @@
       websocket.send(getTimeParameter());
     });
 
-    websocket.addEventListener("error", function(event){
+    websocket.addEventListener("error", function(error){
       console.log(`Websocket error (${error.message}). closing.`);
       websocket.close();
     });

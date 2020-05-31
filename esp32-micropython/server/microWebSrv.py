@@ -10,6 +10,7 @@ from    _thread     import start_new_thread
 import  socket
 import  gc
 import  re
+import sys
 
 try :
     from microWebTemplate import MicroWebTemplate
@@ -179,6 +180,7 @@ class MicroWebSrv :
         self.WebSocketThreaded          = True
         self.AcceptWebSocketCallback    = None
         self.LetCacheStaticContentLevel = 2
+        self.StaticCacheByPath = []
         self.StaticHeaders = {}
 
         self._routeHandlers = []
@@ -376,8 +378,15 @@ class MicroWebSrv :
                                             if encoding :
                                                 headers["Content-Encoding"] = encoding
 
-                                            if self._microWebSrv.LetCacheStaticContentLevel > 0 :
-                                                if self._microWebSrv.LetCacheStaticContentLevel > 1 and \
+                                            cache_level = self._microWebSrv.LetCacheStaticContentLevel
+
+                                            for path, value in self._microWebSrv.StaticCacheByPath:
+                                                if filepath.startswith(path):
+                                                    cache_level = value
+                                                    break
+
+                                            if cache_level > 0 :
+                                                if cache_level > 1 and \
                                                    'if-modified-since' in self._headers :
                                                     response.WriteResponseNotModified()
                                                 else:

@@ -216,6 +216,10 @@ def ws_close_callback(webSocket):
 
 mws = MicroWebSrv(port=80, webPath="static")
 mws.LetCacheStaticContentLevel = 0 # Disable cache headers for now as they aren't fully functional
+mws.StaticCacheByPath = [
+    ("static/data/", 0),
+    ("static/", 2),
+]
 mws.StaticHeaders = {"Access-Control-Allow-Origin": "*"}
 mws.AcceptWebSocketCallback = ws_accept_callback
 mws.Start(threaded=True)
