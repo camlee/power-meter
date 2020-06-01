@@ -258,7 +258,7 @@ while True:
         disp.fill_rect(0, 20, 128, 128, 0)
         disp.text("In:  %.2fA %.0fW" % (sense.get_current("in") or 0, sense.get_power("in") or 0), 0, 22)
         disp.text("Out: %.2fA %.0fW" % (sense.get_current("out") or 0, sense.get_power("out") or 0), 0, 32)
-        disp.text("%02d:%02d:%02d UTC" % time.localtime()[3:6], 0, 55)
+        disp.text("%02d:%02d:%02d UTC %3s" % (time.localtime()[3:6] + (len(open_web_sockets),)), 0, 55)
         disp.show()
 
         ws_text = ",".join([str(epoch_time() * 1000), str(sense.get_power("in")), str(sense.get_power("out"))])

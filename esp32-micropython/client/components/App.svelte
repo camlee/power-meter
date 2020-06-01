@@ -105,8 +105,37 @@
 
   let websocket = null;
   let websocket_retry_period = 1;
+  let close_websocket_after_tab_changed_for_seconds = 50;
+  let visibilitychange_setup = false;
+  let last_visibility_change_timeout = null;
 
   function setup_realtime_websocket(){
+    if (visibilitychange_setup === false) {
+      visibilitychange_setup = true;
+      document.addEventListener("visibilitychange", function (){
+        if (last_visibility_change_timeout != null){
+          clearTimeout(last_visibility_change_timeout);
+          last_visibility_change_timeout = null;
+        }
+        if (document.hidden){
+          last_visibility_change_timeout = setTimeout(function() {
+            websocket.close();
+          }, close_websocket_after_tab_changed_for_seconds * 1000);
+
+        } else {
+          if (websocket === null){
+            setup_realtime_websocket();
+          }
+        }
+      }, false);
+    }
+
+    if (document.hidden){
+      console.log("Not setting up websocket: page not visible.");
+      return;
+    }
+
+    console.log("Setting up websocket.");
     websocket = new WebSocket(WS_URL);
 
     websocket.addEventListener("open", function(event){
@@ -121,14 +150,16 @@
     });
 
     websocket.addEventListener("close", function(event){
+      websocket = null;
       if (websocket_retry_period < 10){
         websocket_retry_period += 1;
       }
-
-      console.log(`Websocket closed (${event.code}: ${event.reason}). Reconnecting in ${websocket_retry_period} seconds.`)
-      setTimeout(function() {
-        setup_realtime_websocket();
-      }, websocket_retry_period * 1000);
+      if (document.visible){
+        console.log(`Websocket closed (code: ${event.code}, reason: ${event.reason}). Reconnecting in ${websocket_retry_period} seconds.`)
+        setTimeout(setup_realtime_websocket, websocket_retry_period * 1000);
+      } else {
+        console.log(`Page not visible: websocket closed (code: ${event.code}, reason: ${event.reason}).`);
+      }
     });
   }
 
@@ -157,6 +188,7 @@
     get_stats();
     get_historical_data();
     setup_realtime_websocket();
+
   }
 
   main();

@@ -61,15 +61,6 @@
       }
     });
 
-    function adjustAxisForTimeProgression(chart, minutes_to_show){
-      let ticks = chart.options.scales.xAxes[0].ticks;
-      ticks.max = new Date();
-      ticks.min = new Date(ticks.max.getTime() - minutes_to_show*60000);
-      chart.update();
-    }
-
-    setInterval(function() {adjustAxisForTimeProgression(chart, minutes_to_show);}, 50);
-
     return chart;
   }
 
@@ -110,6 +101,7 @@
   }
 
   function setup_websocket(socket, chart){
+    error = false;
     if (socket === null){
       return; // No websocket: nothing to set up.
     }
@@ -128,53 +120,60 @@
       updateChart(chart, in_power, out_power);
     });
 
-    socket.addEventListener("close", function(event){
-      error = true;
-    });
-
     socket.addEventListener("error", function(event){
       error = true;
     });
   }
 
-  function monitor_websocket(){
-    setInterval(function(){
+  let visibilitychange_setup = false;
+  let adjust_axis_interval = null;
+  let monitor_websocket_interval = null;
+
+  function setup_timers(){
+    function adjust_axis_for_time_progression(){
+      let ticks = chart.options.scales.xAxes[0].ticks;
+      ticks.max = new Date();
+      ticks.min = new Date(ticks.max.getTime() - minutes_to_show*60000);
+      chart.update();
+    }
+
+    if (adjust_axis_interval === null){
+      adjust_axis_interval = setInterval(adjust_axis_for_time_progression, 50);
+    }
+
+    function monitor_websocket(){
       if (performance.now() - last_data_received_at > 5000){
         data_received_recently = false;
       }
-    }, 200);
+    }
+
+    if (monitor_websocket_interval === null){
+      monitor_websocket_interval = setInterval(monitor_websocket, 200);
+    }
+
+    if (visibilitychange_setup === false) {
+      visibilitychange_setup = true;
+      document.addEventListener("visibilitychange", function (){
+
+        if (document.hidden){
+          cancel_timers();
+        } else {
+          setup_timers();
+        }
+      }, false);
+    }
   }
 
-  // var socket = new WebSocket(WS_URL);
-  // socket.onopen = function(e) {
-  //   console.log(`Web socket connection established`);
-  //   socket.send(getTimeParameter());
-  // };
-
-  // socket.onmessage = async function(event) {
-  //   var data = event.data;
-  //   // console.log(`Web socket data received: ${data}`);
-  //   var [in_power, out_power] = await processData(data);
-  //   updateChart(chart, in_power, out_power);
-  // };
-
-  // socket.onclose = function(event) {
-  //   if (event.wasClean) {
-  //     console.log(`Web socket connection closed cleanly, code=${event.code} reason=${event.reason}`);
-  //   } else {
-  //     // e.g. server process killed or network down
-  //     // event.code is usually 1006 in this case
-  //     console.log(`Web socket connection died`);
-  //   }
-  // };
-
-  // socket.onerror = function(error) {
-  //   console.log(`Web socket error=${error.message}`);
-  // };
+  function cancel_timers(){
+    clearInterval(adjust_axis_interval);
+    adjust_axis_interval = null;
+    clearInterval(monitor_websocket_interval);
+    monitor_websocket_interval = null;
+  }
 
   async function main(){
-    monitor_websocket();
     chart = await createChart(canvas.getContext('2d'));
+    setup_timers();
   }
 
   onMount(main);
