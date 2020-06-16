@@ -1,20 +1,28 @@
 {
-  "out": {
-    "current_factor": 60,
-    "current_pin": 36,
-    "nominal_current": 1.23,
-    "current_zero": 0.304,
-    "nominal_voltage": 13,
-    "voltage_factor": 7.126,
-    "voltage_pin": null
-  },
   "in": {
+    "nominal_voltage": 1,
+    "voltage_factor": 2.21,
+    "nominal_current": 1,
     "current_factor": 60,
-    "current_pin": 39,
-    "nominal_current": 1.23,
     "current_zero": 0.314,
-    "nominal_voltage": 13,
-    "voltage_factor": 7.126,
-    "voltage_pin": null
+    "voltage_adc": {
+      "address": 72,
+      "channels": [2]
+    },
+    "current_adc": {
+      "address": 72,
+      "channels": [3]}
+  },
+  "out": {
+    "nominal_voltage": 1,
+    "voltage_factor": 3.18,
+    "nominal_current": 1,
+    "current_factor": 60,
+    "current_zero": 0.304,
+    "voltage_adc": {
+      "address": 72,
+      "channels": [0]
+    },
+    "current_adc": null
   }
 }

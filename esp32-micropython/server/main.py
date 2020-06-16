@@ -116,7 +116,7 @@ if station_failed is True or wifi_mode == "ap":
 with open("sensor_config.json") as f:
     sensor_config = json.loads(f.read())
 
-sense = SensorLogger("static/data/", sensor_config)
+sense = SensorLogger("static/data/", sensor_config=sensor_config, settings=settings)
 # sense.start(threaded=True)
 
 
@@ -261,7 +261,16 @@ while True:
         disp.text("%02d:%02d:%02d UTC %3s" % (time.localtime()[3:6] + (len(open_web_sockets),)), 0, 55)
         disp.show()
 
-        ws_text = ",".join([str(epoch_time() * 1000), str(sense.get_power("in")), str(sense.get_power("out"))])
+        ws_text = ",".join([
+            str(epoch_time() * 1000),
+            str(sense.get_power("in")),
+            str(sense.get_power("out")),
+            str(sense.get_voltage("in")),
+            str(sense.get_voltage("out")),
+            str(sense.get_current("in")),
+            str(sense.get_current("out")),
+            ])
+        print(ws_text)
         for ws in open_web_sockets:
             start_time = time.ticks_ms()
             ws.SendText(ws_text)

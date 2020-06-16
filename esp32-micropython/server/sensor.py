@@ -3,6 +3,7 @@ import time
 import json
 import machine
 from _thread import start_new_thread
+from ads1x15 import ADS1115
 
 from util import epoch_time
 
@@ -51,36 +52,108 @@ class CircularBuffer:
         values_pairs = list(zip(self._filled_buffer(), other_buffer._filled_buffer()))
         return sum(a * b for a, b in values_pairs) / len(values_pairs)
 
+class BaseADC:
+    def __init__(self, settings={}, **kwargs):
+        raise NotImplementedError()
 
-class Sensor:
+    def read(self):
+        raise NotImplementedError()
+
+class BuiltInADC(BaseADC):
     bits = 12
-    max_voltage = 1
+    max_voltage = 1 # The ESP ADC reads values between 0-1V despite operating at 3.3V.
     max_value = 2 ** bits
     factor = max_voltage / max_value
-    _average_x_reads = 5
+    def __init__(self, pin, settings={}):
+        self.adc = machine.ADC(machine.Pin(pin))
 
-    def __init__(self, voltage_pin, current_pin, voltage_factor, current_zero, current_factor,
-            nominal_voltage=None, nominal_current=None, buffer_size=10):
+    def read(self):
+        return self.adc.read() * self.factor
+
+i2c = None
+
+class ADS1115ADC(BaseADC):
+    def __init__(self, address, channels, settings={}):
+        global i2c
+        if i2c is None:
+            print("Initializing I2C")
+            i2c_settings = settings["i2c"]
+            i2c = machine.I2C(
+                settings["i2c"].get("id", -1),
+                scl=machine.Pin(i2c_settings["scl"]),
+                sda=machine.Pin(i2c_settings["sda"]),
+                freq=i2c_settings.get("freq", None),
+                )
+
+        # Voltage is max readable voltage (full-scale input voltage range: FSR).
+        # Doesn't let you read above power supply voltage (VCC) of 3.3V or 5V.
+        # So for maximum resolution, pick 1x for 5V and 2x for 3.3V and make sure
+        # input voltages are less than 4.096V and 2.048V respectively
+
+        # gain_index = 0 # 2/3x 6.144V
+        # gain_index = 1 # 1x   4.096V
+        gain_index = 2 # 2x   2.048V
+        # gain_index = 3 # 4x   1.024V
+        # gain_index = 4 # 8x   0.512V
+        # gain_index = 5 # 16x  0.256V
+
+        self.adc = ADS1115(i2c, address, gain_index)
+        self.channels = channels
+
+        # rate_index is an index into how many samples can be taken per second.
+        # More samples per second means faster reads but noisier results.
+        self.rate_index = 0 # 8    samples per second
+        # self.rate_index = 1 # 16   samples per second
+        # self.rate_index = 2 # 32   samples per second
+        # self.rate_index = 3 # 64   samples per second
+        # self.rate_index = 4 # 128  samples per second
+        # self.rate_index = 5 # 250  samples per second
+        # self.rate_index = 6 # 475  samples per second
+        # self.rate_index = 7 # 860  samples per Second
+
+    def read(self):
+        try:
+            raw_value = self.adc.read(self.rate_index, *self.channels)
+            voltage = self.adc.raw_to_v(raw_value)
+            # print("%s,%s" % (raw_value, voltage))
+            return voltage
+        except OSError:
+            return 0 # TODO: update callers to handle None
+
+class Sensor:
+    # _average_x_reads = 5
+
+    def __init__(self, voltage_adc, current_adc, voltage_factor, current_zero, current_factor,
+            nominal_voltage=None, nominal_current=None, buffer_size=10, settings={}):
         self.last_read = None
         self.cumulative_energy = 0
 
+        sensor_type = settings["sensor_type"]
+        types = {
+            "ADS1115": ADS1115ADC,
+            "BuiltInADC": BuiltInADC,
+        }
+        ADC = types.get(sensor_type, None)
+        if ADC is None:
+            raise Exception("Unrecognized sensor type: %s. Pick one of: %s." % (sensor_type, ", ".join(types.keys())))
+
         self.voltage_buffer = CircularBuffer(buffer_size)
-        if voltage_pin is not None:
-            self.voltage_adc = machine.ADC(machine.Pin(voltage_pin))
+        if voltage_adc is not None:
+            self.voltage_adc = ADC(settings=settings, **voltage_adc)
         elif nominal_voltage is not None:
             self.voltage_adc = None
             self.voltage_buffer.push(nominal_voltage)
         else:
-            raise ValueError("Must specify either voltage_pin or nominal_voltage")
+            raise ValueError("Must specify either voltage_adc or nominal_voltage")
 
         self.current_buffer = CircularBuffer(buffer_size)
-        if current_pin is not None:
-            self.current_adc = machine.ADC(machine.Pin(current_pin))
+        if current_adc is not None:
+            self.current_adc = ADC(settings=settings, **current_adc)
         elif nominal_current is not None:
             self.current_adc = None
             self.current_buffer.push(nominal_current)
         else:
-            raise ValueError("Must specify either current_pin or nominal_current")
+            raise ValueError("Must specify either current_adc or nominal_current")
 
         self.voltage_factor = voltage_factor
         self.current_zero = current_zero
@@ -89,7 +162,7 @@ class Sensor:
     def read(self):
         this_read = time.ticks_ms()
         if self.voltage_adc:
-            self.voltage_buffer.push(self.voltage_adc.read() * self.factor * self.voltage_factor)
+            self.voltage_buffer.push(self.voltage_adc.read() * self.voltage_factor)
         if self.current_adc:
             # val = self.current_adc.read()
             # print(val)
@@ -102,21 +175,21 @@ class Sensor:
             # print("")
 
 
-            reads = [None] * self._average_x_reads
-            for i in range(len(reads)):
-                # time.sleep_us(1)
-                reads[i] = self.current_adc.read()
-            value = average_excluding_outliers(reads)
+            # reads = [None] * self._average_x_reads
+            # for i in range(len(reads)):
+            #     # time.sleep_us(1)
+            #     reads[i] = self.current_adc.read()
+            # value = average_excluding_outliers(reads)
 
-            # value = self.current_adc.read()
+            value = self.current_adc.read()
 
             # print("%.3f: %s -> %s" % (((value * self.factor) - self.current_zero) * self.current_factor, sorted(reads), value))
-            measured_current = ((value * self.factor) - self.current_zero) * self.current_factor
-            previous_current = self.current_buffer.latest()
-            if previous_current is not None:
-                difference = measured_current - previous_current
-                if abs(difference) > 0.1:
-                    measured_current = previous_current + difference * 0.1
+            measured_current = (value - self.current_zero) * self.current_factor
+            # previous_current = self.current_buffer.latest()
+            # if previous_current is not None:
+            #     difference = measured_current - previous_current
+            #     if abs(difference) > 0.1:
+            #         measured_current = previous_current + difference * 0.1
             self.current_buffer.push(measured_current)
         if self.last_read is not None:
             self.cumulative_energy += self.voltage_buffer.latest() * self.current_buffer.latest() * time.ticks_diff(this_read, self.last_read) / 1000
@@ -142,7 +215,7 @@ class Sensor:
 
 class SensorLogger:
     _read_every_ms = 10
-    _average_over_reads = 50
+    _average_over_reads = 1
     _log_every_x_reads = 1000
     _rotate_period = 3600
     _max_files = 48
@@ -151,14 +224,14 @@ class SensorLogger:
         "logs": {}
         }
 
-    def __init__(self, log_directory, sensors_config):
+    def __init__(self, log_directory, sensor_config, settings={}):
         self.started = False
         self._stop_now = True
 
         # Setting up sensors:
         self.sensors = {}
-        for name, config in sensors_config.items():
-            self.sensors[name] = Sensor(**config, buffer_size=self._average_over_reads)
+        for name, config in sensor_config.items():
+            self.sensors[name] = Sensor(**config, buffer_size=self._average_over_reads, settings=settings)
 
         self.last_read = time.ticks_ms()
         self.last_rotate = None
@@ -243,7 +316,12 @@ class SensorLogger:
         if time_till_next_work <= 0:
             # Reading:
             self.read_all()
-            # print("%s,%s" % (self.sensors["out"].current_buffer.latest(), self.sensors["in"].current_buffer.latest()))
+            # print("%.4f,%.4f,%.4f,%.4f" % (
+            #     self.sensors["in"].voltage_buffer.latest(),
+            #     self.sensors["out"].current_buffer.latest(),
+            #     self.sensors["in"].voltage_buffer.latest(),
+            #     self.sensors["in"].current_buffer.latest(),
+            #     ))
 
             #Logging:
             self.reads_since_last_log += 1

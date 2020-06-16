@@ -6,6 +6,21 @@
   export let max_minutes_to_show = 10;
   export let websocket = null;
 
+  export let title = "Realtime";
+  export let y_label = "Power [W]";
+  export let series = [
+    {
+      index: 1,
+      label: "In",
+      color: "blue",
+    },
+    {
+      index: 2,
+      label: "Out",
+      color: "orange",
+    },
+  ];
+
   let canvas;
   let chart = null;
   let error = false;
@@ -18,22 +33,23 @@
     let min_time = new Date();
     min_time.setSeconds(0);
 
+    let datasets = [];
+    for (const serie of series){
+      datasets.push(
+        {
+          label: serie.label,
+          data: [],
+          fill: false,
+          borderColor: serie.color,
+          backgroundColor: serie.color,
+        }
+      );
+    }
+
     let chart = new Chart(ctx, {
       type: 'line',
       data: {
-        datasets: [{
-          label: "In",
-          data: [],
-          fill: false,
-          borderColor: "blue",
-          backgroundColor: "blue",
-        }, {
-          label: "Out",
-          data: [],
-          fill: false,
-          borderColor: "orange",
-          backgroundColor: "orange",
-        }]
+        datasets: datasets
       },
       options: {
         tooltips: {
@@ -51,7 +67,7 @@
           yAxes: [{
             scaleLabel: {
               display: true,
-              labelString: "Power [W]"
+              labelString: y_label
             },
             ticks: {
               beginAtZero: true
@@ -67,8 +83,10 @@
   async function processData(data){
     let records = data.split("\n");
 
-    let in_power = [];
-    let out_power = [];
+    let processed_data = {};
+    for (const [i, serie] of series.entries()){
+      processed_data[i] = [];
+    }
 
     for (const record of records){
       let values = record.split(",");
@@ -76,12 +94,13 @@
         let epoch_time = Number(values[0]);
         let time = new Date(epoch_time);
 
-        in_power.push({x: time, y: Number(values[1])});
-        out_power.push({x: time, y: Number(values[2])});
+        for (const [i, serie] of series.entries()){
+          processed_data[i].push({x: time, y: Number(values[serie.index])})
+        }
       }
     }
 
-    return [in_power, out_power];
+    return processed_data;
   }
 
   function addToRecentData(data, new_data){
@@ -94,9 +113,10 @@
     }
   }
 
-  async function updateChart(chart, in_power, out_power){
-    addToRecentData(chart.data.datasets[0].data, in_power);
-    addToRecentData(chart.data.datasets[1].data, out_power);
+  async function updateChart(chart, processed_data){
+    for (const [i, values] of Object.entries(processed_data)){
+      addToRecentData(chart.data.datasets[i].data, values);
+    }
     chart.update(0);
   }
 
@@ -116,8 +136,8 @@
         return; // Chart not ready yet: nothing to do.
       }
 
-      let [in_power, out_power] = await processData(event.data);
-      updateChart(chart, in_power, out_power);
+      let processed_data = await processData(event.data);
+      updateChart(chart, processed_data);
     });
 
     socket.addEventListener("error", function(event){
@@ -181,7 +201,7 @@
 </script>
 
 
-<h2>Realtime</h2>
+<h2>{title}</h2>
 <canvas bind:this={canvas}/>
 <LinearProgress
   indeterminate

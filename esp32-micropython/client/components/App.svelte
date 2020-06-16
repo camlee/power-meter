@@ -119,7 +119,9 @@
         }
         if (document.hidden){
           last_visibility_change_timeout = setTimeout(function() {
-            websocket.close();
+            if (websocket !== null){
+              websocket.close();
+            }
           }, close_websocket_after_tab_changed_for_seconds * 1000);
 
         } else {
@@ -200,23 +202,57 @@
   <FullPageProgress action={loading_action} action_verb={loading_verb} error={loading_error}/>
 {:else}
   <h1>Power Meter</h1>
-    <div class="mdc-layout-grid">
-      <div class="mdc-layout-grid__inner">
-        <div class="mdc-layout-grid__cell--span-6">
-          <Realtime websocket={websocket}/>
-        </div>
-        <div class="mdc-layout-grid__cell--span-6">
-          <PowerUsage progress={getting_data_progress} data={historical_data} error={getting_data_error}/>
-        </div>
+  <div class="mdc-layout-grid">
+    <div class="mdc-layout-grid__inner">
+      <div class="mdc-layout-grid__cell--span-6">
+        <Realtime websocket={websocket}/>
+      </div>
+      <div class="mdc-layout-grid__cell--span-6">
+        <PowerUsage progress={getting_data_progress} data={historical_data} error={getting_data_error}/>
       </div>
     </div>
-    <div class="mdc-layout-grid">
-      <div class="mdc-layout-grid__inner">
-        <div class="mdc-layout-grid__cell--span-6">
-          <DiskUsage getting_stats={getting_stats}/>
-        </div>
+  </div>
+  <div class="mdc-layout-grid">
+    <div class="mdc-layout-grid__inner">
+      <div class="mdc-layout-grid__cell--span-6">
+        <Realtime websocket={websocket} title="Raw Current" y_label="Current [A]"
+          series={[
+            {
+              index: 5,
+              label: "In",
+              color: "blue",
+            },
+            {
+              index: 6,
+              label: "Out",
+              color: "orange",
+            },
+          ]}/>
+      </div>
+      <div class="mdc-layout-grid__cell--span-6">
+        <Realtime websocket={websocket} title="Raw Voltage" y_label="Voltage [V]"
+          series={[
+            {
+              index: 3,
+              label: "In",
+              color: "blue",
+            },
+            {
+              index: 4,
+              label: "Out",
+              color: "orange",
+            },
+          ]}/>
       </div>
     </div>
+  </div>
+  <div class="mdc-layout-grid">
+    <div class="mdc-layout-grid__inner">
+      <div class="mdc-layout-grid__cell--span-6">
+        <DiskUsage getting_stats={getting_stats}/>
+      </div>
+    </div>
+  </div>
 {/if}
 
 </main>
