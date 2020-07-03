@@ -6,6 +6,7 @@ from _thread import start_new_thread
 from ads1x15 import ADS1115
 
 from util import epoch_time
+from logger import log_exception
 
 def average_excluding_outliers(values):
     values.sort()
@@ -51,6 +52,11 @@ class CircularBuffer:
     def multiply_then_average(self, other_buffer):
         values_pairs = list(zip(self._filled_buffer(), other_buffer._filled_buffer()))
         return sum(a * b for a, b in values_pairs) / len(values_pairs)
+
+    def multiply_then_max(self, other_buffer):
+        values_pairs = list(zip(self._filled_buffer(), other_buffer._filled_buffer()))
+        return max(a * b for a, b in values_pairs)
+
 
 class BaseADC:
     def __init__(self, settings={}, **kwargs):
@@ -102,14 +108,14 @@ class ADS1115ADC(BaseADC):
 
         # rate_index is an index into how many samples can be taken per second.
         # More samples per second means faster reads but noisier results.
-        self.rate_index = 0 # 8    samples per second
+        # self.rate_index = 0 # 8    samples per second
         # self.rate_index = 1 # 16   samples per second
         # self.rate_index = 2 # 32   samples per second
         # self.rate_index = 3 # 64   samples per second
         # self.rate_index = 4 # 128  samples per second
         # self.rate_index = 5 # 250  samples per second
         # self.rate_index = 6 # 475  samples per second
-        # self.rate_index = 7 # 860  samples per Second
+        self.rate_index = 7 # 860  samples per Second
 
     def read(self):
         try:
@@ -127,6 +133,7 @@ class Sensor:
             nominal_voltage=None, nominal_current=None, buffer_size=10, settings={}):
         self.last_read = None
         self.cumulative_energy = 0
+        self.available_cumulative_energy = 0
 
         sensor_type = settings["sensor_type"]
         types = {
@@ -192,7 +199,15 @@ class Sensor:
             #         measured_current = previous_current + difference * 0.1
             self.current_buffer.push(measured_current)
         if self.last_read is not None:
-            self.cumulative_energy += self.voltage_buffer.latest() * self.current_buffer.latest() * time.ticks_diff(this_read, self.last_read) / 1000
+            power = self.voltage_buffer.latest() * self.current_buffer.latest()
+            duration = time.ticks_diff(this_read, self.last_read) / 1000
+            available_power = self.available_power
+            # print("power: %.1f, available: %.1f" % (power, available_power))
+            available_power = max(power, available_power * 0.9)  # Assuming only 90% of the available
+                                                                 # can be used. To allow for outlier readings,
+                                                                 # < 100% efficiency, etc...
+            self.cumulative_energy += power * duration
+            self.available_cumulative_energy += self.available_power * duration
         self.last_read = this_read
 
     @property
@@ -207,15 +222,28 @@ class Sensor:
     def power(self):
         return self.voltage_buffer.multiply_then_average(self.current_buffer)
 
+    @property
+    def available_power(self):
+        return self.voltage_buffer.multiply_then_max(self.current_buffer)
+
+    @property
+    def duty(self):
+        return self.power / self.available_power
+
     def pop_energy(self):
         value = self.cumulative_energy
         self.cumulative_energy = 0
         return value
 
+    def pop_available_energy(self):
+        value = self.available_cumulative_energy
+        self.available_cumulative_energy = 0
+        return value
+
 
 class SensorLogger:
     _read_every_ms = 10
-    _average_over_reads = 1
+    _average_over_reads = 20
     _log_every_x_reads = 1000
     _rotate_period = 3600
     _max_files = 48
@@ -281,9 +309,15 @@ class SensorLogger:
             with open("%s/%s" % (self.log_directory, "meta.json"), "r") as f:
                 try:
                     self.meta = json.loads(f.read())
-                except ValueError:
+                except ValueError as e:
+                    err = "Failed to load meta.json: %s" % e
+                    print(err)
+                    log_exception(err)
                     self.meta = self._initial_meta
-        except OSError:
+        except OSError as e:
+            err = "Failed to load meta.json: %s" % e
+            print(err)
+            log_exception(err)
             self.meta = self._initial_meta
 
         try:
@@ -313,14 +347,15 @@ class SensorLogger:
         # Seeing if it's time to do work yet:
         next_read = time.ticks_add(self.last_read, self._read_every_ms)
         time_till_next_work = time.ticks_diff(next_read, time.ticks_ms())
+        # print("time_till_next_work: %s" % time_till_next_work)
         if time_till_next_work <= 0:
             # Reading:
             self.read_all()
             # print("%.4f,%.4f,%.4f,%.4f" % (
             #     self.sensors["in"].voltage_buffer.latest(),
-            #     self.sensors["out"].current_buffer.latest(),
-            #     self.sensors["in"].voltage_buffer.latest(),
+            #     self.sensors["out"].voltage_buffer.latest(),
             #     self.sensors["in"].current_buffer.latest(),
+            #     self.sensors["out"].current_buffer.latest(),
             #     ))
 
             #Logging:
@@ -344,8 +379,10 @@ class SensorLogger:
                 time.sleep_ms(sleep_ms)
 
     def read_all(self):
+        self.last_read = time.ticks_ms()
         for sensor_name, sensor in self.sensors.items():
             sensor.read()
+        # print("Read in %.3f ms" % time.ticks_diff(time.ticks_ms(), self.last_read))
 
     def get_voltage(self, sensor_name):
         return self.sensors[sensor_name].voltage
@@ -354,20 +391,27 @@ class SensorLogger:
         return self.sensors[sensor_name].current
 
     def get_power(self, sensor_name):
-        sensor = self.sensors[sensor_name]
-        return sensor.power
+        return self.sensors[sensor_name].power
+
+    def get_available_power(self, sensor_name):
+        return self.sensors[sensor_name].available_power
+
+    def get_duty(self, sensor_name):
+        return self.sensors[sensor_name].duty
 
     def log_all(self):
         now = time.ticks_ms()
         # print("Logging at %s" % now)
-        line = "%s\n" % ",".join([
+        line = "%s,%.1f,%.1f%.1f" % [
             str(now),
             str(self.sensors["in"].pop_energy()),
             str(self.sensors["out"].pop_energy()),
-            ])
+            str(self.sensors["in"].pop_available_energy()),
+            ]
         self.data_file.write(line)
+        self.data_file.write("\n")
         self.data_file.flush()
-        # print(line, end="")
+        # print(line)
 
     def time_updated(self):
         """

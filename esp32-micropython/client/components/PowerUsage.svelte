@@ -1,82 +1,116 @@
 <script>
   import { onMount } from 'svelte';
+  import Chip, {Set, Icon, Text} from '@smui/chips';
   import LinearProgress from '@smui/linear-progress';
 
   export let data = [];
   export let progress = false;
   export let error = null;
 
+  let time_choice = "Today";
+
   let canvas;
   let chart;
 
   function processData(data, bucketize){
-    var buckets = {};
-    var in_energy = [];
-    var out_energy = [];
+    let buckets = {};
+    let panel_in = [];
+    let panel_usage = [];
+    let surplus = [];
+    let in_bat = [];
+    let out_bat = [];
 
     for (const values of data){
       if (values[0] && values[1] && values[2]) {
-        var time = new Date(values[0]);
+        let time = new Date(values[0]);
 
-        var bucket = bucketize(time);
-        var bucket_value = buckets[bucket];
+        let bucket = bucketize(time);
+        let bucket_value = buckets[bucket];
         if (typeof(bucket_value) == "undefined"){
           // console.log("Initializing bucket " + new Date(bucket));
-          bucket_value = {"in": 0, "out": 0};
+          bucket_value = {"in": 0, "out": 0, "avail": 0};
           buckets[bucket] = bucket_value;
         }
 
         // Converting Watt-Seconds to Watt-Hours (Wh) as we accumulate:
         bucket_value["in"] += values[1] / 60;
         bucket_value["out"] += values[2] / 60;
+        bucket_value["avail"] += values[3] / 60;
       }
     }
 
     for (const key of Object.keys(buckets).sort()){
-      var time = new Date(Number(key));
-      in_energy.push({x: time, y: Math.round(buckets[key]["in"])});
-      out_energy.push({x: time, y: Math.round(-buckets[key]["out"])});
+      let time = new Date(Number(key));
+      surplus.push({x: time, y: Math.round(buckets[key]["avail"] - buckets[key]["in"])}); // Stacked bar chart so only want to show the extra available.
+      let net_bat_val = Math.round(buckets[key]["in"] - buckets[key]["out"]);
+      let in_bat_val = 0;
+      let out_bat_val = 0;
+      if (net_bat_val >= 0){
+        in_bat_val = net_bat_val;
+      } else {
+        out_bat_val = net_bat_val;
+      }
+      in_bat.push({x: time, y: in_bat_val});
+      out_bat.push({x: time, y: out_bat_val});
+      panel_in.push({x: time, y: Math.round(buckets[key]["in"]) - in_bat_val});
+      panel_usage.push({x: time, y: Math.round(-buckets[key]["out"]) - out_bat_val});
     }
 
-    return [in_energy, out_energy];
+    return [in_bat, out_bat, panel_in, panel_usage, surplus];
   }
 
   function bucketize_15_min(value){
-    var rounded_minutes = Math.floor(value.getMinutes() / 15) * 15;
-    var bucket_date = new Date(value)
+    let rounded_minutes = Math.floor(value.getMinutes() / 15) * 15;
+    let bucket_date = new Date(value)
     bucket_date.setMinutes(rounded_minutes);
     bucket_date.setSeconds(0);
     bucket_date.setMilliseconds(0);
     return bucket_date.getTime();
   }
 
-  function createChart(ctx, in_energy, out_energy){
-    var min_time = new Date();
-    min_time.setHours(0);
-    min_time.setMinutes(0);
-    min_time.setSeconds(0);
-    min_time.setMilliseconds(0);
+  function createChart(ctx){
+    const [min_time, max_time] = calculateDateRange(time_choice);
 
-    var max_time = new Date(min_time);
-    max_time.setDate(min_time.getDate() + 1);
-
-
-    var chart = new Chart(ctx, {
+    let chart = new Chart(ctx, {
       type: 'bar',
       data: {
-        datasets: [{
-          label: "In",
-          data: [],
-          fill: false,
-          borderColor: "blue",
-          backgroundColor: "blue",
-        }, {
-          label: "Out",
-          data: [],
-          fill: false,
-          borderColor: "orange",
-          backgroundColor: "orange",
-        }]
+        datasets: [
+          {
+            label: "Battery Charging",
+            data: [],
+            fill: false,
+            borderColor: "lawngreen",
+            backgroundColor: "lawngreen",
+          },
+          {
+            label: "Battery Usage",
+            data: [],
+            fill: false,
+            borderColor: "orangered",
+            backgroundColor: "orangered",
+          },
+          {
+            label: "Panel In",
+            data: [],
+            fill: false,
+            borderColor: "blue",
+            backgroundColor: "blue",
+          },
+          {
+            label: "Panel Usage",
+            data: [],
+            fill: false,
+            borderColor: "orange",
+            backgroundColor: "orange",
+          },
+          {
+            label: "Panel Surplus",
+            data: [],
+            fill: false,
+            borderColor: "deepskyblue",
+            backgroundColor: "deepskyblue",
+          },
+        ]
       },
       options: {
         scales: {
@@ -115,8 +149,8 @@
 
   function updateDataInPlace(existing_data, new_data){
     for (const new_value of new_data){
-      var found = false;
-      for (var existing_value of existing_data){
+      let found = false;
+      for (let existing_value of existing_data){
         if (existing_value.x.getTime() == new_value.x.getTime()){
           found = true;
           existing_value.y = new_value.y;
@@ -129,16 +163,83 @@
     }
   }
 
-  function updateChart(data){
+  function updateChartData(data){
     if (chart !== undefined && data.length > 0){
-      let [in_energy, out_energy] = processData(data, bucketize_15_min);
-      updateDataInPlace(chart.data.datasets[0].data, in_energy);
-      updateDataInPlace(chart.data.datasets[1].data, out_energy);
+      let datasets_data = processData(data, bucketize_15_min);
+      for (const [i, dataset_data] of datasets_data.entries()){
+        updateDataInPlace(chart.data.datasets[i].data, dataset_data);
+      }
       chart.update();
     }
   }
 
-  $: updateChart(data); // Update the chart anytime data changes.
+
+  function calculateDateRange(time_choice){
+    let min_time;
+    let max_time;
+
+    switch (time_choice){
+      case "Today":
+        min_time = new Date();
+        min_time.setHours(0);
+        min_time.setMinutes(0);
+        min_time.setSeconds(0);
+        min_time.setMilliseconds(0);
+
+        max_time = new Date(min_time);
+        max_time.setDate(min_time.getDate() + 1);
+        return [min_time, max_time];
+
+      case "Yesterday":
+        min_time = new Date();
+        min_time.setHours(0);
+        min_time.setMinutes(0);
+        min_time.setSeconds(0);
+        min_time.setMilliseconds(0);
+        min_time.setDate(min_time.getDate() - 1);
+
+        max_time = new Date(min_time);
+        max_time.setDate(min_time.getDate() + 1);
+        return [min_time, max_time];
+
+      case "Last 3 days":
+        min_time = new Date();
+        min_time.setHours(0);
+        min_time.setMinutes(0);
+        min_time.setSeconds(0);
+        min_time.setMilliseconds(0);
+        min_time.setDate(min_time.getDate() - 2);
+
+        max_time = new Date(min_time);
+        max_time.setDate(min_time.getDate() + 3);
+        return [min_time, max_time];
+
+      case "Last 7 days":
+        min_time = new Date();
+        min_time.setHours(0);
+        min_time.setMinutes(0);
+        min_time.setSeconds(0);
+        min_time.setMilliseconds(0);
+        min_time.setDate(min_time.getDate() - 6);
+
+        max_time = new Date(min_time);
+        max_time.setDate(min_time.getDate() + 7);
+        return [min_time, max_time];
+
+    }
+  }
+
+  function updateChartDateRange(time_choice){
+    if (chart !== undefined){
+      let ticks = chart.options.scales.xAxes[0].ticks;
+      [ticks.min, ticks.max] = calculateDateRange(time_choice);
+
+      chart.update();
+    }
+  }
+
+  $: updateChartData(data); // Update the chart anytime data changes.
+  $: updateChartDateRange(time_choice) // Update the axis date range anytime the selection changes.
 
   async function main(){
     chart = createChart(canvas.getContext('2d'));
@@ -147,8 +248,10 @@
   onMount(main);
 
 </script>
-
-<h2>Today's Power Usage</h2>
+<h2>{time_choice}{time_choice.endsWith("s") ? "'" : "'s"} Power Usage</h2>
+<Set chips={['Last 7 days', 'Last 3 days', 'Yesterday', 'Today']} let:chip choice bind:selected={time_choice}>
+  <Chip tabindex="0">{chip}</Chip>
+</Set>
 <canvas bind:this={canvas}/>
 
 <LinearProgress

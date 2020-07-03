@@ -13,6 +13,7 @@ from microWebSrv import MicroWebSrv
 
 from sensor import SensorLogger
 from util import set_time_from_epoch, epoch_time, file_size
+from logger import log_exception
 
 reboot_now = False
 ssid = ""
@@ -44,7 +45,7 @@ except OSError as e:
 
 # Setting up the display:
 i2c = machine.I2C(scl=machine.Pin(4), sda=machine.Pin(5))
-disp = ssd1306.SSD1306_I2C(128, 64, i2c)
+disp = ssd1306.SSD1306_I2C(128, 64, i2c, flip_horiz=True, flip_vert=True)
 
 disp.fill(0)
 disp.text("Starting...", 0, 0)
@@ -187,17 +188,17 @@ def upload(httpClient, httpResponse):
 
 open_web_sockets = set()
 
-def ws_accept_callback(webSocket, httpClient) :
+def ws_accept_callback(ws, httpClient) :
     # print("Accepted web socket")
     try:
-        open_web_sockets.add(webSocket)
-        webSocket.RecvTextCallback = ws_receive_text_callback
-        webSocket.RecvBinaryCallback = ws_receive_binary_callback
-        webSocket.ClosedCallback = ws_close_callback
+        open_web_sockets.add(ws)
+        ws.RecvTextCallback = ws_receive_text_callback
+        ws.RecvBinaryCallback = ws_receive_binary_callback
+        ws.ClosedCallback = ws_close_callback
     except Exception as e:
-        print(e)
+        print("Unhandled exception in ws_accept_callback: %s" % e)
 
-def ws_receive_text_callback(webSocket, msg):
+def ws_receive_text_callback(ws, msg):
     try:
         key, value = msg.split("=")
         client_time = int(value)
@@ -207,17 +208,18 @@ def ws_receive_text_callback(webSocket, msg):
         set_time_from_epoch(client_time)
         sense.time_updated()
 
-def ws_receive_binary_callback(webSocket, data):
+def ws_receive_binary_callback(ws, data):
     print("Received binary from web socket: %s" % data)
 
-def ws_close_callback(webSocket):
+def ws_close_callback(ws):
     # print("Web socket closed")
-    open_web_sockets.remove(webSocket)
+    open_web_sockets.remove(ws)
 
 mws = MicroWebSrv(port=80, webPath="static")
 mws.LetCacheStaticContentLevel = 0 # Disable cache headers for now as they aren't fully functional
 mws.StaticCacheByPath = [
     ("static/data/", 0),
+    ("static/index.html", 0),
     ("static/", 2),
 ]
 mws.StaticHeaders = {"Access-Control-Allow-Origin": "*"}
@@ -246,39 +248,48 @@ disp.show()
 
 last_main = time.ticks_ms()
 while True:
-    time.sleep_ms(1)
-    sense.refresh()
+    try:
+        time.sleep_ms(1)
+        sense.refresh()
 
-    if time.ticks_diff(time.ticks_ms(), last_main) >= 1000:
-        last_main = time.ticks_ms()
+        if time.ticks_diff(time.ticks_ms(), last_main) >= 1000:
+            last_main = time.ticks_ms()
 
-        check_for_reboot()
+            check_for_reboot()
 
-        start_time = time.ticks_ms()
-        disp.fill_rect(0, 20, 128, 128, 0)
-        disp.text("In:  %.2fA %.0fW" % (sense.get_current("in") or 0, sense.get_power("in") or 0), 0, 22)
-        disp.text("Out: %.2fA %.0fW" % (sense.get_current("out") or 0, sense.get_power("out") or 0), 0, 32)
-        disp.text("%02d:%02d:%02d UTC %3s" % (time.localtime()[3:6] + (len(open_web_sockets),)), 0, 55)
-        disp.show()
-
-        ws_text = ",".join([
-            str(epoch_time() * 1000),
-            str(sense.get_power("in")),
-            str(sense.get_power("out")),
-            str(sense.get_voltage("in")),
-            str(sense.get_voltage("out")),
-            str(sense.get_current("in")),
-            str(sense.get_current("out")),
-            ])
-        print(ws_text)
-        for ws in open_web_sockets:
             start_time = time.ticks_ms()
-            ws.SendText(ws_text)
+            disp.fill_rect(0, 20, 128, 128, 0)
+            disp.text("In:  %.2fA %.0fW" % (sense.get_current("in") or 0, sense.get_power("in") or 0), 0, 22)
+            disp.text("Out: %.2fA %.0fW" % (sense.get_current("out") or 0, sense.get_power("out") or 0), 0, 32)
+            disp.text("%02d:%02d:%02d UTC %3s" % (time.localtime()[3:6] + (len(open_web_sockets),)), 0, 55)
+            disp.show()
 
-        gc.collect()
+            ws_text = ",".join([
+                str(epoch_time() * 1000),
+                str(sense.get_power("in")),
+                str(sense.get_power("out")),
+                str(sense.get_voltage("in")),
+                str(sense.get_voltage("out")),
+                str(sense.get_current("in")),
+                str(sense.get_current("out")),
+                str(sense.get_available_power("in")),
+                ])
+            # print(ws_text)
+            for ws in open_web_sockets:
+                start_time = time.ticks_ms()
+                ws.SendText(ws_text)
 
-#     clients = len(wlan.status("stations"))
+            gc.collect()
 
-#     disp.fill_rect(0, 40, 128, 128, 0)
-#     disp.text("Connected: %s" % clients, 0, 40)
-#     disp.show()
+    #     clients = len(wlan.status("stations"))
+
+    #     disp.fill_rect(0, 40, 128, 128, 0)
+    #     disp.text("Connected: %s" % clients, 0, 40)
+    #     disp.show()
+    except Exception as e:
+        err = "Unhandled exception in main loop: %s" % e
+        print(err)
+        log_exception(err)
+        raise
+
+

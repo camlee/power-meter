@@ -205,7 +205,24 @@
   <div class="mdc-layout-grid">
     <div class="mdc-layout-grid__inner">
       <div class="mdc-layout-grid__cell--span-6">
-        <Realtime websocket={websocket}/>
+        <Realtime websocket={websocket} title="Realtime" y_label="Power [W]"
+          series={[
+            {
+              index: 1,
+              label: "Actual In",
+              color: "blue",
+            },
+            {
+              index: 2,
+              label: "Total Usage",
+              color: "orange",
+            },
+            {
+              index: 7,
+              label: "Total In",
+              color: "deepskyblue",
+            },
+            ]}/>
       </div>
       <div class="mdc-layout-grid__cell--span-6">
         <PowerUsage progress={getting_data_progress} data={historical_data} error={getting_data_error}/>
