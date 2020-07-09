@@ -8,5 +8,5 @@ except Exception:
     pass # Directory already exists
 
 def log_exception(msg):
-    with open("%s/%s" % (log_directory, "exception.log"), "a") as f:
+    with open("%s/%s" % (log_directory, "exception.txt"), "a") as f:
         f.write(msg)

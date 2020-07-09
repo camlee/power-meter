@@ -1,33 +1,39 @@
-export function processLogResponse(response_text, offset){
+export function processLogResponse(response_text, offset, min_time){
   let data = [];
   const records = response_text.split("\n");
   for (const record of records){
     let values = record.split(",");
+    if (values.length < 3){
+      continue;
+    }
     values[0] = Number(values[0]) + offset;
     values[1] = Number(values[1]);
     values[2] = Number(values[2]);
-    data.push(values);
+    if (min_time === undefined || min_time === null || values[0] > min_time){
+      data.push(values);
+    }
   }
   return data;
 }
 
 export function processDataMeta(meta){
   let logs = [];
-  for (const [log_number, log_meta] of Object.entries(meta["logs"])){
+  for (const record of meta.split("\n")){
+    let values = record.split(",");
+    if (record.length < 4){
+      continue;
+    }
+    let start_time_offset = Number(values[3]);
+    if (isNaN(start_time_offset)){
+      start_time_offset = null;
+    }
     logs.push({
-      number: log_number,
-      start_time_offset: log_meta.start_time_offset,
-      start_time: log_meta.start_time,
+      number: Number(values[0]),
+      active: Boolean(Number(values[1])),
+      start_time: Number(values[2]),
+      start_time_offset: start_time_offset,
     })
   }
-
-  // Skip data that doesn't have complete time information:
-  let original_log_file_count = logs.length;
-  logs = logs.filter(function(a){
-    return !(a.start_time_offset === null);
-  });
-  console.log(`Number of log files: total: ${original_log_file_count} valid: ${logs.length}`);
-
   return logs;
 }
 

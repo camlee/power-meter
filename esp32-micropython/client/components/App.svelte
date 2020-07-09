@@ -52,14 +52,32 @@
     // Number between 0 and 1 to indicate progress.
   let getting_data_error = null;
 
+  let fetched_logs = [];
+
   async function* getData(){
     getting_data_progress = null;
-    let response = await fetch(API_URL + '/data/meta.json');
+    let response = await fetch(API_URL + '/data/meta.csv');
     if (!response.ok){
       throw new Error(response.statusText);
     }
-    const meta = await response.json();
+    const meta = await response.text();
     let logs = processDataMeta(meta);
+    let original_log_file_count = logs.length;
+
+    // Skip data that doesn't have complete time information:
+    logs = logs.filter(function(a){
+      return !(a.start_time_offset === null);
+    });
+
+    let valid_log_file_count = logs.length;
+
+    // Skip data that we already have:
+    logs = logs.filter(function(a){
+      return !fetched_logs.some(function(b){
+        return b.active == false && a.number == b.number && a.start_time_offset == b.start_time_offset && a.start_time == b.start_time;
+      })
+    });
+    console.log(`Number of log files: total: ${original_log_file_count} valid: ${valid_log_file_count} new: ${logs.length}`);
 
     // Load the newest data first as that's most likely to be viewed first:
     logs.sort(function(a, b) {
@@ -82,43 +100,92 @@
           if (new_progress > getting_data_progress){
             getting_data_progress = Math.round(new_progress * 100) / 100;
               // Rounding seems to fix a really weird problem where ther progress bar jumps
-              // around slightly when during chart updates. It also smoothes things out a
+              // around slightly when doing chart updates. It also smoothes things out a
               // bit and makes it look better overall.
           }
         });
 
+      // Seeing if we have downloaded part of this log file before and getting the time where we left off:
+      let previous_logs = fetched_logs.filter(function(a){
+        return a.active && a.number == log.number && a.start_time == log.start_time && a.start_time_offset == log.start_time_offset;
+      });
+      let last_processed_time = null;
+      if (previous_logs.length > 0){
+        let previous_log = previous_logs[previous_logs.length-1];
+        last_processed_time = previous_log.last_processed_time;
+      }
+
       // const response_text = await response.text();
-      yield await processLogResponse(response_text, log.start_time_offset);
+      let data = await processLogResponse(response_text, log.start_time_offset, last_processed_time);
+      if (data.length > 0){
+        log.last_processed_time = data[data.length-1][0];
+        fetched_logs.push(log);
+      }
+      console.log(`New Data points from ${log.number} since ${last_processed_time}: ${data.length}`);
+      yield data;
     }
   }
 
+  let historical_fetcher = null;
+  let historical_fetcher_setup = false;
+  let pull_historical_data_period_seconds = 300;
+
+  function setup_historical_fetcher(){
+    if (historical_fetcher_setup === false){
+      historical_fetcher_setup = true;
+      document.addEventListener("visibilitychange", function (){
+        if (historical_fetcher != null){
+          clearInterval(historical_fetcher);
+          historical_fetcher = null;
+        }
+        if (!document.hidden){
+          setup_historical_fetcher();
+        }
+      }, false);
+    }
+
+    get_historical_data();
+    historical_fetcher = setInterval(function() {
+      get_historical_data();
+    }, pull_historical_data_period_seconds * 1000);
+  }
+
+  let getting_data = false;
+
   async function get_historical_data(){
+    if (getting_data){
+      console.log("Still getting data from last time.");
+      return;
+    }
+    getting_data = true;
     try{
       for await (const data of getData()) {
         historical_data = [...historical_data, ...data];
       }
+      getting_data_error = null;
     } catch(e){
       getting_data_error = e.message;
       console.log(`Error getting data: ${getting_data_error}`);
     }
+    getting_data = false;
   }
 
   let websocket = null;
   let websocket_retry_period = 1;
   let close_websocket_after_tab_changed_for_seconds = 50;
-  let visibilitychange_setup = false;
-  let last_visibility_change_timeout = null;
+  let websocket_visibilitychange_setup = false;
+  let websocket_last_visibility_change_timeout = null;
 
   function setup_realtime_websocket(){
-    if (visibilitychange_setup === false) {
-      visibilitychange_setup = true;
+    if (websocket_visibilitychange_setup === false) {
+      websocket_visibilitychange_setup = true;
       document.addEventListener("visibilitychange", function (){
-        if (last_visibility_change_timeout != null){
-          clearTimeout(last_visibility_change_timeout);
-          last_visibility_change_timeout = null;
+        if (websocket_last_visibility_change_timeout != null){
+          clearTimeout(websocket_last_visibility_change_timeout);
+          websocket_last_visibility_change_timeout = null;
         }
         if (document.hidden){
-          last_visibility_change_timeout = setTimeout(function() {
+          websocket_last_visibility_change_timeout = setTimeout(function() {
             if (websocket !== null){
               websocket.close();
             }
@@ -188,7 +255,7 @@
     }
     loading = false;
     get_stats();
-    get_historical_data();
+    setup_historical_fetcher();
     setup_realtime_websocket();
 
   }
@@ -202,9 +269,18 @@
   <FullPageProgress action={loading_action} action_verb={loading_verb} error={loading_error}/>
 {:else}
   <h1>Power Meter</h1>
+
   <div class="mdc-layout-grid">
     <div class="mdc-layout-grid__inner">
-      <div class="mdc-layout-grid__cell--span-6">
+      <div class="mdc-layout-grid__cell--span-12">
+        <PowerUsage progress={getting_data_progress} data={historical_data} error={getting_data_error} refresh_data={get_historical_data}/>
+      </div>
+    </div>
+  </div>
+
+  <div class="mdc-layout-grid">
+    <div class="mdc-layout-grid__inner">
+      <div class="mdc-layout-grid__cell--span-12">
         <Realtime websocket={websocket} title="Realtime" y_label="Power [W]"
           series={[
             {
@@ -224,11 +300,9 @@
             },
             ]}/>
       </div>
-      <div class="mdc-layout-grid__cell--span-6">
-        <PowerUsage progress={getting_data_progress} data={historical_data} error={getting_data_error}/>
-      </div>
     </div>
   </div>
+
   <div class="mdc-layout-grid">
     <div class="mdc-layout-grid__inner">
       <div class="mdc-layout-grid__cell--span-6">

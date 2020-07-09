@@ -220,6 +220,7 @@ mws.LetCacheStaticContentLevel = 0 # Disable cache headers for now as they aren'
 mws.StaticCacheByPath = [
     ("static/data/", 0),
     ("static/index.html", 0),
+    ("static/logs/", 0),
     ("static/", 2),
 ]
 mws.StaticHeaders = {"Access-Control-Allow-Origin": "*"}
@@ -286,8 +287,9 @@ while True:
     #     disp.fill_rect(0, 40, 128, 128, 0)
     #     disp.text("Connected: %s" % clients, 0, 40)
     #     disp.show()
+
     except Exception as e:
-        err = "Unhandled exception in main loop: %s" % e
+        err = "Unhandled exception in main loop: %s\n" % e
         print(err)
         log_exception(err)
         raise

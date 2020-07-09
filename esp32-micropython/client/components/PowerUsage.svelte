@@ -2,15 +2,22 @@
   import { onMount } from 'svelte';
   import Chip, {Set, Icon, Text} from '@smui/chips';
   import LinearProgress from '@smui/linear-progress';
+  import IconButton from '@smui/icon-button';
+  import Refresh from "svelte-material-icons/Refresh.svelte";
 
   export let data = [];
   export let progress = false;
   export let error = null;
+  export let refresh_data = function(){};
 
   let time_choice = "Today";
 
   let canvas;
   let chart;
+
+  function round_for_graph(value){
+    return Math.round(value * 10) / 10;
+  }
 
   function processData(data, bucketize){
     let buckets = {};
@@ -41,8 +48,8 @@
 
     for (const key of Object.keys(buckets).sort()){
       let time = new Date(Number(key));
-      surplus.push({x: time, y: Math.round(buckets[key]["avail"] - buckets[key]["in"])}); // Stacked bar chart so only want to show the extra available.
-      let net_bat_val = Math.round(buckets[key]["in"] - buckets[key]["out"]);
+      surplus.push({x: time, y: round_for_graph(buckets[key]["avail"] - buckets[key]["in"])}); // Stacked bar chart so only want to show the extra available.
+      let net_bat_val = round_for_graph(buckets[key]["in"] - buckets[key]["out"]);
       let in_bat_val = 0;
       let out_bat_val = 0;
       if (net_bat_val >= 0){
@@ -52,8 +59,8 @@
       }
       in_bat.push({x: time, y: in_bat_val});
       out_bat.push({x: time, y: out_bat_val});
-      panel_in.push({x: time, y: Math.round(buckets[key]["in"]) - in_bat_val});
-      panel_usage.push({x: time, y: Math.round(-buckets[key]["out"]) - out_bat_val});
+      panel_in.push({x: time, y: round_for_graph(buckets[key]["in"]) - in_bat_val});
+      panel_usage.push({x: time, y: round_for_graph(-buckets[key]["out"]) - out_bat_val});
     }
 
     return [in_bat, out_bat, panel_in, panel_usage, surplus];
@@ -226,6 +233,16 @@
         max_time.setDate(min_time.getDate() + 7);
         return [min_time, max_time];
 
+      default:
+        min_time = new Date();
+        min_time.setHours(0);
+        min_time.setMinutes(0);
+        min_time.setSeconds(0);
+        min_time.setMilliseconds(0);
+
+        max_time = new Date(min_time);
+        max_time.setDate(min_time.getDate() + 1);
+        return [min_time, max_time];
     }
   }
 
@@ -248,10 +265,14 @@
   onMount(main);
 
 </script>
-<h2>{time_choice}{time_choice.endsWith("s") ? "'" : "'s"} Power Usage</h2>
-<Set chips={['Last 7 days', 'Last 3 days', 'Yesterday', 'Today']} let:chip choice bind:selected={time_choice}>
-  <Chip tabindex="0">{chip}</Chip>
-</Set>
+<h2>{(time_choice || "Today")}{(time_choice || "Today").endsWith("s") ? "'" : "'s"} Power Usage</h2>
+<div style="display:flex;">
+  <Set chips={['Last 7 days', 'Last 3 days', 'Yesterday', 'Today']} let:chip choice bind:selected={time_choice}>
+    <Chip tabindex="0">{chip}</Chip>
+  </Set>
+  <!-- <IconButton class="material-icons" on:click={refresh_data}>refresh</IconButton> -->
+  <IconButton style="margin-left:auto" on:click={refresh_data()}><Refresh/></IconButton>
+</div>
 <canvas bind:this={canvas}/>
 
 <LinearProgress

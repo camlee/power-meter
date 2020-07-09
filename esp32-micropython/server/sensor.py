@@ -246,11 +246,7 @@ class SensorLogger:
     _average_over_reads = 20
     _log_every_x_reads = 1000
     _rotate_period = 3600
-    _max_files = 48
-    _initial_meta = {
-        "next_log": 0,
-        "logs": {}
-        }
+    _max_files = 170
 
     def __init__(self, log_directory, sensor_config, settings={}):
         self.started = False
@@ -267,6 +263,8 @@ class SensorLogger:
         # Setting up logging:
         self.reads_since_last_log = 0
         self.log_directory = log_directory.rstrip("/")
+        self.meta_file = "%s/%s" % (self.log_directory, "meta.csv")
+        self.tmp_meta = "%s/%s" % (self.log_directory, "tmp_meta.csv")
         self.start_time_offset = None
         self.our_logs_without_start_time = []
         self.log_index = None
@@ -284,51 +282,75 @@ class SensorLogger:
         if self.data_file:
             self.data_file.close()
 
-        self.log_index = self.meta["next_log"]
         if self.log_index >= self._max_files:
             self.log_index = 0
-        self.meta["next_log"] = self.log_index + 1
+        else:
+            self.log_index += 1
 
         self.data_file_path = "%s/%s.csv" % (self.log_directory, self.log_index)
-        self.our_log_meta = {}
-        if self.start_time_offset is None:
-            self.our_logs_without_start_time.append(self.our_log_meta)
-        self.meta["logs"][str(self.log_index)] = self.our_log_meta
-        self.our_log_meta.update({
-            "start_time": time.ticks_ms(),
-            "start_time_offset": self.start_time_offset,
-            })
-        self.save_meta()
 
+        with open(self.meta_file, "r") as f:
+            with open(self.tmp_meta, "w") as f2:
+                # print("rotate():")
+                str_log_index = str(self.log_index)
+                updated_line = False
+                for line in f.readlines():
+                    # print("<%s>" % line.strip())
+                    index, active, start_time, start_time_offset = line.strip().split(",")
+                    if index == str_log_index:
+                        updated_line = True
+                        active = "1"
+                        start_time = str(time.ticks_ms())
+                        start_time_offset = str(self.start_time_offset)
+                    else:
+                        active = "0"
+                    line2 = ",".join([index, active, start_time, start_time_offset])
+                    # print("[%s]" % line2)
+                    f2.write(line2)
+                    f2.write("\n")
+                if updated_line is False:
+                    line2 = ",".join([str_log_index, "1", str(time.ticks_ms()), str(self.start_time_offset)])
+                    # print("[%s]" % line2)
+                    f2.write(line2)
+                    f2.write("\n")
+
+        os.rename(self.tmp_meta, self.meta_file)
         # print("rotated to %s" % self.log_index)
 
         self.data_file = open(self.data_file_path, "w")
 
     def load_meta(self):
         try:
-            with open("%s/%s" % (self.log_directory, "meta.json"), "r") as f:
-                try:
-                    self.meta = json.loads(f.read())
-                except ValueError as e:
-                    err = "Failed to load meta.json: %s" % e
-                    print(err)
-                    log_exception(err)
-                    self.meta = self._initial_meta
+            with open(self.meta_file, "r") as f:
+                with open(self.tmp_meta, "w") as f2:
+                    # print("load_meta():")
+                    # Looping over all entries in meta.csv.
+                    # For each, setting start_time_offset from None to Unkn.
+                    # Also, extracting the current index.
+                    for line in f.readlines():
+                        # print("<%s>" % line.strip())
+                        index, active, start_time, start_time_offset = line.strip().split(",")
+                        if active == "1":
+                            self.log_index = int(index)
+                            active = "0"
+                        if start_time_offset == "None":
+                            start_time_offset = "Unknown"
+                        line2 = ",".join([index, active, start_time, start_time_offset])
+                        # print("[%s]" % line2)
+                        f2.write(line2)
+                        f2.write("\n")
+
+            os.rename(self.tmp_meta, self.meta_file)
         except OSError as e:
-            err = "Failed to load meta.json: %s" % e
+            err = "Failed to load meta.csv: %s\n" % e
             print(err)
             log_exception(err)
-            self.meta = self._initial_meta
+            # Initializing an empty file:
+            with open(self.meta_file, "w") as f:
+                pass
 
-        try:
-            self.meta["next_log"]
-            self.meta["logs"].get
-        except (KeyError, AttributeError):
-            self.meta = self._initial_meta
-
-    def save_meta(self):
-        with open("%s/%s" % (self.log_directory, "meta.json"), "w") as f:
-            f.write(json.dumps(self.meta))
+        if self.log_index is None:
+            self.log_index = self._max_files
 
     def start(self, threaded=False):
         if not self.started:
@@ -349,6 +371,11 @@ class SensorLogger:
         time_till_next_work = time.ticks_diff(next_read, time.ticks_ms())
         # print("time_till_next_work: %s" % time_till_next_work)
         if time_till_next_work <= 0:
+
+            # Log rotation:
+            if self.last_rotate is None or (time.ticks_diff(time.ticks_ms(), self.last_rotate) / 1000) > self._rotate_period:
+                self.rotate()
+
             # Reading:
             self.read_all()
             # print("%.4f,%.4f,%.4f,%.4f" % (
@@ -364,9 +391,6 @@ class SensorLogger:
                 self.log_all()
                 self.reads_since_last_log = 0
 
-            # Log rotation:
-            if self.last_rotate is None or (time.ticks_diff(time.ticks_ms(), self.last_rotate) / 1000) > self._rotate_period:
-                self.rotate()
         return time_till_next_work
 
     def run_forever(self):
@@ -402,12 +426,12 @@ class SensorLogger:
     def log_all(self):
         now = time.ticks_ms()
         # print("Logging at %s" % now)
-        line = "%s,%.1f,%.1f%.1f" % [
-            str(now),
-            str(self.sensors["in"].pop_energy()),
-            str(self.sensors["out"].pop_energy()),
-            str(self.sensors["in"].pop_available_energy()),
-            ]
+        line = "%s,%.1f,%.1f,%.1f" % (
+            now,
+            self.sensors["in"].pop_energy(),
+            self.sensors["out"].pop_energy(),
+            self.sensors["in"].pop_available_energy(),
+            )
         self.data_file.write(line)
         self.data_file.write("\n")
         self.data_file.flush()
@@ -424,4 +448,20 @@ class SensorLogger:
         for log in self.our_logs_without_start_time:
             log["start_time_offset"] = self.start_time_offset
         self.our_logs_without_start_time = []
-        self.save_meta()
+
+        with open(self.meta_file, "r") as f:
+            with open(self.tmp_meta, "w") as f2:
+                # print("time_updated():")
+                for line in f.readlines():
+                    # print("<%s>" % line.strip())
+                    index, active, start_time, start_time_offset = line.strip().split(",")
+                    if start_time_offset == "None":
+                        start_time_offset = str(self.start_time_offset)
+
+
+                    line2 = ",".join([index, active, start_time, start_time_offset])
+                    # print("[%s]" % line2)
+                    f2.write(line2)
+                    f2.write("\n")
+
+        os.rename(self.tmp_meta, self.meta_file)
