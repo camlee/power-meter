@@ -295,7 +295,7 @@
             },
             {
               index: 7,
-              label: "Total In",
+              label: "Panel Producing",
               color: "deepskyblue",
             },
             ]}/>

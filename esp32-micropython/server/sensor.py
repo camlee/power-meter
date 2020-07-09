@@ -201,13 +201,13 @@ class Sensor:
         if self.last_read is not None:
             power = self.voltage_buffer.latest() * self.current_buffer.latest()
             duration = time.ticks_diff(this_read, self.last_read) / 1000
-            available_power = self.available_power
+            available_power = self.voltage_buffer.multiply_then_max(self.current_buffer)
             # print("power: %.1f, available: %.1f" % (power, available_power))
             available_power = max(power, available_power * 0.9)  # Assuming only 90% of the available
                                                                  # can be used. To allow for outlier readings,
                                                                  # < 100% efficiency, etc...
             self.cumulative_energy += power * duration
-            self.available_cumulative_energy += self.available_power * duration
+            self.available_cumulative_energy += available_power * duration
         self.last_read = this_read
 
     @property
@@ -224,7 +224,10 @@ class Sensor:
 
     @property
     def available_power(self):
-        return self.voltage_buffer.multiply_then_max(self.current_buffer)
+        available_power = self.voltage_buffer.multiply_then_max(self.current_buffer)
+        return max(self.power, available_power * 0.9) # Assuming only 90% of the available
+                                                 # can be used. To allow for outlier readings,
+                                                 # < 100% efficiency, etc...
 
     @property
     def duty(self):

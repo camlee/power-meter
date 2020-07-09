@@ -35,32 +35,41 @@
         let bucket_value = buckets[bucket];
         if (typeof(bucket_value) == "undefined"){
           // console.log("Initializing bucket " + new Date(bucket));
-          bucket_value = {"in": 0, "out": 0, "avail": 0};
+          bucket_value = {"in_bat": 0, "out_bat": 0, "panel_in": 0, "panel_usage": 0, "surplus": 0};
           buckets[bucket] = bucket_value;
         }
 
         // Converting Watt-Seconds to Watt-Hours (Wh) as we accumulate:
-        bucket_value["in"] += values[1] / 60;
-        bucket_value["out"] += values[2] / 60;
-        bucket_value["avail"] += values[3] / 60;
+        // Also converting energy over 15 minutes to average power: TODO: this needs to be made dynamic when the resolution can be changed.
+        let energy_in = values[1] / 3600 * 4;
+        let energy_out = values[2] / 3600 * 4;
+        let energy_avail = values[3] / 3600 * 4;
+
+        // Calculating each series, keeping in mind it's a stacked bar chart:
+        bucket_value["surplus"] += (energy_avail - energy_in);
+        let net_bat_val =  energy_in - energy_out;
+        let in_bat_val = 0;
+        let out_bat_val = 0;
+        if (net_bat_val >= 0){
+          in_bat_val = net_bat_val;
+        } else {
+          out_bat_val = net_bat_val;
+        }
+        bucket_value["in_bat"] += in_bat_val;
+        bucket_value["out_bat"] += out_bat_val;
+        bucket_value["panel_in"] += (energy_in - in_bat_val);
+        bucket_value["panel_usage"] += (-energy_out - out_bat_val)
+
       }
     }
 
     for (const key of Object.keys(buckets).sort()){
       let time = new Date(Number(key));
-      surplus.push({x: time, y: round_for_graph(buckets[key]["avail"] - buckets[key]["in"])}); // Stacked bar chart so only want to show the extra available.
-      let net_bat_val = round_for_graph(buckets[key]["in"] - buckets[key]["out"]);
-      let in_bat_val = 0;
-      let out_bat_val = 0;
-      if (net_bat_val >= 0){
-        in_bat_val = net_bat_val;
-      } else {
-        out_bat_val = net_bat_val;
-      }
-      in_bat.push({x: time, y: in_bat_val});
-      out_bat.push({x: time, y: out_bat_val});
-      panel_in.push({x: time, y: round_for_graph(buckets[key]["in"]) - in_bat_val});
-      panel_usage.push({x: time, y: round_for_graph(-buckets[key]["out"]) - out_bat_val});
+      in_bat.push({x: time, y: round_for_graph(buckets[key]["in_bat"])});
+      out_bat.push({x: time, y: round_for_graph(buckets[key]["out_bat"])});
+      panel_in.push({x: time, y: round_for_graph(buckets[key]["panel_in"])});
+      panel_usage .push({x: time, y: round_for_graph(buckets[key]["panel_usage"])});
+      surplus.push({x: time, y: round_for_graph(buckets[key]["surplus"])});
     }
 
     return [in_bat, out_bat, panel_in, panel_usage, surplus];
@@ -141,7 +150,7 @@
             stacked: true,
             scaleLabel: {
               display: true,
-              labelString: "Energy [Wh]"
+              labelString: "Average Power [W]"
             },
             ticks: {
               beginAtZero: true

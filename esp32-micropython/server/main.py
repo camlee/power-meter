@@ -122,21 +122,25 @@ sense = SensorLogger("static/data/", sensor_config=sensor_config, settings=setti
 
 
 time_already_set = False
-def set_time_if_provided(httpClient):
+def set_time_once(client_time):
     global time_already_set
     if not time_already_set:
-        params = httpClient.GetRequestQueryParams()
-        client_time = params.get("time")
-        if client_time is not None:
-            set_time_from_epoch(client_time)
-            sense.time_updated()
-            time_already_set = True
+        set_time_from_epoch(client_time)
+        sense.time_updated()
+        time_already_set = True
 
+
+
+def set_time_if_provided_in_http(httpClient):
+    params = httpClient.GetRequestQueryParams()
+    client_time = params.get("time")
+    if client_time is not None:
+        set_time_once(client_time)
 
 @MicroWebSrv.route("/stats")
 def stats(httpClient, httpResponse):
     try:
-        set_time_if_provided(httpClient)
+        set_time_if_provided_in_http(httpClient)
         disk_stats = os.statvfs("/")
         gc.collect()
         mem_free = gc.mem_free()
@@ -159,7 +163,7 @@ def stats(httpClient, httpResponse):
 
 @MicroWebSrv.route("/set_time", "POST")
 def set_time(httpClient, httpResponse):
-    set_time_if_provided(httpClient)
+    set_time_if_provided_in_http(httpClient)
     httpResponse.WriteResponse(202, None, None, None, None)
 
 # (disabled for now)
@@ -205,8 +209,7 @@ def ws_receive_text_callback(ws, msg):
     except ValueError:
         pass
     else:
-        set_time_from_epoch(client_time)
-        sense.time_updated()
+        set_time_once(client_time)
 
 def ws_receive_binary_callback(ws, data):
     print("Received binary from web socket: %s" % data)

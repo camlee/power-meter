@@ -16,7 +16,7 @@ backup_data:
 	rshell -p $(SERIAL_PORT) rsync --mirror /pyboard/static/data/ dist/data/
 
 pull_logs:
-	rshell -p $(SERIAL_PORT) rsync --mirror /pyboard/static/data/ dist/logs/
+	rshell -p $(SERIAL_PORT) rsync --mirror /pyboard/static/logs/ dist/logs/
 
 
 
