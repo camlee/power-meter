@@ -8,4 +8,4 @@ Uses DC voltage and current sensors to measure power for both input (ex. from a 
 ![power_meter](arduino-lcd/hardware/rev1/pictures/display.jpg)
 
 ## esp32-micropython:
-(in development)
+![wifi_power_meter](esp32-micropython/hardware/rev1/pictures/historical.png)
