@@ -29,6 +29,9 @@
 #define LOAD2_CURRENT_ZERO 2.53
 #define LOAD2_CURRENT_FACTOR 4.79
 
+// Battery:
+#define BAT_THEORETICAL_CAPACITY_WH 2500 // 215 AH at 5h, 260 AH at 20h (two 6V in series, 2021).
+
 
 // Voltage factors:
 // Long one: 7.2497

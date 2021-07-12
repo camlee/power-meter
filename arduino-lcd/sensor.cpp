@@ -1,13 +1,14 @@
 #include "sensor.h"
 
 #define FACTOR SENSOR_ADC_FACTOR
+#define BAT_THEORETICAL_CAPACITY BAT_THEORETICAL_CAPACITY_WH * 3600.0
 
 #define THROW1AVG5(x) (float((x * 0) + x + x + x + x + x) / 5.0)
     // Throw away the first reading and average the next five.
     // This is to try and improve stability.
 
 #define VOLTAGE_READING(pin, factor) (THROW1AVG5(analogRead(pin)) * FACTOR * factor)
-#define CURRENT_READING(pin, zero, factor, offset) ((((THROW1AVG5(analogRead(pin)) * FACTOR) - zero) * factor) + offset)
+#define CURRENT_READING(pin, zero, factor) (((THROW1AVG5(analogRead(pin)) * FACTOR) - zero) * factor)
 
 SensorManager::SensorManager() :
     voltage_buffer(),
@@ -16,7 +17,9 @@ SensorManager::SensorManager() :
     energy(),
     lastReadTime(),
     nextReadTime(0),
-    currentOffset() {}
+    min_bat(0),
+    max_bat(0)
+{}
 
 void SensorManager::setup(){
 }
@@ -27,7 +30,7 @@ void SensorManager::refresh(){
             voltage_buffer[LOAD][buffer_index] = VOLTAGE_READING(LOAD_VOLTAGE_PIN, LOAD_VOLTAGE_FACTOR);
         #endif
         #ifdef LOAD_CURRENT_PIN
-            current_buffer[LOAD][buffer_index] = CURRENT_READING(LOAD_CURRENT_PIN, LOAD_CURRENT_ZERO, LOAD_CURRENT_FACTOR, currentOffset[LOAD]);
+            current_buffer[LOAD][buffer_index] = CURRENT_READING(LOAD_CURRENT_PIN, LOAD_CURRENT_ZERO, LOAD_CURRENT_FACTOR);
         #endif
         #if defined(LOAD_VOLTAGE_PIN) && defined(LOAD_CURRENT_PIN)
         energy[LOAD] += voltage_buffer[LOAD][buffer_index] * current_buffer[LOAD][buffer_index] * (millis() - lastReadTime[LOAD]) / 1000.0;
@@ -38,7 +41,7 @@ void SensorManager::refresh(){
             voltage_buffer[PANEL][buffer_index] = VOLTAGE_READING(PANEL_VOLTAGE_PIN, PANEL_VOLTAGE_FACTOR);
         #endif
         #ifdef PANEL_CURRENT_PIN
-            current_buffer[PANEL][buffer_index] = CURRENT_READING(PANEL_CURRENT_PIN, PANEL_CURRENT_ZERO, PANEL_CURRENT_FACTOR, currentOffset[PANEL]);
+            current_buffer[PANEL][buffer_index] = CURRENT_READING(PANEL_CURRENT_PIN, PANEL_CURRENT_ZERO, PANEL_CURRENT_FACTOR);
         #endif
         #if defined(PANEL_VOLTAGE_PIN) && defined(PANEL_CURRENT_PIN)
         energy[PANEL] += voltage_buffer[PANEL][buffer_index] * current_buffer[PANEL][buffer_index] * (millis() - lastReadTime[PANEL]) / 1000.0;
@@ -49,12 +52,20 @@ void SensorManager::refresh(){
             voltage_buffer[LOAD2][buffer_index] = VOLTAGE_READING(LOAD2_VOLTAGE_PIN, LOAD2_VOLTAGE_FACTOR);
         #endif
         #ifdef LOAD2_CURRENT_PIN
-            current_buffer[LOAD2][buffer_index] = CURRENT_READING(LOAD2_CURRENT_PIN, LOAD2_CURRENT_ZERO, LOAD2_CURRENT_FACTOR, currentOffset[LOAD2]);
+            current_buffer[LOAD2][buffer_index] = CURRENT_READING(LOAD2_CURRENT_PIN, LOAD2_CURRENT_ZERO, LOAD2_CURRENT_FACTOR);
         #endif
         #if defined(LOAD2_VOLTAGE_PIN) && defined(LOAD2_CURRENT_PIN)
         energy[LOAD2] += voltage_buffer[LOAD2][buffer_index] * current_buffer[LOAD2][buffer_index] * (millis() - lastReadTime[LOAD2]) / 1000.0;
         lastReadTime[LOAD2] = millis();
         #endif
+
+        // Updating min_bat and max_bat:
+        if (getNetEnergy() > max_bat){
+            max_bat = getNetEnergy();
+        }
+        if (getNetEnergy() < min_bat){
+            min_bat = getNetEnergy();
+        }
 
         nextReadTime += SENSOR_PERIOD_MILLIS;
         buffer_index += 1;
@@ -104,9 +115,6 @@ void SensorManager::refresh(){
     }
 }
 
-void SensorManager::zeroCurrent(int sensor){
-    currentOffset[sensor] -= getCurrent(sensor);
-}
 
 float SensorManager::getPower(int sensor){
     float total = 0;
@@ -199,4 +207,28 @@ float SensorManager::getDuty(int sensor){
     }
 
     return (abs(total_power) / SENSOR_READINGS_WINDOW) / abs(power);
+}
+
+
+float SensorManager::getNetEnergy(){
+    return energy[PANEL] - (energy[LOAD] + energy[LOAD2]);
+}
+
+float SensorManager::getBatLevel(){
+    // We assume we're at 100% full batteries when turned on. So getNetEnergy() should be negative.
+    // If max_bat is above 0, that means we weren't actully fully charged: put some energy into
+    // the batteries after startup, so we account for that: treat the new level as 100%.
+    return BAT_THEORETICAL_CAPACITY + (getNetEnergy() - max_bat);
+}
+
+float SensorManager::getBatCapacity(){
+    return BAT_THEORETICAL_CAPACITY;
+}
+
+float SensorManager::getBatMin(){
+    return min_bat;
+}
+
+float SensorManager::getBatMax(){
+    return max_bat;
 }
