@@ -3,6 +3,7 @@
 #include "buttons.h"
 #include "display.h"
 #include "sensor.h"
+#include "store.h"
 
 static unsigned long refreshPeriodMillis = 500;
 
@@ -15,6 +16,7 @@ float duty;
 float theoretical_power;
 float bat_percent;
 unsigned long nextRefresh = 0;
+unsigned long uptime = 0;
 
 #define MIN_PAGE 0
 #define SUMMARY_PAGE 0
@@ -22,7 +24,9 @@ unsigned long nextRefresh = 0;
 #define PANEL_PAGE 2
 #define DETAILS_PAGE 3
 #define ENERGY_PAGE 4
-#define MAX_PAGE 4
+#define DEBUG_PAGE 5
+#define HISTORY_PAGE -1
+#define MAX_PAGE 5
 // Disabled pages:
 #define DC_PAGE -1
 
@@ -32,37 +36,43 @@ int page = SUMMARY_PAGE;
 Display display = Display();
 ButtonManager buttonManager = ButtonManager();
 SensorManager sensorManager = SensorManager();
+Store store = Store();
 
 void setup(){
+    Serial.begin(9600);
+
+    store.setup();
     display.setup();
     buttonManager.setup();
-    sensorManager.setup();
-
-    Serial.begin(9600);
+    sensorManager.setup(
+        store.getSavedEnergyPanel(),
+        store.getSavedEnergyLoad()
+        );
 }
+
 
 void loop(){
 
     button = buttonManager.popPressedButton();
 
-    if (button == UP_BUTTON){
-        display.brightnessUp();
-    }
-    if (button == DOWN_BUTTON){
-        display.brightnessDown();
-    }
+    // if (button == UP_BUTTON){
+    //     display.brightnessUp();
+    // }
+    // if (button == DOWN_BUTTON){
+    //     display.brightnessDown();
+    // }
 
-    if (button == UP_BUTTON || button == DOWN_BUTTON){
-        display.lcd.setCursor(0, 0);
-        display.lcd.print("Brightness: ");
-        display.lcd.print(display.getBrightness() * 100 / display.brightnessIncrements);
-        display.lcd.print("%     ");
+    // if (button == UP_BUTTON || button == DOWN_BUTTON){
+    //     display.lcd.setCursor(0, 0);
+    //     display.lcd.print("Brightness: ");
+    //     display.lcd.print(display.getBrightness() * 100 / display.brightnessIncrements);
+    //     display.lcd.print("%     ");
 
-        display.lcd.setCursor(0, 1);
-        display.lcd.print(DISPLAY_NOTHING);
+    //     display.lcd.setCursor(0, 1);
+    //     display.lcd.print(DISPLAY_NOTHING);
 
-        nextRefresh = millis() + refreshPeriodMillis;
-    }
+    //     nextRefresh = millis() + refreshPeriodMillis;
+    // }
 
     if (button == LEFT_BUTTON){
         if (page == 0){
@@ -80,6 +90,33 @@ void loop(){
             page += 1;
         }
         nextRefresh = millis();
+    }
+
+    if (page == DEBUG_PAGE && button == SELECT_BUTTON) {
+        store.persistNow();
+        display.lcd.setCursor(0, 0);
+        display.lcd.print("Saved!");
+        display.lcd.print(DISPLAY_NOTHING);
+
+        display.lcd.setCursor(0, 1);
+        display.lcd.print(DISPLAY_NOTHING);
+
+        nextRefresh = millis() + refreshPeriodMillis*4;
+    }
+
+    if (page == ENERGY_PAGE && button == SELECT_BUTTON) {
+        sensorManager.setup(0.0, 0.0);
+        store.refresh(0.0, 0.0);
+        store.persistNow();
+
+        display.lcd.setCursor(0, 0);
+        display.lcd.print("Energy reset!");
+        display.lcd.print(DISPLAY_NOTHING);
+
+        display.lcd.setCursor(0, 1);
+        display.lcd.print(DISPLAY_NOTHING);
+
+        nextRefresh = millis() + refreshPeriodMillis*4;
     }
 
     if (millis() > nextRefresh ){
@@ -194,6 +231,55 @@ void loop(){
             display.lcd.print(DISPLAY_NOTHING);
         }
 
+        if (page == DEBUG_PAGE){
+            uptime = millis() / 60000; // In minutes
+            display.lcd.setCursor(0, 0);
+            display.lcd.print("Up");
+            display.leftPad(uptime, 3);
+            display.lcd.print(uptime);
+            display.lcd.print("m");
+            display.lcd.print(" Last");
+            uptime = store.getLastUptime(); // In minutes
+            display.leftPad(uptime, 2);
+            display.lcd.print(uptime);
+            display.lcd.print("m");
+            display.lcd.print(DISPLAY_NOTHING);
+
+            display.lcd.setCursor(0, 1);
+            display.lcd.print("Boot");
+            display.leftPad(store.getRestarts(), 2);
+            display.lcd.print(store.getRestarts());
+            display.lcd.print(" Write");
+            display.leftPad(store.writes, 2);
+            display.lcd.print(store.writes);
+            display.lcd.print(DISPLAY_NOTHING);
+        }
+
+        if (page == HISTORY_PAGE){
+            display.lcd.setCursor(0, 0);
+            display.lcd.print("History Page");
+            display.lcd.print(DISPLAY_NOTHING);
+            display.lcd.setCursor(0, 1);
+            display.lcd.print("TODO");
+            display.lcd.print(DISPLAY_NOTHING);
+            // energy = store.getHistoricalEnergy(PANEL) / 3600.0;
+
+            // display.lcd.setCursor(0, 0);
+            // display.lcd.print("Hist In ");
+            // display.leftPad(energy, 4);
+            // display.lcd.print(energy, 0);
+            // display.lcd.print(" Wh");
+            // display.lcd.print(DISPLAY_NOTHING);
+
+            // display.lcd.setCursor(0, 1);
+            // energy = (store.getHistoricalEnergy(LOAD) + store.getHistoricalEnergy(LOAD2)) / 3600.0;
+            // display.lcd.print("Hist Out");
+            // display.leftPad(energy, 4);
+            // display.lcd.print(energy, 0);
+            // display.lcd.print(" Wh");
+            // display.lcd.print(DISPLAY_NOTHING);
+        }
+
         if (page == DETAILS_PAGE){
             display.lcd.setCursor(0, 0);
             display.lcd.print("Bat ");
@@ -221,6 +307,11 @@ void loop(){
     display.refresh();
     buttonManager.refresh();
     sensorManager.refresh();
+    store.refresh(
+        sensorManager.getEnergy(PANEL),
+        sensorManager.getEnergy(LOAD)
+        );
+
 }
 
 int main(void){

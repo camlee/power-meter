@@ -3,11 +3,6 @@
 #include "hardware.h"
 #include "settings.h"
 
-#define LOAD 0
-#define PANEL 1
-#define LOAD2 2
-#define NUM_SENSORS 3
-
 class SensorManager {
 private:
     float voltage_buffer[NUM_SENSORS][SENSOR_READINGS_WINDOW];
@@ -21,7 +16,7 @@ private:
 
 public:
     SensorManager();
-    void setup();
+    void setup(float, float);
     void refresh();
 
     float getPower(int);

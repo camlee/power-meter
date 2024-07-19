@@ -6,6 +6,11 @@
 #define BUTTONS_PIN 0
 
 // Sensors:
+#define NUM_SENSORS 3
+#define LOAD 0
+#define PANEL 1
+#define LOAD2 2
+
 #define LOAD_CURRENT_PIN 1
 #define LOAD_VOLTAGE_PIN 2
 #define PANEL_CURRENT_PIN 3

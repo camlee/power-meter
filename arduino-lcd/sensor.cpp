@@ -21,7 +21,18 @@ SensorManager::SensorManager() :
     max_bat(0)
 {}
 
-void SensorManager::setup(){
+void SensorManager::setup(float panelEnergy, float loadEnergy){
+    // Serial.print("SensorManager setUp with: ");
+    // Serial.print("panelEnergy: ");
+    // Serial.print(panelEnergy);
+    // Serial.print("\n");
+    // Serial.print("loadEnergy: ");
+    // Serial.print(loadEnergy);
+    // Serial.print("\n");
+
+
+    energy[PANEL] = panelEnergy;
+    energy[LOAD] = loadEnergy;
 }
 
 void SensorManager::refresh(){
@@ -204,6 +215,11 @@ float SensorManager::getDuty(int sensor){
         power = max_power2;
     } else {
         power = max_power1;
+    }
+
+    //
+    if (abs(power) < 1){ // If our average power is too small to reasonably measure duty, assume 100%.
+        return 1.0;
     }
 
     return (abs(total_power) / SENSOR_READINGS_WINDOW) / abs(power);
