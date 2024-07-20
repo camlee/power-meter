@@ -26,6 +26,25 @@ public:
     bool brightnessDown();
     int getBrightness();
 
+    template<class TYPE>
+    void printLine(TYPE text){
+        lcd.print(text);
+        lcd.print(DISPLAY_NOTHING);
+    }
+
+    template<class TYPE>
+    void printLine1(TYPE text){
+        lcd.setCursor(0, 0);
+        printLine(text);
+    }
+
+    template<class TYPE>
+    void printLine2(TYPE text){
+        lcd.setCursor(0, 1);
+        printLine(text);
+    }
+
+
     void leftPad(float value, int maxSpaces);
 };
 

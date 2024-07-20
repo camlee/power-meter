@@ -27,21 +27,12 @@ void Store::refresh(float panelEnergy, float loadEnergy){
     // It's very important we don't try and write to the EEPROM too often
     // as it has a limited number of write cycles, on the order of 100,000.
     if (millis() > nextPersist){
-        Serial.print("\n");
-        Serial.print("Store saving: ");
-        Serial.print(panelEnergy);
-        Serial.print("\n");
-
         nextPersist = millis() + 600000; // 10 Minutes
         writes += 1;
         writeUnsignedInt(EEPROM_ADDR_LAST_UPTIME, millis() / 1000 / 60);
         // Storing in watt hours:
         writeUnsignedInt(EEPROM_ADDR_PANEL, panelEnergy / 3600);
         writeUnsignedInt(EEPROM_ADDR_LOAD, loadEnergy / 3600);
-
-        Serial.print("Store checking saved: ");
-        Serial.print(readUnsignedInt(EEPROM_ADDR_PANEL) * 3600.0);
-        Serial.print("\n");
     }
 
 }
