@@ -1,5 +1,7 @@
-#include "hardware.h"
+#ifndef POWER_METER_STORE_HEADER
+#define POWER_METER_STORE_HEADER
 
+#include "hardware.h"
 
 class Store {
 private:
@@ -25,3 +27,5 @@ public:
 
     void persistNow();
 };
+
+#endif

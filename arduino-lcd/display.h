@@ -1,3 +1,6 @@
+#ifndef POWER_METER_DISPLAY_HEADER
+#define POWER_METER_DISPLAY_HEADER
+
 #include <Arduino.h>
 #include <LiquidCrystal.h>
 
@@ -25,3 +28,5 @@ public:
 
     void leftPad(float value, int maxSpaces);
 };
+
+#endif

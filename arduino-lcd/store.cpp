@@ -27,14 +27,10 @@ void Store::refresh(float panelEnergy, float loadEnergy){
     // It's very important we don't try and write to the EEPROM too often
     // as it has a limited number of write cycles, on the order of 100,000.
     if (millis() > nextPersist){
-        // Serial.print("\n");
-        // Serial.print("Store saving: ");
-        // // Serial.print("panelEnergy: ");
-        // // Serial.print(panelEnergy);
-        // // Serial.print("\n");
-        // // Serial.print("loadEnergy: ");
-        // Serial.print(loadEnergy);
-        // Serial.print("\n");
+        Serial.print("\n");
+        Serial.print("Store saving: ");
+        Serial.print(panelEnergy);
+        Serial.print("\n");
 
         nextPersist = millis() + 600000; // 10 Minutes
         writes += 1;
@@ -43,13 +39,9 @@ void Store::refresh(float panelEnergy, float loadEnergy){
         writeUnsignedInt(EEPROM_ADDR_PANEL, panelEnergy / 3600);
         writeUnsignedInt(EEPROM_ADDR_LOAD, loadEnergy / 3600);
 
-        // Serial.print("Store checking saved: ");
-        // // Serial.print("panelEnergy: ");
-        // // Serial.print(getSavedEnergyPanel());
-        // // Serial.print("\n");
-        // // Serial.print("loadEnergy: ");
-        // Serial.print(readUnsignedInt(EEPROM_ADDR_LOAD) * 36000);
-        // Serial.print("\n");
+        Serial.print("Store checking saved: ");
+        Serial.print(readUnsignedInt(EEPROM_ADDR_PANEL) * 3600.0);
+        Serial.print("\n");
     }
 
 }
@@ -64,7 +56,7 @@ unsigned int Store::getLastUptime() {
 
 float Store::getSavedEnergyPanel() {
     return readUnsignedInt(EEPROM_ADDR_PANEL) * 3600.0;
-    // return 0; // temp
+    // return 300 * 3600.0; // temp
 }
 
 float Store::getSavedEnergyLoad() {
@@ -78,7 +70,7 @@ void Store::writeUnsignedInt(byte addr, unsigned int value) {
 }
 
 unsigned int Store::readUnsignedInt(byte addr) {
-    return EEPROM.read(addr)*256 + EEPROM.read(addr+1);
+    return ((unsigned int) EEPROM.read(addr))*256 + EEPROM.read(addr+1);
 }
 
 void Store::persistNow() {

@@ -1,3 +1,6 @@
+#ifndef POWER_METER_BUTTONS_HEADER
+#define POWER_METER_BUTTONS_HEADER
+
 #include <Arduino.h>
 
 #define RIGHT_BUTTON  0
@@ -29,3 +32,5 @@ public:
 
     int popPressedButton();
 };
+
+#endif

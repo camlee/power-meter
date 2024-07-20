@@ -1,3 +1,6 @@
+#ifndef POWER_METER_SENSOR_HEADER
+#define POWER_METER_SENSOR_HEADER
+
 #include <Arduino.h>
 
 #include "hardware.h"
@@ -31,3 +34,5 @@ public:
     float getBatMin();
     float getBatMax();
 };
+
+#endif
