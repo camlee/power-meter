@@ -28,7 +28,7 @@ void redrawEnergyPage(Display *display, SensorManager *sensorManager){
         display->lcd.print(" Wh");
         display->lcd.print(DISPLAY_NOTHING);
     } else {
-        blink = (unsigned long)(millis() / 500) % 2 == 0;
+        blink = getBlink();
 
         display->printLine1("Reset Energy?");
         display->lcd.setCursor(0, 1);

@@ -17,7 +17,7 @@
 // #define HISTORY_PAGE -1
 #define MAX_PAGE 6
 
-#define DEFAULT_PAGE ENERGY_PAGE
+#define DEFAULT_PAGE TIME_PAGE
 
 #define refreshPeriodMillis 100
 
@@ -26,6 +26,10 @@
 #define HANDLED 1
 #define REDRAW_NOW 2 // Implies HANDLED
 #define DELAY_REDRAW 3 // Implies HANDLED
+
+inline bool getBlink(){
+    return (unsigned long)(millis() / 300) % 2 == 0;
+}
 
 class UI {
 private:

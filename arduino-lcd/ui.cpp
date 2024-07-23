@@ -1,5 +1,6 @@
 #include "ui.h"
 #include "buttons.h"
+#include "util.h"
 
 #include "pages/summary.h"
 #include "pages/time.h"

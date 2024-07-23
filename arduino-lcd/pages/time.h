@@ -47,7 +47,7 @@ byte get_minute(unsigned long time){
 
 
 void print_time(Display *display, byte day, byte hour, byte minute, bool blink_day=false, bool blink_hour=false, bool blink_minute=false){
-    bool blink = (unsigned long)(millis() / 1000) % 2 == 0;
+    bool blink = getBlink();
 
     if (!blink_day || blink){
         display->lcd.print(weekday_to_text(weekday));
@@ -102,9 +102,12 @@ void redrawTimePage(Display* display){
             display->printLine1("Time Unknown");
             display->printLine2("Set using SELECT");
         } else {
-            display->printLine1("Time");
-            display->lcd.setCursor(0, 1);
+            display->lcd.setCursor(0, 0);
+            display->lcd.print("Time ");
             now = millis();
+            // display->lcd.print(((double)now)/1000, 1);
+            display->lcd.print(DISPLAY_NOTHING);
+            display->lcd.setCursor(0, 1);
             print_time(display, get_weekday(now), get_hour(now), get_minute(now));
             display->lcd.print(DISPLAY_NOTHING);
         }
