@@ -6,7 +6,7 @@ byte weekday; // 0 for unknown, 1 for Sunday, 2 Monday, ... 7 for Saturday
 byte hour;
 byte minute;
 unsigned long time_set_at;
-boolean time_page_editing = false;
+bool time_page_editing = false;
 unsigned int time_subpage = 0;
 
 const char* weekday_to_text(byte weekday){
@@ -56,7 +56,7 @@ void print_time(Display *display, byte day, byte hour, byte minute, bool blink_d
     }
     display->lcd.print(" ");
 
-    boolean pm = hour >= 12;
+    bool pm = hour >= 12;
     hour = hour % 12;
     if (hour == 0){
         hour = 12;
@@ -150,7 +150,7 @@ int buttonsTimePage(int button){
                 minute = get_minute(now);
             }
         }
-        return REDRAW_ASAP;
+        return REDRAW_NOW;
     }
     if (time_page_editing){
         if (button == UP_BUTTON){
@@ -158,22 +158,22 @@ int buttonsTimePage(int button){
             if (time_subpage == 1) hour = incr_with_wrap(hour, 0, 23);
             if (time_subpage == 2) minute = incr_with_wrap(minute, 0, 59);
 
-            return REDRAW_ASAP;
+            return REDRAW_NOW;
         }
         if (button == DOWN_BUTTON){
             if (time_subpage == 0) weekday = decr_with_wrap(weekday, 1, 7);
             if (time_subpage == 1) hour = decr_with_wrap(hour, 0, 23);
             if (time_subpage == 2) minute = decr_with_wrap(minute, 0, 59);
 
-            return REDRAW_ASAP;
+            return REDRAW_NOW;
         }
         if (button == RIGHT_BUTTON){
             time_subpage = incr_with_wrap(time_subpage, 0, 2);
-            return REDRAW_ASAP;
+            return REDRAW_NOW;
         }
         if (button == LEFT_BUTTON){
             time_subpage = decr_with_wrap(time_subpage, 0, 2);
-            return REDRAW_ASAP;
+            return REDRAW_NOW;
         }
     }
 

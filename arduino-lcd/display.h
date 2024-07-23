@@ -44,6 +44,12 @@ public:
         printLine(text);
     }
 
+    template<class TYPE1, class TYPE2>
+    void printLines(TYPE1 text1, TYPE2 text2){
+        printLine1(text1);
+        printLine2(text2);
+    }
+
 
     void leftPad(float value, int maxSpaces);
 };

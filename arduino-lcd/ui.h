@@ -17,14 +17,15 @@
 // #define HISTORY_PAGE -1
 #define MAX_PAGE 6
 
-#define DEFAULT_PAGE TIME_PAGE
+#define DEFAULT_PAGE ENERGY_PAGE
 
-#define refreshPeriodMillis 800
+#define refreshPeriodMillis 100
 
 // Results of handling button:
 #define BUBBLE 0
 #define HANDLED 1
-#define REDRAW_ASAP 2 // Implies HANDLED
+#define REDRAW_NOW 2 // Implies HANDLED
+#define DELAY_REDRAW 3 // Implies HANDLED
 
 class UI {
 private:
@@ -38,7 +39,6 @@ private:
     void redraw();
     void redrawACPage();
     void redrawPanelPage();
-    void redrawEnergyPage();
     void redrawDebugPage();
     void redrawDetailsPage();
 
@@ -53,7 +53,7 @@ public:
     void setup();
     void refresh();
     void handleButton(int);
-    boolean handleButtonResult(int);
+    bool handleButtonResult(int);
 };
 
 #endif

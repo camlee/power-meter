@@ -3,6 +3,7 @@
 
 #include "pages/summary.h"
 #include "pages/time.h"
+#include "pages/energy.h"
 
 
 UI::UI(Display* display, SensorManager* sensorManager, Store* store) :
@@ -14,46 +15,23 @@ UI::UI(Display* display, SensorManager* sensorManager, Store* store) :
     store(store)
 {}
 
-void UI::setup(){
-}
+void UI::setup(){}
 
 void UI::refresh(){
     if (millis() > nextRefresh ){
         nextRefresh = millis() + refreshPeriodMillis;
-
         redraw();
     }
 }
 
 void UI::redraw(){
-    if (page == SUMMARY_PAGE) {
-        redrawSummaryPage(display, sensorManager);
-    }
-
-    if (page == AC_PAGE) {
-        redrawACPage();
-    }
-
-    if (page == PANEL_PAGE) {
-        redrawPanelPage();
-    }
-
-    if (page == DETAILS_PAGE) {
-        redrawDetailsPage();
-    }
-
-    if (page == ENERGY_PAGE) {
-        redrawEnergyPage();
-    }
-
-    if (page == DEBUG_PAGE) {
-        redrawDebugPage();
-    }
-
-    if (page == TIME_PAGE) {
-        redrawTimePage(display);
-    }
-
+    if (page == SUMMARY_PAGE) redrawSummaryPage(display, sensorManager);
+    if (page == AC_PAGE) redrawACPage();
+    if (page == PANEL_PAGE) redrawPanelPage();
+    if (page == DETAILS_PAGE) redrawDetailsPage();
+    if (page == ENERGY_PAGE) redrawEnergyPage(display, sensorManager);
+    if (page == DEBUG_PAGE) redrawDebugPage();
+    if (page == TIME_PAGE) redrawTimePage(display);
 }
 
 
@@ -107,25 +85,6 @@ void UI::partialDrawSensor(float power, float voltage, float current, float ener
     display->leftPad(voltage, 3);
     display->lcd.print(voltage, 2);
     display->lcd.print(" V");
-    display->lcd.print(DISPLAY_NOTHING);
-}
-
-void UI::redrawEnergyPage(){
-    float energy = sensorManager->getEnergy(PANEL) / 3600.0;
-
-    display->lcd.setCursor(0, 0);
-    display->lcd.print("In ");
-    display->leftPad(energy, 8);
-    display->lcd.print(energy, 0);
-    display->lcd.print(" Wh");
-    display->lcd.print(DISPLAY_NOTHING);
-
-    display->lcd.setCursor(0, 1);
-    energy = (sensorManager->getEnergy(LOAD) + sensorManager->getEnergy(LOAD2)) / 3600.0;
-    display->lcd.print("Out");
-    display->leftPad(energy, 8);
-    display->lcd.print(energy, 0);
-    display->lcd.print(" Wh");
     display->lcd.print(DISPLAY_NOTHING);
 }
 
@@ -202,13 +161,18 @@ void UI::redrawDetailsPage(){
     display->lcd.print(DISPLAY_NOTHING);
 }
 
-boolean UI::handleButtonResult(int result){
+bool UI::handleButtonResult(int result){
     if (result == HANDLED){
         return true;
     }
 
-    if (result == REDRAW_ASAP){
+    if (result == REDRAW_NOW){
         redrawASAP();
+        return true;
+    }
+
+    if (result == DELAY_REDRAW){
+        delayRedraw();
         return true;
     }
 
@@ -221,7 +185,8 @@ void UI::handleButton(int button){
     // More general near the bottom. More specific near the top.
     // This is to avoid a button press doing multiple things and having to
     // code all specific cases.
-    int result;
+
+    if (page != ENERGY_PAGE) resetEnergyPage();
 
     // Debug page:
     if (page == DEBUG_PAGE && button == SELECT_BUTTON) {
@@ -237,27 +202,8 @@ void UI::handleButton(int button){
         return;
     }
 
-    if (page == TIME_PAGE){
-        result = buttonsTimePage(button);
-        if (handleButtonResult(result)) return;
-    }
-
-    // Energy page:
-    if (page == ENERGY_PAGE && button == SELECT_BUTTON) {
-        sensorManager->setup(0.0, 0.0);
-        store->refresh(0.0, 0.0);
-        store->persistNow();
-
-        display->lcd.setCursor(0, 0);
-        display->lcd.print("Energy reset!");
-        display->lcd.print(DISPLAY_NOTHING);
-
-        display->lcd.setCursor(0, 1);
-        display->lcd.print(DISPLAY_NOTHING);
-
-        delayRedraw();
-        return;
-    }
+    if (page == TIME_PAGE && handleButtonResult(buttonsTimePage(button))) return;
+    if (page == ENERGY_PAGE && handleButtonResult(buttonsEnergyPage(button, display, sensorManager, store))) return;
 
     // Cycle between pages:
     if (button == LEFT_BUTTON){
@@ -298,5 +244,5 @@ void UI::redrawASAP(){
 }
 
 void UI::delayRedraw(){
-    nextRefresh = millis() + refreshPeriodMillis * 2;
+    nextRefresh = millis() + 2000;
 }
