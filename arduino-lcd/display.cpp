@@ -60,3 +60,22 @@ void Display::leftPad(float value, int maxSpaces){
     }
     return;
 }
+
+void Display::printYesNoSelection(bool yes){
+    bool blink = getBlink();
+    if (!yes || blink) {
+        lcd.print(" yes ");
+    } else {
+        lcd.print("     ");
+    }
+    if (yes || blink) {
+        lcd.print(" no ");
+    } else {
+        lcd.print("    ");
+    }
+    lcd.print(DISPLAY_NOTHING);
+}
+
+bool Display::getBlink(){
+    return (unsigned long)(millis() / 300) % 2 == 0;
+}

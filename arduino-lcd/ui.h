@@ -5,19 +5,19 @@
 #include "sensor.h"
 #include "store.h"
 
-
+// Pages:
 #define MIN_PAGE 0
 #define SUMMARY_PAGE 0
 #define ENERGY_PAGE 1
 #define PANEL_PAGE 2
-#define AC_PAGE 3
+#define LOAD_PAGE 3
 #define DETAILS_PAGE 4
 #define DEBUG_PAGE 5
 #define TIME_PAGE 6
 // #define HISTORY_PAGE -1
 #define MAX_PAGE 6
 
-#define DEFAULT_PAGE TIME_PAGE
+#define DEFAULT_PAGE SUMMARY_PAGE
 
 #define refreshPeriodMillis 100
 
@@ -26,10 +26,6 @@
 #define HANDLED 1
 #define REDRAW_NOW 2 // Implies HANDLED
 #define DELAY_REDRAW 3 // Implies HANDLED
-
-inline bool getBlink(){
-    return (unsigned long)(millis() / 300) % 2 == 0;
-}
 
 class UI {
 private:
@@ -42,13 +38,12 @@ private:
 
     void redraw();
     void redrawACPage();
-    void redrawPanelPage();
     void redrawDebugPage();
     void redrawDetailsPage();
 
     void partialDrawSensor(float, float, float, float, float, bool);
 
-    void redrawASAP();
+    void redrawNow();
     void delayRedraw();
 
 

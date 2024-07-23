@@ -5,6 +5,7 @@
 #include "pages/summary.h"
 #include "pages/time.h"
 #include "pages/energy.h"
+#include "pages/sensors.h"
 
 
 UI::UI(Display* display, SensorManager* sensorManager, Store* store) :
@@ -27,66 +28,12 @@ void UI::refresh(){
 
 void UI::redraw(){
     if (page == SUMMARY_PAGE) redrawSummaryPage(display, sensorManager);
-    if (page == AC_PAGE) redrawACPage();
-    if (page == PANEL_PAGE) redrawPanelPage();
+    if (page == LOAD_PAGE) redrawSensorPage(LOAD, display, sensorManager);
+    if (page == PANEL_PAGE) redrawSensorPage(PANEL, display, sensorManager);
     if (page == DETAILS_PAGE) redrawDetailsPage();
     if (page == ENERGY_PAGE) redrawEnergyPage(display, sensorManager);
     if (page == DEBUG_PAGE) redrawDebugPage();
     if (page == TIME_PAGE) redrawTimePage(display);
-}
-
-
-void UI::redrawACPage(){
-    float voltage = sensorManager->getVoltage(LOAD);
-    float current = sensorManager->getCurrent(LOAD);
-    float power = sensorManager->getPower(LOAD);
-    float energy = sensorManager->getEnergy(LOAD);
-
-    display->lcd.setCursor(0, 0);
-    display->lcd.print("Out");
-
-    partialDrawSensor(power, voltage, current, energy, 0, false);
-}
-
-
-void UI::redrawPanelPage(){
-    float voltage = sensorManager->getVoltage(PANEL);
-    float current = sensorManager->getCurrent(PANEL);
-    float power = sensorManager->getPower(PANEL);
-    float energy = sensorManager->getEnergy(PANEL);
-    float duty = sensorManager->getDuty(PANEL) * 100.0;
-
-    display->lcd.setCursor(0, 0);
-    display->lcd.print("In");
-
-    bool show_duty = duty < 90 && power > 30;
-    partialDrawSensor(power, voltage, current, energy, duty, show_duty);
-}
-
-void UI::partialDrawSensor(float power, float voltage, float current, float energy, float duty, bool show_duty){
-    display->leftPad(round(power), 2);
-    display->lcd.print(power, 1);
-    display->lcd.print("W");
-    if (!show_duty){
-        display->leftPad(energy / 3600.0, 4);
-        display->lcd.print(energy / 3600.0, 0);
-        display->lcd.print("Wh");
-    } else {
-        display->lcd.print(" PWM ");
-        display->leftPad(duty, 1);
-        display->lcd.print(duty, 0);
-        display->lcd.print("%");
-    }
-    display->lcd.print(DISPLAY_NOTHING);
-
-    display->lcd.setCursor(0, 1);
-    display->leftPad(current, 1);
-    display->lcd.print(current, 2);
-    display->lcd.print(" A");
-    display->leftPad(voltage, 3);
-    display->lcd.print(voltage, 2);
-    display->lcd.print(" V");
-    display->lcd.print(DISPLAY_NOTHING);
 }
 
 void UI::redrawDebugPage(){
@@ -168,7 +115,7 @@ bool UI::handleButtonResult(int result){
     }
 
     if (result == REDRAW_NOW){
-        redrawASAP();
+        redrawNow();
         return true;
     }
 
@@ -188,6 +135,12 @@ void UI::handleButton(int button){
     // code all specific cases.
 
     if (page != ENERGY_PAGE) resetEnergyPage();
+    if (page != PANEL_PAGE && page != LOAD_PAGE) resetSensorPage();
+
+    if (page == TIME_PAGE && handleButtonResult(buttonsTimePage(button))) return;
+    if (page == ENERGY_PAGE && handleButtonResult(buttonsEnergyPage(button, display, sensorManager, store))) return;
+    if (page == PANEL_PAGE && handleButtonResult(buttonsSensorPage(PANEL, button, display, store))) return;
+    if (page == LOAD_PAGE && handleButtonResult(buttonsSensorPage(LOAD, button, display, store))) return;
 
     // Debug page:
     if (page == DEBUG_PAGE && button == SELECT_BUTTON) {
@@ -203,18 +156,16 @@ void UI::handleButton(int button){
         return;
     }
 
-    if (page == TIME_PAGE && handleButtonResult(buttonsTimePage(button))) return;
-    if (page == ENERGY_PAGE && handleButtonResult(buttonsEnergyPage(button, display, sensorManager, store))) return;
 
     // Cycle between pages:
     if (button == LEFT_BUTTON){
         page = decr_with_wrap(page, MIN_PAGE, MAX_PAGE);
-        redrawASAP();
+        redrawNow();
         return;
     }
     if (button == RIGHT_BUTTON){
         page = incr_with_wrap(page, MIN_PAGE, MAX_PAGE);
-        redrawASAP();
+        redrawNow();
         return;
     }
 
@@ -240,7 +191,7 @@ void UI::handleButton(int button){
 
 }
 
-void UI::redrawASAP(){
+void UI::redrawNow(){
     nextRefresh = millis();
 }
 

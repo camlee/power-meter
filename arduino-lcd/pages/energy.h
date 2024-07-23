@@ -9,7 +9,6 @@ bool energy_no_selected = true;
 
 void redrawEnergyPage(Display *display, SensorManager *sensorManager){
     float energy;
-    bool blink;
 
     if (energy_main_subpage){
         energy = sensorManager->getEnergy(PANEL) / 3600.0;
@@ -28,23 +27,11 @@ void redrawEnergyPage(Display *display, SensorManager *sensorManager){
         display->lcd.print(" Wh");
         display->lcd.print(DISPLAY_NOTHING);
     } else {
-        blink = getBlink();
 
         display->printLine1("Reset Energy?");
         display->lcd.setCursor(0, 1);
 
-        if (!energy_no_selected || blink) {
-            display->lcd.print(" no ");
-        } else {
-            display->lcd.print("    ");
-        }
-
-        if (energy_no_selected || blink) {
-            display->lcd.print(" yes ");
-        } else {
-            display->lcd.print("     ");
-        }
-        display->lcd.print(DISPLAY_NOTHING);
+        display->printYesNoSelection(!energy_no_selected);
     }
 }
 
@@ -72,7 +59,7 @@ int buttonsEnergyPage(int button, Display *display, SensorManager *sensorManager
         }
         if (button == LEFT_BUTTON || button == RIGHT_BUTTON) {
             energy_no_selected = !energy_no_selected;
-            return HANDLED;
+            return REDRAW_NOW;
         }
     }
 

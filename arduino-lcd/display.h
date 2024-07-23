@@ -52,6 +52,9 @@ public:
 
 
     void leftPad(float value, int maxSpaces);
+    void printYesNoSelection(bool);
+
+    bool getBlink();
 };
 
 #endif

@@ -2,7 +2,8 @@
 #include "../ui.h"
 #include "../util.h"
 
-byte weekday; // 0 for unknown, 1 for Sunday, 2 Monday, ... 7 for Saturday
+#define UNKNOWN_WEEKDAY 8
+byte weekday; // 0 for Sunday, 1 Monday, ... 6 for Saturday. 8 for Unknown
 byte hour;
 byte minute;
 unsigned long time_set_at;
@@ -11,14 +12,14 @@ unsigned int time_subpage = 0;
 
 const char* weekday_to_text(byte weekday){
     switch (weekday){
-        case 0: return "Unknown";
-        case 1: return "Sun";
-        case 2: return "Mon";
-        case 3: return "Tue";
-        case 4: return "Wed";
-        case 5: return "Thu";
-        case 6: return "Fri";
-        case 7: return "Sat";
+        case UNKNOWN_WEEKDAY: return "Unknown";
+        case 0: return "Sun";
+        case 1: return "Mon";
+        case 2: return "Tue";
+        case 3: return "Wed";
+        case 4: return "Thu";
+        case 5: return "Fri";
+        case 6: return "Sat";
     }
     return "Other";
 }
@@ -29,7 +30,7 @@ byte get_weekday(unsigned long time){
     unsigned long new_hour = hour + new_minute / 60;
     byte new_day = weekday + new_hour / 24;
 
-    return ((new_day - 1) % 7) + 1;
+    return new_day % 7;
 }
 
 byte get_hour(unsigned long time){
@@ -46,8 +47,8 @@ byte get_minute(unsigned long time){
 }
 
 
-void print_time(Display *display, byte day, byte hour, byte minute, bool blink_day=false, bool blink_hour=false, bool blink_minute=false){
-    bool blink = getBlink();
+void print_time(Display *display, byte weekday, byte hour, byte minute, bool blink_day=false, bool blink_hour=false, bool blink_minute=false){
+    bool blink = display->getBlink();
 
     if (!blink_day || blink){
         display->lcd.print(weekday_to_text(weekday));
@@ -98,7 +99,7 @@ void redrawTimePage(Display* display){
     unsigned long now;
     display->lcd.setCursor(0, 0);
     if (!time_page_editing) {
-        if (weekday == 0) {
+        if (weekday == UNKNOWN_WEEKDAY) {
             display->printLine1("Time Unknown");
             display->printLine2("Set using SELECT");
         } else {
@@ -144,8 +145,8 @@ int buttonsTimePage(int button){
         } else {
             time_page_editing = true;
 
-            if (weekday == 0){ // Time wasn't known previously
-                weekday = 1;
+            if (weekday == UNKNOWN_WEEKDAY){
+                weekday = 0;
             } else {
                 now = millis();
                 weekday = get_weekday(now);
@@ -157,14 +158,14 @@ int buttonsTimePage(int button){
     }
     if (time_page_editing){
         if (button == UP_BUTTON){
-            if (time_subpage == 0) weekday = incr_with_wrap(weekday, 1, 7);
+            if (time_subpage == 0) weekday = incr_with_wrap(weekday, 0, 6);
             if (time_subpage == 1) hour = incr_with_wrap(hour, 0, 23);
             if (time_subpage == 2) minute = incr_with_wrap(minute, 0, 59);
 
             return REDRAW_NOW;
         }
         if (button == DOWN_BUTTON){
-            if (time_subpage == 0) weekday = decr_with_wrap(weekday, 1, 7);
+            if (time_subpage == 0) weekday = decr_with_wrap(weekday, 0, 6);
             if (time_subpage == 1) hour = decr_with_wrap(hour, 0, 23);
             if (time_subpage == 2) minute = decr_with_wrap(minute, 0, 59);
 
