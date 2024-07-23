@@ -21,38 +21,28 @@
 
 #define refreshPeriodMillis 800
 
-const char* weekday_to_text(byte);
-
+// Results of handling button:
+#define BUBBLE 0
+#define HANDLED 1
+#define REDRAW_ASAP 2 // Implies HANDLED
 
 class UI {
 private:
     byte page;
-    byte subpage;
-    bool editing;
     unsigned long nextRefresh;
-    bool blinkVisibility;
-
-    byte weekday; // 0 for unknown, 1 for Sunday, 2 Monday, ... 7 for Saturday
-    byte hour;
-    byte minute;
-    unsigned long timeSetAt;
 
     Display* display;
     SensorManager* sensorManager;
     Store* store;
 
     void redraw();
-    void redrawSummaryPage();
     void redrawACPage();
     void redrawPanelPage();
     void redrawEnergyPage();
     void redrawDebugPage();
     void redrawDetailsPage();
-    void redrawTimePage();
 
     void partialDrawSensor(float, float, float, float, float, bool);
-    void printTime(byte, byte, byte, bool=false, bool=false, bool=false);
-    boolean getBlink();
 
     void redrawASAP();
     void delayRedraw();
@@ -63,12 +53,7 @@ public:
     void setup();
     void refresh();
     void handleButton(int);
-
-    byte getWeekday(unsigned long);
-    byte getHour(unsigned long);
-    byte getMinute(unsigned long);
-
-
+    boolean handleButtonResult(int);
 };
 
 #endif

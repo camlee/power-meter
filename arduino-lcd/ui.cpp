@@ -1,52 +1,13 @@
 #include "ui.h"
 #include "buttons.h"
 
-const char* weekday_to_text(byte weekday){
-    switch (weekday){
-        case 0: return "Unknown";
-        case 1: return "Sun";
-        case 2: return "Mon";
-        case 3: return "Tue";
-        case 4: return "Wed";
-        case 5: return "Thu";
-        case 6: return "Fri";
-        case 7: return "Sat";
-    }
-    return "Other";
-}
+#include "pages/summary.h"
+#include "pages/time.h"
 
-byte incr_with_wrap(byte value, byte min, byte max){
-    if (value == 255){
-        return min;
-    }
-    value += 1;
-    if (value > max){
-        value = min;
-    }
-    return value;
-}
-
-byte decr_with_wrap(byte value, byte min, byte max){
-    if (value == 0){
-        return max;
-    }
-    value -= 1;
-    if (value < min){
-        value = max;
-    }
-    return value;
-}
 
 UI::UI(Display* display, SensorManager* sensorManager, Store* store) :
     page(DEFAULT_PAGE),
-    subpage(0),
-    editing(false),
     nextRefresh(0),
-    blinkVisibility(true),
-    weekday(0),
-    hour(12),
-    minute(0),
-    timeSetAt(),
 
     display(display),
     sensorManager(sensorManager),
@@ -66,7 +27,7 @@ void UI::refresh(){
 
 void UI::redraw(){
     if (page == SUMMARY_PAGE) {
-        redrawSummaryPage();
+        redrawSummaryPage(display, sensorManager);
     }
 
     if (page == AC_PAGE) {
@@ -90,45 +51,11 @@ void UI::redraw(){
     }
 
     if (page == TIME_PAGE) {
-        redrawTimePage();
+        redrawTimePage(display);
     }
 
 }
 
-
-void UI::redrawSummaryPage(){
-    float power = sensorManager->getPower(PANEL);
-    float duty = sensorManager->getDuty(PANEL);
-    float theoretical_power = round(power / duty);
-    power = round(power);
-
-    display->lcd.setCursor(0, 0);
-    display->lcd.print("Sun");
-    display->leftPad(theoretical_power, 3);
-    display->lcd.print(theoretical_power, 0);
-    display->lcd.print("W");
-
-    display->lcd.print(" In");
-    display->leftPad(power, 3);
-    display->lcd.print(power, 0);
-    display->lcd.print("W");
-
-    display->lcd.print(DISPLAY_NOTHING);
-
-    power = round(sensorManager->getPower(LOAD) + sensorManager->getPower(LOAD2));
-    float bat_percent = round(sensorManager->getBatLevel() / sensorManager->getBatCapacity() * 100.0);
-    display->lcd.setCursor(0, 1);
-    display->lcd.print("Out");
-    display->leftPad(power, 3);
-    display->lcd.print(power, 0);
-    display->lcd.print("W");
-
-    display->lcd.print(" Bat");
-    display->leftPad(bat_percent, 2);
-    display->lcd.print(bat_percent, 0);
-    display->lcd.print("%");
-    display->lcd.print(DISPLAY_NOTHING);
-}
 
 void UI::redrawACPage(){
     float voltage = sensorManager->getVoltage(LOAD);
@@ -275,89 +202,17 @@ void UI::redrawDetailsPage(){
     display->lcd.print(DISPLAY_NOTHING);
 }
 
-void UI::redrawTimePage(){
-    unsigned long now;
-    display->lcd.setCursor(0, 0);
-    if (!editing) {
-        if (weekday == 0) {
-            display->printLine1("Time Unknown");
-            display->printLine2("Set using SELECT");
-        } else {
-            display->printLine1("Time");
-            display->lcd.setCursor(0, 1);
-            now = millis();
-            printTime(getWeekday(now), getHour(now), getMinute(now));
-            display->lcd.print(DISPLAY_NOTHING);
-        }
-    } else {
-        if (subpage == 0){
-            display->printLine1("Set Day of week:");
-            display->lcd.setCursor(0, 1);
-            printTime(weekday, hour, minute, true, false, false);
-            display->lcd.print(DISPLAY_NOTHING);
-        }
-        if (subpage == 1){
-            display->printLine1("Set Hour:");
-            display->lcd.setCursor(0, 1);
-            printTime(weekday, hour, minute, false, true, false);
-            display->lcd.print(DISPLAY_NOTHING);
-        }
-        if (subpage == 2){
-            display->printLine1("Set Minute:");
-            display->lcd.setCursor(0, 1);
-            printTime(weekday, hour, minute, false, false, true);
-            display->lcd.print(DISPLAY_NOTHING);
-        }
+boolean UI::handleButtonResult(int result){
+    if (result == HANDLED){
+        return true;
     }
 
-}
-
-void UI::printTime(byte day, byte hour, byte minute, bool blink_day, bool blink_hour, bool blink_minute){
-    bool blink = getBlink();
-
-    if (!blink_day || blink){
-        display->lcd.print(weekday_to_text(weekday));
-    } else{
-        display->lcd.print("   "); // Three characters for abbreviated weekday.
-    }
-    display->lcd.print(" ");
-
-    boolean pm = hour >= 12;
-    hour = hour % 12;
-    if (hour == 0){
-        hour = 12;
+    if (result == REDRAW_ASAP){
+        redrawASAP();
+        return true;
     }
 
-    if (!blink_hour || blink){
-        if (hour < 10) {
-            display->lcd.print("0");
-        }
-        display->lcd.print(hour);
-    } else {
-        display->lcd.print("  ");
-    }
-
-    display->lcd.print(":");
-
-    if (!blink_minute || blink){
-        if (minute < 10) {
-            display->lcd.print("0");
-        }
-        display->lcd.print(minute);
-    } else {
-        display->lcd.print("  ");
-    }
-    display->lcd.print(" ");
-
-    if (!blink_hour || blink){
-        if (pm){
-            display->lcd.print("PM");
-        } else {
-            display->lcd.print("AM");
-        }
-    } else {
-        display->lcd.print("  ");
-    }
+    return false;
 }
 
 
@@ -366,61 +221,7 @@ void UI::handleButton(int button){
     // More general near the bottom. More specific near the top.
     // This is to avoid a button press doing multiple things and having to
     // code all specific cases.
-
-    unsigned long now;
-
-    // Time page:
-    if (page == TIME_PAGE){
-        if (button == SELECT_BUTTON){
-            if (editing){
-                timeSetAt = millis();
-                editing = false;
-
-            } else {
-                editing = true;
-
-                if (weekday == 0){ // Time wasn't known previously
-                    weekday = 1;
-                } else {
-                    now = millis();
-                    weekday = getWeekday(now);
-                    hour = getHour(now);
-                    minute = getMinute(now);
-                }
-            }
-            redrawASAP();
-            return;
-        }
-        if (editing){
-            if (button == UP_BUTTON){
-                if (subpage == 0) weekday = incr_with_wrap(weekday, 1, 7);
-                if (subpage == 1) hour = incr_with_wrap(hour, 0, 23);
-                if (subpage == 2) minute = incr_with_wrap(minute, 0, 59);
-
-                redrawASAP();
-                return;
-            }
-            if (button == DOWN_BUTTON){
-                if (subpage == 0) weekday = decr_with_wrap(weekday, 1, 7);
-                if (subpage == 1) hour = decr_with_wrap(hour, 0, 23);
-                if (subpage == 2) minute = decr_with_wrap(minute, 0, 59);
-
-                redrawASAP();
-                return;
-            }
-            if (button == RIGHT_BUTTON){
-                subpage = incr_with_wrap(subpage, 0, 2);
-                redrawASAP();
-                return;
-            }
-            if (button == LEFT_BUTTON){
-                subpage = decr_with_wrap(subpage, 0, 2);
-                redrawASAP();
-                return;
-            }
-        }
-    }
-
+    int result;
 
     // Debug page:
     if (page == DEBUG_PAGE && button == SELECT_BUTTON) {
@@ -434,6 +235,11 @@ void UI::handleButton(int button){
 
         delayRedraw();
         return;
+    }
+
+    if (page == TIME_PAGE){
+        result = buttonsTimePage(button);
+        if (handleButtonResult(result)) return;
     }
 
     // Energy page:
@@ -455,13 +261,11 @@ void UI::handleButton(int button){
 
     // Cycle between pages:
     if (button == LEFT_BUTTON){
-        editing = false;
         page = decr_with_wrap(page, MIN_PAGE, MAX_PAGE);
         redrawASAP();
         return;
     }
     if (button == RIGHT_BUTTON){
-        editing = false;
         page = incr_with_wrap(page, MIN_PAGE, MAX_PAGE);
         redrawASAP();
         return;
@@ -495,33 +299,4 @@ void UI::redrawASAP(){
 
 void UI::delayRedraw(){
     nextRefresh = millis() + refreshPeriodMillis * 2;
-}
-
-boolean UI::getBlink(){
-    blinkVisibility = !blinkVisibility;
-    return blinkVisibility;
-}
-
-
-
-byte UI::getWeekday(unsigned long time){
-    unsigned long minutes_elapsed = (time - timeSetAt) / 60000;
-    unsigned long new_minute = minute + minutes_elapsed;
-    unsigned long new_hour = hour + new_minute / 60;
-    byte new_day = weekday + new_hour / 24;
-
-    return ((new_day - 1) % 7) + 1;
-}
-
-byte UI::getHour(unsigned long time){
-    unsigned long minutes_elapsed = (time - timeSetAt) / 60000;
-    unsigned long new_minute = minute + minutes_elapsed;
-    unsigned long new_hour = hour + new_minute / 60;
-    return new_hour % 24;
-}
-
-byte UI::getMinute(unsigned long time){
-    unsigned long minutes_elapsed = (time - timeSetAt) / 60000;
-    unsigned long new_minute = minute + minutes_elapsed;
-    return new_minute % 60;
 }
