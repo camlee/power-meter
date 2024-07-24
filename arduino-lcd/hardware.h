@@ -36,6 +36,8 @@
 
 // Battery:
 #define BAT_THEORETICAL_CAPACITY_WH 2500 // 215 AH at 5h, 260 AH at 20h (two 6V in series, 2021).
+#define BAT_NET_EFFICIENCY 0.8 // Approximate system efficiency. Ex. how much power you can take out
+                               // of the battery vs power you need to put in to fully recharge it.
 
 
 // Voltage factors:

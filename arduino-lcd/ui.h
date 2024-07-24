@@ -11,7 +11,7 @@
 #define ENERGY_PAGE 1
 #define PANEL_PAGE 2
 #define LOAD_PAGE 3
-#define DETAILS_PAGE 4
+#define BATTERY_PAGE 4
 #define DEBUG_PAGE 5
 #define TIME_PAGE 6
 // #define HISTORY_PAGE -1

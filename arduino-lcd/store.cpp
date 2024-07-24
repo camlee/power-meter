@@ -47,7 +47,7 @@ unsigned int Store::getLastUptime() {
 
 float Store::getSavedEnergyPanel() {
     return readUnsignedInt(EEPROM_ADDR_PANEL) * 3600.0;
-    // return 300 * 3600.0; // temp
+    // return 0 * 3600.0; // temp
 }
 
 float Store::getSavedEnergyLoad() {

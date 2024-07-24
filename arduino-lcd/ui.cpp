@@ -6,6 +6,7 @@
 #include "pages/time.h"
 #include "pages/energy.h"
 #include "pages/sensors.h"
+#include "pages/battery.h"
 
 
 UI::UI(Display* display, SensorManager* sensorManager, Store* store) :
@@ -30,7 +31,7 @@ void UI::redraw(){
     if (page == SUMMARY_PAGE) redrawSummaryPage(display, sensorManager);
     if (page == LOAD_PAGE) redrawSensorPage(LOAD, display, sensorManager);
     if (page == PANEL_PAGE) redrawSensorPage(PANEL, display, sensorManager);
-    if (page == DETAILS_PAGE) redrawDetailsPage();
+    if (page == BATTERY_PAGE) redrawBatteryPage(display, sensorManager);
     if (page == ENERGY_PAGE) redrawEnergyPage(display, sensorManager);
     if (page == DEBUG_PAGE) redrawDebugPage();
     if (page == TIME_PAGE) redrawTimePage(display);
@@ -86,28 +87,6 @@ void UI::redrawDebugPage(){
     //         // display->lcd.print(" Wh");
     //         // display->lcd.print(DISPLAY_NOTHING);
     //     }
-
-void UI::redrawDetailsPage(){
-    display->lcd.setCursor(0, 0);
-    display->lcd.print("Bat ");
-    display->lcd.print(sensorManager->getBatLevel() / 3600.0, 0);
-    display->lcd.print("/");
-    display->lcd.print(sensorManager->getBatCapacity() / 3600.0, 0);
-    display->lcd.print(" Wh");
-    display->lcd.print(DISPLAY_NOTHING);
-
-    display->lcd.setCursor(0, 1);
-    display->lcd.print(sensorManager->getBatMin() / 3600.0, 0);
-    display->lcd.print("<->");
-    display->lcd.print(sensorManager->getBatMax() / 3600.0, 0);
-    display->lcd.print("Wh");
-    // float bat_percent = round((sensorManager->getBatMax() - sensorManager->getBatMin()) / sensorManager->getBatCapacity() * 1000)/10;
-    // display->leftPad(bat_percent, 2);
-    // display->lcd.print(bat_percent, 1);
-    // display->lcd.print("%");
-
-    display->lcd.print(DISPLAY_NOTHING);
-}
 
 bool UI::handleButtonResult(int result){
     if (result == HANDLED){

@@ -227,7 +227,7 @@ float SensorManager::getDuty(int sensor){
 
 
 float SensorManager::getNetEnergy(){
-    return energy[PANEL] - (energy[LOAD] + energy[LOAD2]);
+    return (energy[PANEL] - (energy[LOAD] + energy[LOAD2])) * BAT_NET_EFFICIENCY;
 }
 
 float SensorManager::getBatLevel(){
