@@ -7,10 +7,13 @@
     // Throw away the first reading and average the next five.
     // This is to try and improve stability.
 
-#define VOLTAGE_READING(pin, factor) (THROW1AVG5(analogRead(pin)) * FACTOR * factor)
-#define CURRENT_READING(pin, zero, factor) (((THROW1AVG5(analogRead(pin)) * FACTOR) - zero) * factor)
+#define ADC_READING(pin) (THROW1AVG5(analogRead(pin)) * FACTOR)
+#define ADC_READING(pin) (THROW1AVG5(analogRead(pin)) * FACTOR)
 
 SensorManager::SensorManager() :
+    voltage_factor(),
+    current_zero(),
+    current_factor(),
     voltage_buffer(),
     current_buffer(),
     buffer_index(0),
@@ -22,51 +25,66 @@ SensorManager::SensorManager() :
 {}
 
 void SensorManager::setup(float panelEnergy, float loadEnergy){
-    // Serial.print("SensorManager setUp with: ");
-    // Serial.print("panelEnergy: ");
-    // Serial.print(panelEnergy);
-    // Serial.print("\n");
-    // Serial.print("loadEnergy: ");
-    // Serial.print(loadEnergy);
-    // Serial.print("\n");
-
-
     energy[PANEL] = panelEnergy;
     energy[LOAD] = loadEnergy;
+
+    voltage_factor[LOAD] = LOAD_VOLTAGE_FACTOR;
+    voltage_factor[PANEL] = PANEL_VOLTAGE_FACTOR;
+    voltage_factor[LOAD2] = LOAD2_VOLTAGE_FACTOR;
+
+    current_zero[LOAD] = LOAD_CURRENT_ZERO;
+    current_zero[PANEL] = PANEL_CURRENT_ZERO;
+    current_zero[LOAD2] = LOAD2_CURRENT_ZERO;
+
+    current_factor[LOAD] = LOAD_CURRENT_FACTOR;
+    current_factor[PANEL] = PANEL_CURRENT_FACTOR;
+    current_factor[LOAD2] = LOAD2_CURRENT_FACTOR;
 }
 
 void SensorManager::refresh(){
     if (millis() > nextReadTime){
         #ifdef LOAD_VOLTAGE_PIN
-            voltage_buffer[LOAD][buffer_index] = VOLTAGE_READING(LOAD_VOLTAGE_PIN, LOAD_VOLTAGE_FACTOR);
+            voltage_buffer[LOAD][buffer_index] = ADC_READING(LOAD_VOLTAGE_PIN);
         #endif
         #ifdef LOAD_CURRENT_PIN
-            current_buffer[LOAD][buffer_index] = CURRENT_READING(LOAD_CURRENT_PIN, LOAD_CURRENT_ZERO, LOAD_CURRENT_FACTOR);
+            current_buffer[LOAD][buffer_index] = ADC_READING(LOAD_CURRENT_PIN);
         #endif
         #if defined(LOAD_VOLTAGE_PIN) && defined(LOAD_CURRENT_PIN)
-        energy[LOAD] += voltage_buffer[LOAD][buffer_index] * current_buffer[LOAD][buffer_index] * (millis() - lastReadTime[LOAD]) / 1000.0;
+        energy[LOAD] += (
+            readingToVoltage(LOAD, voltage_buffer[LOAD][buffer_index])
+            * readingToCurrent(LOAD, current_buffer[LOAD][buffer_index])
+            * (millis() - lastReadTime[LOAD]) / 1000.0
+            );
         lastReadTime[LOAD] = millis();
         #endif
 
         #ifdef PANEL_VOLTAGE_PIN
-            voltage_buffer[PANEL][buffer_index] = VOLTAGE_READING(PANEL_VOLTAGE_PIN, PANEL_VOLTAGE_FACTOR);
+            voltage_buffer[PANEL][buffer_index] = ADC_READING(PANEL_VOLTAGE_PIN);
         #endif
         #ifdef PANEL_CURRENT_PIN
-            current_buffer[PANEL][buffer_index] = CURRENT_READING(PANEL_CURRENT_PIN, PANEL_CURRENT_ZERO, PANEL_CURRENT_FACTOR);
+            current_buffer[PANEL][buffer_index] = ADC_READING(PANEL_CURRENT_PIN);
         #endif
         #if defined(PANEL_VOLTAGE_PIN) && defined(PANEL_CURRENT_PIN)
-        energy[PANEL] += voltage_buffer[PANEL][buffer_index] * current_buffer[PANEL][buffer_index] * (millis() - lastReadTime[PANEL]) / 1000.0;
+        energy[PANEL] += (
+            readingToVoltage(PANEL, voltage_buffer[PANEL][buffer_index])
+            * readingToCurrent(PANEL, current_buffer[PANEL][buffer_index])
+            * (millis() - lastReadTime[PANEL]) / 1000.0
+            );
         lastReadTime[PANEL] = millis();
         #endif
 
         #ifdef LOAD2_VOLTAGE_PIN
-            voltage_buffer[LOAD2][buffer_index] = VOLTAGE_READING(LOAD2_VOLTAGE_PIN, LOAD2_VOLTAGE_FACTOR);
+            voltage_buffer[LOAD2][buffer_index] = ADC_READING(LOAD2_VOLTAGE_PIN);
         #endif
         #ifdef LOAD2_CURRENT_PIN
-            current_buffer[LOAD2][buffer_index] = CURRENT_READING(LOAD2_CURRENT_PIN, LOAD2_CURRENT_ZERO, LOAD2_CURRENT_FACTOR);
+            current_buffer[LOAD2][buffer_index] = ADC_READING(LOAD2_CURRENT_PIN);
         #endif
         #if defined(LOAD2_VOLTAGE_PIN) && defined(LOAD2_CURRENT_PIN)
-        energy[LOAD2] += voltage_buffer[LOAD2][buffer_index] * current_buffer[LOAD2][buffer_index] * (millis() - lastReadTime[LOAD2]) / 1000.0;
+        energy[LOAD2] += (
+            readingToVoltage(LOAD2, voltage_buffer[LOAD2][buffer_index])
+            * readingToCurrent(LOAD2, current_buffer[LOAD2][buffer_index])
+            * (millis() - lastReadTime[LOAD2]) / 1000.0
+            );
         lastReadTime[LOAD2] = millis();
         #endif
 
@@ -86,39 +104,42 @@ void SensorManager::refresh(){
 
         #ifdef LOG_READINGS
             #ifdef LOAD_VOLTAGE_PIN
-            Serial.print(voltage_buffer[LOAD][buffer_index], 2);
+            Serial.print(readingToVoltage(LOAD, voltage_buffer[LOAD][buffer_index]), 2);
             Serial.print(", ");
             #endif
             #ifdef LOAD2_VOLTAGE_PIN
-            Serial.print(voltage_buffer[LOAD2][buffer_index], 2);
+            Serial.print(readingToVoltage(LOAD2, voltage_buffer[LOAD2][buffer_index]), 2);
             Serial.print(", ");
             #endif
             #ifdef PANEL_VOLTAGE_PIN
-            Serial.print(voltage_buffer[PANEL][buffer_index], 2);
+            Serial.print(readingToVoltage(PANEL, voltage_buffer[PANEL][buffer_index]), 2);
             Serial.print(", ");
             #endif
             #ifdef LOAD_CURRENT_PIN
-            Serial.print(current_buffer[LOAD][buffer_index], 2);
+            Serial.print(readingtoCurrent(LOAD, current_buffer[LOAD][buffer_index]), 2);
             Serial.print(", ");
             #endif
             #ifdef LOAD2_CURRENT_PIN
-            Serial.print(current_buffer[LOAD2][buffer_index], 2);
+            Serial.print(readingtoCurrent(LOAD2, current_buffer[LOAD2][buffer_index]), 2);
             Serial.print(", ");
             #endif
             #ifdef PANEL_CURRENT_PIN
-            Serial.print(current_buffer[PANEL][buffer_index], 2);
+            Serial.print(readingtoCurrent(PANEL, current_buffer[PANEL][buffer_index]), 2);
             Serial.print(", ");
             #endif
             #if defined(LOAD_VOLTAGE_PIN) && defined(LOAD_CURRENT_PIN)
-            Serial.print(voltage_buffer[LOAD][buffer_index] * current_buffer[LOAD][buffer_index], 2);
+            Serial.print(readingToVoltage(LOAD, voltage_buffer[LOAD][buffer_index])
+                * readingtoCurrent(LOAD, current_buffer[LOAD][buffer_index]), 2);
             Serial.print(", ");
             #endif
             #if defined(LOAD2_VOLTAGE_PIN) && defined(LOAD2_CURRENT_PIN)
-            Serial.print(voltage_buffer[LOAD2][buffer_index] * current_buffer[LOAD2][buffer_index], 2);
+            Serial.print(readingToVoltage(LOAD2, voltage_buffer[LOAD2][buffer_index])
+                * readingtoCurrent(LOAD2, current_buffer[LOAD2][buffer_index]), 2);
             Serial.print(", ");
             #endif
             #if defined(PANEL_VOLTAGE_PIN) && defined(PANEL_CURRENT_PIN)
-            Serial.print(voltage_buffer[PANEL][buffer_index] * current_buffer[PANEL][buffer_index], 2);
+            Serial.print(readingToVoltage(PANEL, voltage_buffer[PANEL][buffer_index])
+                * readingtoCurrent(PANEL, current_buffer[PANEL][buffer_index]), 2);
             Serial.print("\n");
             #endif
         #endif
@@ -126,11 +147,24 @@ void SensorManager::refresh(){
     }
 }
 
+float SensorManager::readingToVoltage(int sensor, float reading){
+    return reading * voltage_factor[sensor];
+}
+
+float SensorManager::readingToCurrent(int sensor, float reading, float zero, float factor){
+    if (isnan(zero)) {
+        zero = current_zero[sensor];
+    }
+    if (isnan(factor)) {
+        factor = current_factor[sensor];
+    }
+    return (reading - zero) * factor;
+}
 
 float SensorManager::getPower(int sensor){
     float total = 0;
     for (unsigned int i=0; i<SENSOR_READINGS_WINDOW; ++i){
-        total += voltage_buffer[sensor][i] * current_buffer[sensor][i];
+        total += readingToVoltage(sensor, voltage_buffer[sensor][i]) * readingToCurrent(sensor, current_buffer[sensor][i]);
     }
     return total / SENSOR_READINGS_WINDOW;
 }
@@ -140,15 +174,15 @@ float SensorManager::getVoltage(int sensor){
     for (unsigned int i=0; i<SENSOR_READINGS_WINDOW; ++i){
         total += voltage_buffer[sensor][i];
     }
-    return total / SENSOR_READINGS_WINDOW;
+    return readingToVoltage(sensor, total) / SENSOR_READINGS_WINDOW;
 }
 
-float SensorManager::getCurrent(int sensor){
+float SensorManager::getCurrent(int sensor, float zero, float factor){
     float total = 0;
     for (unsigned int i=0; i<SENSOR_READINGS_WINDOW; ++i){
         total += current_buffer[sensor][i];
     }
-    return total / SENSOR_READINGS_WINDOW;
+    return readingToCurrent(sensor, total / SENSOR_READINGS_WINDOW, zero, factor);
 }
 
 float SensorManager::getEnergy(int sensor){
@@ -171,8 +205,8 @@ float SensorManager::getDuty(int sensor){
     float power;
 
     for (unsigned int i=0; i<SENSOR_READINGS_WINDOW; ++i){
-        total_power += voltage_buffer[sensor][i] * current_buffer[sensor][i];
-        power = voltage_buffer[sensor][i] * current_buffer[sensor][i];
+        power = readingToVoltage(sensor, voltage_buffer[sensor][i]) * readingToCurrent(sensor, current_buffer[sensor][i]);
+        total_power += power;
         if (power >= max_power1){
             max_power6 = max_power5;
             max_power5 = max_power4;
@@ -247,4 +281,23 @@ float SensorManager::getBatMin(){
 
 float SensorManager::getBatMax(){
     return max_bat;
+}
+
+float SensorManager::getCurrentZero(int sensor){
+    return current_zero[sensor];
+}
+void SensorManager::setCurrentZero(int sensor, float value){
+    current_zero[sensor] = value;
+}
+float SensorManager::getCurrentFactor(int sensor){
+    return current_factor[sensor];
+}
+void SensorManager::setCurrentFactor(int sensor, float value){
+    current_factor[sensor] = value;
+}
+float SensorManager::getVoltageFactor(int sensor){
+    return voltage_factor[sensor];
+}
+void SensorManager::setVoltageFactor(int sensor, float value){
+    voltage_factor[sensor] = value;
 }

@@ -52,7 +52,7 @@ float Store::getSavedEnergyPanel() {
 
 float Store::getSavedEnergyLoad() {
     return readUnsignedInt(EEPROM_ADDR_LOAD) * 3600.0;
-    // return 208.0 * 3600.0; // temp
+    // return 185.0 * 3600.0; // temp
 }
 
 void Store::writeUnsignedInt(byte addr, unsigned int value) {

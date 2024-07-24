@@ -1,6 +1,5 @@
 #include "../ui.h"
 #include "../sensor.h"
-#include "../store.h"
 
 #define SENSOR_MAIN_SUBPAGE 0
 #define SENSOR_CALIBRATE_SUBPAGE 1
@@ -15,9 +14,12 @@ int sensor_subpage = SENSOR_MAIN_SUBPAGE;
 bool sensor_enter_calibration = false;
 int sensor_calibrating_page = SENSOR_CURRENT_ZERO_CALIBRATING_PAGE;
 
-float calibration_value;
+float sensor_current_zero_calibration_value;
+float sensor_current_factor_calibration_value;
+float sensor_voltage_factor_calibration_value;
 
 void printCurrent(Display *display, float current){
+    if (abs(current) < 0.005) current = 0.0; // To avoid bouncing around -0.0
     display->leftPad(current, 1);
     display->lcd.print(current, 2);
     display->lcd.print(" A");
@@ -27,6 +29,13 @@ void printVoltage(Display *display, float voltage){
     display->leftPad(voltage, 1);
     display->lcd.print(voltage, 2);
     display->lcd.print(" V");
+}
+
+void printPower(Display *display, float power){
+    if (abs(power) < 0.005) power = 0.0; // To avoid bouncing around -0.0
+    display->leftPad(round(power), 2);
+    display->lcd.print(power, 1);
+    display->lcd.print("W");
 }
 
 void redrawSensorMainPage(int sensor, Display *display, SensorManager *sensorManager){
@@ -45,9 +54,7 @@ void redrawSensorMainPage(int sensor, Display *display, SensorManager *sensorMan
         display->lcd.print("Out");
     }
 
-    display->leftPad(round(power), 2);
-    display->lcd.print(power, 1);
-    display->lcd.print("W");
+    printPower(display, power);
     if (sensor == PANEL && duty < 90 && power > 30){
         display->lcd.print(" PWM ");
         display->leftPad(duty, 1);
@@ -92,33 +99,32 @@ void redrawSensorCalibrationPage(int sensor, Display *display, SensorManager *se
 
     if (sensor_calibrating_page == SENSOR_CURRENT_ZERO_CALIBRATING_PAGE){
         display->lcd.print("A Zero");
+        display->leftPad(sensor_current_zero_calibration_value, 1);
+        display->lcd.print(sensor_current_zero_calibration_value, 3);
     }
     if (sensor_calibrating_page == SENSOR_CURRENT_FACTOR_CALIBRATING_PAGE){
         display->lcd.print("A Mult");
+        display->leftPad(sensor_current_factor_calibration_value, 1);
+        display->lcd.print(sensor_current_factor_calibration_value, 3);
     }
     if (sensor_calibrating_page == SENSOR_VOLTAGE_FACTOR_CALIBRATING_PAGE){
         display->lcd.print("V Mult");
+        display->leftPad(sensor_voltage_factor_calibration_value, 1);
+        display->lcd.print(sensor_voltage_factor_calibration_value, 3);
     }
 
-    if (sensor == PANEL) {
-        display->leftPad(calibration_value, 2);
-    }
-    if (sensor == LOAD) {
-        display->leftPad(calibration_value, 1);
-    }
-    display->lcd.print(calibration_value, 3);
     display->lcd.print(DISPLAY_NOTHING);
     display->lcd.setCursor(0, 1);
 
     if (sensor_calibrating_page == SENSOR_CURRENT_ZERO_CALIBRATING_PAGE){
         printCurrent(display, sensorManager->getCurrent(sensor));
         display->lcd.print("  ");
-        printCurrent(display, sensorManager->getCurrent(sensor));
+        printCurrent(display, sensorManager->getCurrent(sensor, sensor_current_zero_calibration_value, sensor_current_factor_calibration_value));
     }
     if (sensor_calibrating_page == SENSOR_CURRENT_FACTOR_CALIBRATING_PAGE){
         printCurrent(display, sensorManager->getCurrent(sensor));
         display->lcd.print("  ");
-        printCurrent(display, sensorManager->getCurrent(sensor));
+        printCurrent(display, sensorManager->getCurrent(sensor, sensor_current_zero_calibration_value, sensor_current_factor_calibration_value));
     }
     if (sensor_calibrating_page == SENSOR_VOLTAGE_FACTOR_CALIBRATING_PAGE){
         printVoltage(display, sensorManager->getVoltage(sensor));
@@ -134,7 +140,7 @@ void redrawSensorPage(int sensor, Display *display, SensorManager *sensorManager
     if (sensor_subpage == SENSOR_CALIBRATING_SUBPAGE) redrawSensorCalibrationPage(sensor, display, sensorManager);
 }
 
-int buttonsSensorPage(int sensor, int button, Display *display, Store *store){
+int buttonsSensorPage(int sensor, int button, Display *display, SensorManager *sensorManager){
     if (sensor_subpage == SENSOR_MAIN_SUBPAGE){
         if (button == SELECT_BUTTON) {
             sensor_subpage = SENSOR_CALIBRATE_SUBPAGE;
@@ -146,7 +152,9 @@ int buttonsSensorPage(int sensor, int button, Display *display, Store *store){
             if (sensor_enter_calibration){
                 sensor_subpage = SENSOR_CALIBRATING_SUBPAGE;
                 sensor_enter_calibration = false;
-                calibration_value = PANEL_CURRENT_ZERO;
+                sensor_current_zero_calibration_value = sensorManager->getCurrentZero(sensor);
+                sensor_current_factor_calibration_value = sensorManager->getCurrentFactor(sensor);
+                sensor_voltage_factor_calibration_value = sensorManager->getVoltageFactor(sensor);
                 return REDRAW_NOW;
             } else {
                 sensor_subpage = SENSOR_MAIN_SUBPAGE;
@@ -162,15 +170,34 @@ int buttonsSensorPage(int sensor, int button, Display *display, Store *store){
     if (sensor_subpage == SENSOR_CALIBRATING_SUBPAGE) {
         if (button == SELECT_BUTTON){
             sensor_subpage = SENSOR_MAIN_SUBPAGE;
-            display->printLines("Calibration set!", "(not really)");
+            sensorManager->setCurrentZero(sensor, sensor_current_zero_calibration_value);
+            sensorManager->setCurrentFactor(sensor, sensor_current_factor_calibration_value);
+            sensorManager->setVoltageFactor(sensor, sensor_voltage_factor_calibration_value);
+            display->printLines("Calibration set!", "(ephemeral)");
             return DELAY_REDRAW;
         }
         if (button == UP_BUTTON){
-            calibration_value += 0.001;
+            if (sensor_calibrating_page == SENSOR_CURRENT_ZERO_CALIBRATING_PAGE){
+                sensor_current_zero_calibration_value += 0.001;
+            }
+            if (sensor_calibrating_page == SENSOR_CURRENT_FACTOR_CALIBRATING_PAGE){
+                sensor_current_factor_calibration_value += 0.001;
+            }
+            if (sensor_calibrating_page == SENSOR_VOLTAGE_FACTOR_CALIBRATING_PAGE){
+                sensor_voltage_factor_calibration_value += 0.001;
+            }
             return HANDLED;
         }
         if (button == DOWN_BUTTON){
-            calibration_value -= 0.001;
+            if (sensor_calibrating_page == SENSOR_CURRENT_ZERO_CALIBRATING_PAGE){
+                sensor_current_zero_calibration_value -= 0.001;
+            }
+            if (sensor_calibrating_page == SENSOR_CURRENT_FACTOR_CALIBRATING_PAGE){
+                sensor_current_factor_calibration_value -= 0.001;
+            }
+            if (sensor_calibrating_page == SENSOR_VOLTAGE_FACTOR_CALIBRATING_PAGE){
+                sensor_voltage_factor_calibration_value -= 0.001;
+            }
             return HANDLED;
         }
         if (button == RIGHT_BUTTON){
