@@ -5,14 +5,20 @@
 #define SENSOR_CALIBRATE_SUBPAGE 1
 #define SENSOR_CALIBRATING_SUBPAGE 2
 
+#define SENSOR_CALIBRATING_PAGE_MIN 0
+#define SENSOR_CALIBRATING_PAGE_DEFAULT 0
 #define SENSOR_CURRENT_ZERO_CALIBRATING_PAGE 0
 #define SENSOR_CURRENT_FACTOR_CALIBRATING_PAGE 1
 #define SENSOR_VOLTAGE_FACTOR_CALIBRATING_PAGE 2
+#define SENSOR_SAVE_CALIBRATING_PAGE 3
+#define SENSOR_RESET_CALIBRATING_PAGE 4
+#define SENSOR_CANCEL_CALIBRATING_PAGE 5
+#define SENSOR_CALIBRATING_PAGE_MAX 5
 
 
 int sensor_subpage = SENSOR_MAIN_SUBPAGE;
 bool sensor_enter_calibration = false;
-int sensor_calibrating_page = SENSOR_CURRENT_ZERO_CALIBRATING_PAGE;
+int sensor_calibrating_page = SENSOR_CALIBRATING_PAGE_DEFAULT;
 
 float sensor_current_zero_calibration_value;
 float sensor_current_factor_calibration_value;
@@ -101,35 +107,42 @@ void redrawSensorCalibrationPage(int sensor, Display *display, SensorManager *se
         display->lcd.print("A Zero");
         display->leftPad(sensor_current_zero_calibration_value, 1);
         display->lcd.print(sensor_current_zero_calibration_value, 3);
+        display->lcd.print(DISPLAY_NOTHING);
+        display->lcd.setCursor(0, 1);
+        printCurrent(display, sensorManager->getCurrent(sensor));
+        display->lcd.print("  ");
+        printCurrent(display, sensorManager->getCurrent(sensor,
+            sensor_current_zero_calibration_value, sensor_current_factor_calibration_value));
     }
     if (sensor_calibrating_page == SENSOR_CURRENT_FACTOR_CALIBRATING_PAGE){
         display->lcd.print("A Mult");
         display->leftPad(sensor_current_factor_calibration_value, 1);
         display->lcd.print(sensor_current_factor_calibration_value, 3);
+        display->lcd.print(DISPLAY_NOTHING);
+        display->lcd.setCursor(0, 1);
+        printCurrent(display, sensorManager->getCurrent(sensor));
+        display->lcd.print("  ");
+        printCurrent(display, sensorManager->getCurrent(sensor,
+            sensor_current_zero_calibration_value, sensor_current_factor_calibration_value));
     }
     if (sensor_calibrating_page == SENSOR_VOLTAGE_FACTOR_CALIBRATING_PAGE){
         display->lcd.print("V Mult");
         display->leftPad(sensor_voltage_factor_calibration_value, 1);
         display->lcd.print(sensor_voltage_factor_calibration_value, 3);
-    }
-
-    display->lcd.print(DISPLAY_NOTHING);
-    display->lcd.setCursor(0, 1);
-
-    if (sensor_calibrating_page == SENSOR_CURRENT_ZERO_CALIBRATING_PAGE){
-        printCurrent(display, sensorManager->getCurrent(sensor));
-        display->lcd.print("  ");
-        printCurrent(display, sensorManager->getCurrent(sensor, sensor_current_zero_calibration_value, sensor_current_factor_calibration_value));
-    }
-    if (sensor_calibrating_page == SENSOR_CURRENT_FACTOR_CALIBRATING_PAGE){
-        printCurrent(display, sensorManager->getCurrent(sensor));
-        display->lcd.print("  ");
-        printCurrent(display, sensorManager->getCurrent(sensor, sensor_current_zero_calibration_value, sensor_current_factor_calibration_value));
-    }
-    if (sensor_calibrating_page == SENSOR_VOLTAGE_FACTOR_CALIBRATING_PAGE){
+        display->lcd.print(DISPLAY_NOTHING);
+        display->lcd.setCursor(0, 1);
         printVoltage(display, sensorManager->getVoltage(sensor));
         display->lcd.print("  ");
         printVoltage(display, sensorManager->getVoltage(sensor));
+    }
+    if (sensor_calibrating_page == SENSOR_SAVE_CALIBRATING_PAGE){
+        display->printLines("Save Changes?", "");
+    }
+    if (sensor_calibrating_page == SENSOR_RESET_CALIBRATING_PAGE){
+        display->printLines("Reset to ", "defaults?");
+    }
+    if (sensor_calibrating_page == SENSOR_CANCEL_CALIBRATING_PAGE){
+        display->printLines("Cancel?", "");
     }
 }
 
@@ -169,12 +182,29 @@ int buttonsSensorPage(int sensor, int button, Display *display, SensorManager *s
     }
     if (sensor_subpage == SENSOR_CALIBRATING_SUBPAGE) {
         if (button == SELECT_BUTTON){
-            sensor_subpage = SENSOR_MAIN_SUBPAGE;
-            sensorManager->setCurrentZero(sensor, sensor_current_zero_calibration_value);
-            sensorManager->setCurrentFactor(sensor, sensor_current_factor_calibration_value);
-            sensorManager->setVoltageFactor(sensor, sensor_voltage_factor_calibration_value);
-            display->printLines("Calibration set!", "(ephemeral)");
-            return DELAY_REDRAW;
+            if (sensor_calibrating_page == SENSOR_SAVE_CALIBRATING_PAGE) {
+                sensorManager->setCurrentZero(sensor, sensor_current_zero_calibration_value);
+                sensorManager->setCurrentFactor(sensor, sensor_current_factor_calibration_value);
+                sensorManager->setVoltageFactor(sensor, sensor_voltage_factor_calibration_value);
+                display->printLines("Calibration", "set!");
+                sensor_subpage = SENSOR_MAIN_SUBPAGE;
+                sensor_calibrating_page = SENSOR_CALIBRATING_PAGE_DEFAULT;
+                return DELAY_REDRAW;
+            }
+            if (sensor_calibrating_page == SENSOR_RESET_CALIBRATING_PAGE) {
+                sensorManager->setCurrentZero(sensor);
+                sensorManager->setCurrentFactor(sensor);
+                sensorManager->setVoltageFactor(sensor);
+                display->printLines("Calibration", "reset!");
+                sensor_subpage = SENSOR_MAIN_SUBPAGE;
+                sensor_calibrating_page = SENSOR_CALIBRATING_PAGE_DEFAULT;
+                return DELAY_REDRAW;
+            }
+            if (sensor_calibrating_page == SENSOR_CANCEL_CALIBRATING_PAGE){
+                sensor_subpage = SENSOR_MAIN_SUBPAGE;
+                sensor_calibrating_page = SENSOR_CALIBRATING_PAGE_DEFAULT;
+                return REDRAW_NOW;
+            }
         }
         if (button == UP_BUTTON){
             if (sensor_calibrating_page == SENSOR_CURRENT_ZERO_CALIBRATING_PAGE){
@@ -201,11 +231,11 @@ int buttonsSensorPage(int sensor, int button, Display *display, SensorManager *s
             return HANDLED;
         }
         if (button == RIGHT_BUTTON){
-            sensor_calibrating_page = incr_with_wrap(sensor_calibrating_page, 0, 2);
+            sensor_calibrating_page = incr_with_wrap(sensor_calibrating_page, SENSOR_CALIBRATING_PAGE_MIN, SENSOR_CALIBRATING_PAGE_MAX);
             return REDRAW_NOW;
         }
         if (button == LEFT_BUTTON){
-            sensor_calibrating_page = decr_with_wrap(sensor_calibrating_page, 0, 2);
+            sensor_calibrating_page = decr_with_wrap(sensor_calibrating_page, SENSOR_CALIBRATING_PAGE_MIN, SENSOR_CALIBRATING_PAGE_MAX);
             return REDRAW_NOW;
         }
     }

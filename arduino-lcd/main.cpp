@@ -9,8 +9,8 @@
 
 Display display = Display();
 ButtonManager buttonManager = ButtonManager();
-SensorManager sensorManager = SensorManager();
 Store store = Store();
+SensorManager sensorManager = SensorManager(&store);
 UI ui = UI(&display, &sensorManager, &store);
 
 void setup(){
@@ -19,10 +19,7 @@ void setup(){
     store.setup();
     display.setup();
     buttonManager.setup();
-    sensorManager.setup(
-        store.getSavedEnergyPanel(),
-        store.getSavedEnergyLoad()
-        );
+    sensorManager.setup();
     ui.setup();
 
 }
@@ -35,10 +32,7 @@ void loop(){
     display.refresh();
     buttonManager.refresh();
     sensorManager.refresh();
-    store.refresh(
-        sensorManager.getEnergy(PANEL),
-        sensorManager.getEnergy(LOAD)
-        );
+    store.refresh();
     ui.refresh();
 }
 

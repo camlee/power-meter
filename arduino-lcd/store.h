@@ -5,8 +5,7 @@
 
 class Store {
 private:
-    byte restarts;
-    unsigned int lastUptime;
+    unsigned int restarts;
     unsigned long nextPersist;
 
     void writeUnsignedInt(byte, unsigned int);
@@ -17,15 +16,27 @@ public:
 
     Store();
     void setup();
-    void refresh(float, float);
+    void refresh();
 
-    byte getRestarts();
-    unsigned int getLastUptime(); // In minutes
+    unsigned int getRestarts();
 
     float getSavedEnergyPanel();
     float getSavedEnergyLoad();
+    void setSavedEnergy(float, float, bool=false);
 
-    void persistNow();
+    float getSavedPanelCurrentZero();
+    void setSavedPanelCurrentZero(float);
+    float getSavedPanelCurrentFactor();
+    void setSavedPanelCurrentFactor(float);
+    float getSavedPanelVoltageFactor();
+    void setSavedPanelVoltageFactor(float);
+
+    float getSavedLoadCurrentZero();
+    void setSavedLoadCurrentZero(float);
+    float getSavedLoadCurrentFactor();
+    void setSavedLoadCurrentFactor(float);
+    float getSavedLoadVoltageFactor();
+    void setSavedLoadVoltageFactor(float);
 };
 
 #endif

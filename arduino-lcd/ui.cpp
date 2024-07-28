@@ -7,7 +7,7 @@
 #include "pages/energy.h"
 #include "pages/sensors.h"
 #include "pages/battery.h"
-
+#include "pages/debug.h"
 
 UI::UI(Display* display, SensorManager* sensorManager, Store* store) :
     page(DEFAULT_PAGE),
@@ -33,34 +33,8 @@ void UI::redraw(){
     if (page == PANEL_PAGE) redrawSensorPage(PANEL, display, sensorManager);
     if (page == BATTERY_PAGE) redrawBatteryPage(display, sensorManager);
     if (page == ENERGY_PAGE) redrawEnergyPage(display, sensorManager);
-    if (page == DEBUG_PAGE) redrawDebugPage();
+    if (page == DEBUG_PAGE) redrawDebugPage(display, store);
     if (page == TIME_PAGE) redrawTimePage(display);
-}
-
-void UI::redrawDebugPage(){
-    unsigned long uptime = millis() / 60000; // In minutes
-    display->lcd.setCursor(0, 0);
-    display->lcd.print("Up");
-    display->leftPad(uptime, 3);
-    display->lcd.print(uptime);
-    display->lcd.print("m");
-
-    display->lcd.print(" Last");
-    uptime = store->getLastUptime(); // In minutes
-    display->leftPad(uptime, 2);
-    display->lcd.print(uptime);
-    display->lcd.print("m");
-    display->lcd.print(DISPLAY_NOTHING);
-
-    display->lcd.setCursor(0, 1);
-    display->lcd.print("Boot");
-    display->leftPad(store->getRestarts(), 2);
-    display->lcd.print(store->getRestarts());
-
-    display->lcd.print(" Write");
-    display->leftPad(store->writes, 2);
-    display->lcd.print(store->writes);
-    display->lcd.print(DISPLAY_NOTHING);
 }
 
     //     if (page == HISTORY_PAGE){
@@ -117,24 +91,10 @@ void UI::handleButton(int button){
     if (page != PANEL_PAGE && page != LOAD_PAGE) resetSensorPage();
 
     if (page == TIME_PAGE && handleButtonResult(buttonsTimePage(button))) return;
-    if (page == ENERGY_PAGE && handleButtonResult(buttonsEnergyPage(button, display, sensorManager, store))) return;
+    if (page == ENERGY_PAGE && handleButtonResult(buttonsEnergyPage(button, display, sensorManager))) return;
     if (page == PANEL_PAGE && handleButtonResult(buttonsSensorPage(PANEL, button, display, sensorManager))) return;
     if (page == LOAD_PAGE && handleButtonResult(buttonsSensorPage(LOAD, button, display, sensorManager))) return;
-
-    // Debug page:
-    if (page == DEBUG_PAGE && button == SELECT_BUTTON) {
-        store->persistNow();
-        display->lcd.setCursor(0, 0);
-        display->lcd.print("Saved!");
-        display->lcd.print(DISPLAY_NOTHING);
-
-        display->lcd.setCursor(0, 1);
-        display->lcd.print(DISPLAY_NOTHING);
-
-        delayRedraw();
-        return;
-    }
-
+    if (page == DEBUG_PAGE && handleButtonResult(buttonsDebugPage(button, display, sensorManager))) return;
 
     // Cycle between pages:
     if (button == LEFT_BUTTON){
@@ -147,27 +107,6 @@ void UI::handleButton(int button){
         redrawNow();
         return;
     }
-
-    // Brightness controls:
-    if (button == UP_BUTTON){
-        display->brightnessUp();
-    }
-    if (button == DOWN_BUTTON){
-        display->brightnessDown();
-    }
-    if (button == UP_BUTTON || button == DOWN_BUTTON){
-        display->lcd.setCursor(0, 0);
-        display->lcd.print("Brightness: ");
-        display->lcd.print(display->getBrightness() * 100 / display->brightnessIncrements);
-        display->lcd.print("%     ");
-
-        display->lcd.setCursor(0, 1);
-        display->lcd.print(DISPLAY_NOTHING);
-
-        delayRedraw();
-        return;
-    }
-
 }
 
 void UI::redrawNow(){

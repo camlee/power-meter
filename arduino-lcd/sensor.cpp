@@ -10,7 +10,8 @@
 #define ADC_READING(pin) (THROW1AVG5(analogRead(pin)) * FACTOR)
 #define ADC_READING(pin) (THROW1AVG5(analogRead(pin)) * FACTOR)
 
-SensorManager::SensorManager() :
+SensorManager::SensorManager(Store *store) :
+    store(store),
     voltage_factor(),
     current_zero(),
     current_factor(),
@@ -20,28 +21,33 @@ SensorManager::SensorManager() :
     energy(),
     lastReadTime(),
     nextReadTime(0),
-    min_bat(0),
-    max_bat(0)
+    min_bat(0.0),
+    max_bat(0.0)
 {}
 
-void SensorManager::setup(float panelEnergy, float loadEnergy){
-    energy[PANEL] = panelEnergy;
-    energy[LOAD] = loadEnergy;
+void SensorManager::setup(){
+    energy[PANEL] = store->getSavedEnergyPanel();
+    energy[LOAD] = store->getSavedEnergyLoad();
 
-    voltage_factor[LOAD] = LOAD_VOLTAGE_FACTOR;
-    voltage_factor[PANEL] = PANEL_VOLTAGE_FACTOR;
+    voltage_factor[LOAD] = store->getSavedLoadVoltageFactor();
+    voltage_factor[PANEL] = store->getSavedPanelVoltageFactor();
     voltage_factor[LOAD2] = LOAD2_VOLTAGE_FACTOR;
 
-    current_zero[LOAD] = LOAD_CURRENT_ZERO;
-    current_zero[PANEL] = PANEL_CURRENT_ZERO;
+    current_zero[LOAD] = store->getSavedLoadCurrentZero();
+    current_zero[PANEL] = store->getSavedPanelCurrentZero();
     current_zero[LOAD2] = LOAD2_CURRENT_ZERO;
 
-    current_factor[LOAD] = LOAD_CURRENT_FACTOR;
-    current_factor[PANEL] = PANEL_CURRENT_FACTOR;
+    current_factor[LOAD] = store->getSavedLoadCurrentFactor();
+    current_factor[PANEL] = store->getSavedPanelCurrentFactor();
     current_factor[LOAD2] = LOAD2_CURRENT_FACTOR;
 }
 
 void SensorManager::refresh(){
+    takeReadings();
+    updateStore();
+}
+
+void SensorManager::takeReadings(){
     if (millis() > nextReadTime){
         #ifdef LOAD_VOLTAGE_PIN
             voltage_buffer[LOAD][buffer_index] = ADC_READING(LOAD_VOLTAGE_PIN);
@@ -145,6 +151,10 @@ void SensorManager::refresh(){
         #endif
 
     }
+}
+
+void SensorManager::updateStore(bool persistNow){
+    store->setSavedEnergy(getEnergy(PANEL), getEnergy(LOAD), persistNow);
 }
 
 float SensorManager::readingToVoltage(int sensor, float reading){
@@ -287,17 +297,70 @@ float SensorManager::getCurrentZero(int sensor){
     return current_zero[sensor];
 }
 void SensorManager::setCurrentZero(int sensor, float value){
+    if (isnan(value)){
+        if (sensor == PANEL){
+            value = PANEL_CURRENT_ZERO;
+        }
+        if (sensor == LOAD){
+            value = LOAD_CURRENT_ZERO;
+        }
+    }
     current_zero[sensor] = value;
+    if (sensor == PANEL) {
+        store->setSavedPanelCurrentZero(value);
+    }
+    if (sensor == LOAD) {
+        store->setSavedLoadCurrentZero(value);
+    }
 }
 float SensorManager::getCurrentFactor(int sensor){
     return current_factor[sensor];
 }
 void SensorManager::setCurrentFactor(int sensor, float value){
+    if (isnan(value)){
+        if (sensor == PANEL){
+            value = PANEL_CURRENT_FACTOR;
+        }
+        if (sensor == LOAD){
+            value = LOAD_CURRENT_FACTOR;
+        }
+    }
     current_factor[sensor] = value;
+    if (sensor == PANEL) {
+        store->setSavedPanelCurrentFactor(value);
+    }
+    if (sensor == LOAD) {
+        store->setSavedLoadCurrentFactor(value);
+    }
 }
 float SensorManager::getVoltageFactor(int sensor){
     return voltage_factor[sensor];
 }
 void SensorManager::setVoltageFactor(int sensor, float value){
+    if (isnan(value)){
+        if (sensor == PANEL){
+            value = PANEL_VOLTAGE_FACTOR;
+        }
+        if (sensor == LOAD){
+            value = LOAD_VOLTAGE_FACTOR;
+        }
+    }
     voltage_factor[sensor] = value;
+    if (sensor == PANEL) {
+        store->setSavedPanelVoltageFactor(value);
+    }
+    if (sensor == LOAD) {
+        store->setSavedLoadVoltageFactor(value);
+    }
+}
+
+void SensorManager::resetEnergy(){
+    energy[PANEL] = 0.0;
+    energy[LOAD] = 0.0;
+    energy[LOAD2] = 0.0;
+
+    store->setSavedEnergy(0.0, 0.0, true);
+
+    min_bat = 0.0;
+    max_bat = 0.0;
 }

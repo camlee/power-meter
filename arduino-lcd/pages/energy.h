@@ -1,7 +1,5 @@
 #include "../display.h"
 #include "../sensor.h"
-#include "../store.h"
-
 #include "../ui.h"
 
 bool energy_main_subpage = true;
@@ -35,7 +33,7 @@ void redrawEnergyPage(Display *display, SensorManager *sensorManager){
     }
 }
 
-int buttonsEnergyPage(int button, Display *display, SensorManager *sensorManager, Store *store){
+int buttonsEnergyPage(int button, Display *display, SensorManager *sensorManager){
     if (energy_main_subpage) {
         if (button == SELECT_BUTTON){
             energy_main_subpage = false;
@@ -44,9 +42,7 @@ int buttonsEnergyPage(int button, Display *display, SensorManager *sensorManager
     } else {
         if (button == SELECT_BUTTON){
             if (!energy_no_selected){
-                sensorManager->setup(0.0, 0.0);
-                store->refresh(0.0, 0.0);
-                store->persistNow();
+                sensorManager->resetEnergy();
 
                 energy_main_subpage = true;
                 energy_no_selected = true;

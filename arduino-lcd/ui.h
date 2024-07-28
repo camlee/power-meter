@@ -37,11 +37,6 @@ private:
     Store* store;
 
     void redraw();
-    void redrawACPage();
-    void redrawDebugPage();
-    void redrawDetailsPage();
-
-    void partialDrawSensor(float, float, float, float, float, bool);
 
     void redrawNow();
     void delayRedraw();
