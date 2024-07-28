@@ -19,7 +19,7 @@
 
 #define DEFAULT_PAGE SUMMARY_PAGE
 
-#define refreshPeriodMillis 100
+#define REFRESH_PERIOD_MILLIS 100
 
 // Results of handling button:
 #define BUBBLE 0

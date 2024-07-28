@@ -15,6 +15,10 @@
 #define SENSOR_CANCEL_CALIBRATING_PAGE 5
 #define SENSOR_CALIBRATING_PAGE_MAX 5
 
+#define SENSOR_REFRESH_PERIOD_MILLIS 1000
+
+unsigned long int sensor_next_refresh = 0;
+int sensor_previous_sensor = -1;
 
 int sensor_subpage = SENSOR_MAIN_SUBPAGE;
 bool sensor_enter_calibration = false;
@@ -45,6 +49,14 @@ void printPower(Display *display, float power){
 }
 
 void redrawSensorMainPage(int sensor, Display *display, SensorManager *sensorManager){
+    if (sensor == sensor_previous_sensor && millis() <= sensor_next_refresh ){
+        return; // Don't refresh too often cause it makes the numbers
+                // unreadable as they change slightly
+    } else {
+        sensor_previous_sensor = sensor;
+        sensor_next_refresh = millis() + SENSOR_REFRESH_PERIOD_MILLIS;
+    }
+
     float voltage = sensorManager->getVoltage(sensor);
     float current = sensorManager->getCurrent(sensor);
     float power = sensorManager->getPower(sensor);
@@ -246,4 +258,6 @@ int buttonsSensorPage(int sensor, int button, Display *display, SensorManager *s
 void resetSensorPage(){
     sensor_subpage = SENSOR_MAIN_SUBPAGE;
     sensor_enter_calibration = false;
+    sensor_next_refresh = 0;
+    sensor_previous_sensor = -1;
 }

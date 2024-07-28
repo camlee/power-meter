@@ -1,7 +1,20 @@
 #include "../display.h"
 #include "../sensor.h"
 
+
+#define SUMMARY_REFRESH_PERIOD_MILLIS 1000
+
+unsigned long int summary_next_refresh = 0;
+
 void redrawSummaryPage(Display *display, SensorManager *sensorManager){
+    if (millis() <= summary_next_refresh ){
+        return; // Don't refresh too often cause it makes the numbers
+                // unreadable as they change slightly
+    } else {
+        summary_next_refresh = millis() + SUMMARY_REFRESH_PERIOD_MILLIS;
+    }
+
+
     float power = sensorManager->getPower(PANEL);
     float duty = sensorManager->getDuty(PANEL);
     float theoretical_power = round(power / duty);
@@ -44,4 +57,8 @@ void redrawSummaryPage(Display *display, SensorManager *sensorManager){
     // display->lcd.print(bat_percent, 0);
     // display->lcd.print("%");
     // display->lcd.print(DISPLAY_NOTHING);
+}
+
+void resetSummaryPage(){
+    summary_next_refresh = 0;
 }

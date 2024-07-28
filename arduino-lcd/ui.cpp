@@ -22,7 +22,7 @@ void UI::setup(){}
 
 void UI::refresh(){
     if (millis() > nextRefresh ){
-        nextRefresh = millis() + refreshPeriodMillis;
+        nextRefresh = millis() + REFRESH_PERIOD_MILLIS;
         redraw();
     }
 }
@@ -89,6 +89,7 @@ void UI::handleButton(int button){
 
     if (page != ENERGY_PAGE) resetEnergyPage();
     if (page != PANEL_PAGE && page != LOAD_PAGE) resetSensorPage();
+    if (page != SUMMARY_PAGE) resetSummaryPage();
 
     if (page == TIME_PAGE && handleButtonResult(buttonsTimePage(button))) return;
     if (page == ENERGY_PAGE && handleButtonResult(buttonsEnergyPage(button, display, sensorManager))) return;
