@@ -122,32 +122,32 @@ void SensorManager::takeReadings(){
             Serial.print(", ");
             #endif
             #ifdef LOAD_CURRENT_PIN
-            Serial.print(readingtoCurrent(LOAD, current_buffer[LOAD][buffer_index]), 2);
+            Serial.print(readingToCurrent(LOAD, current_buffer[LOAD][buffer_index]), 2);
             Serial.print(", ");
             #endif
             #ifdef LOAD2_CURRENT_PIN
-            Serial.print(readingtoCurrent(LOAD2, current_buffer[LOAD2][buffer_index]), 2);
+            Serial.print(readingToCurrent(LOAD2, current_buffer[LOAD2][buffer_index]), 2);
             Serial.print(", ");
             #endif
             #ifdef PANEL_CURRENT_PIN
-            Serial.print(readingtoCurrent(PANEL, current_buffer[PANEL][buffer_index]), 2);
+            Serial.print(readingToCurrent(PANEL, current_buffer[PANEL][buffer_index]), 2);
             Serial.print(", ");
             #endif
-            #if defined(LOAD_VOLTAGE_PIN) && defined(LOAD_CURRENT_PIN)
-            Serial.print(readingToVoltage(LOAD, voltage_buffer[LOAD][buffer_index])
-                * readingtoCurrent(LOAD, current_buffer[LOAD][buffer_index]), 2);
-            Serial.print(", ");
-            #endif
-            #if defined(LOAD2_VOLTAGE_PIN) && defined(LOAD2_CURRENT_PIN)
-            Serial.print(readingToVoltage(LOAD2, voltage_buffer[LOAD2][buffer_index])
-                * readingtoCurrent(LOAD2, current_buffer[LOAD2][buffer_index]), 2);
-            Serial.print(", ");
-            #endif
-            #if defined(PANEL_VOLTAGE_PIN) && defined(PANEL_CURRENT_PIN)
-            Serial.print(readingToVoltage(PANEL, voltage_buffer[PANEL][buffer_index])
-                * readingtoCurrent(PANEL, current_buffer[PANEL][buffer_index]), 2);
+            // #if defined(LOAD_VOLTAGE_PIN) && defined(LOAD_CURRENT_PIN)
+            // Serial.print(readingToVoltage(LOAD, voltage_buffer[LOAD][buffer_index])
+            //     * readingToCurrent(LOAD, current_buffer[LOAD][buffer_index]), 2);
+            // Serial.print(", ");
+            // #endif
+            // #if defined(LOAD2_VOLTAGE_PIN) && defined(LOAD2_CURRENT_PIN)
+            // Serial.print(readingToVoltage(LOAD2, voltage_buffer[LOAD2][buffer_index])
+            //     * readingToCurrent(LOAD2, current_buffer[LOAD2][buffer_index]), 2);
+            // Serial.print(", ");
+            // #endif
+            // #if defined(PANEL_VOLTAGE_PIN) && defined(PANEL_CURRENT_PIN)
+            // Serial.print(readingToVoltage(PANEL, voltage_buffer[PANEL][buffer_index])
+            //     * readingToCurrent(PANEL, current_buffer[PANEL][buffer_index]), 2);
+            // #endif
             Serial.print("\n");
-            #endif
         #endif
 
     }

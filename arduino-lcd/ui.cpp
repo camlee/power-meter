@@ -93,6 +93,7 @@ void UI::handleButton(int button){
 
     if (page == TIME_PAGE && handleButtonResult(buttonsTimePage(button))) return;
     if (page == ENERGY_PAGE && handleButtonResult(buttonsEnergyPage(button, display, sensorManager))) return;
+    if (page == SUMMARY_PAGE && handleButtonResult(buttonsSummaryPage(button, display, sensorManager))) return;
     if (page == PANEL_PAGE && handleButtonResult(buttonsSensorPage(PANEL, button, display, sensorManager))) return;
     if (page == LOAD_PAGE && handleButtonResult(buttonsSensorPage(LOAD, button, display, sensorManager))) return;
     if (page == DEBUG_PAGE && handleButtonResult(buttonsDebugPage(button, display, sensorManager))) return;
