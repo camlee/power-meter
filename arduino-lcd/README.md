@@ -26,7 +26,4 @@ To flash the arduino, do:
 
 ## Usage
 
-* Up and down on the LCD shield control the brightness
-* Left and right switch between the different screens (summary, in, and out)
-* Reset just resets the Arduino which clears the energy counter.
-* Select doesn't do anything.
+See [manual.md](manual.md)
