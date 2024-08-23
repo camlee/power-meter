@@ -12,11 +12,11 @@ The select button is used to make changes. You can navigate around using arrows 
 
 The meter measures power coming in from the solar panel (In) and power coming out of the system to power loads such as lights (Out). It does not directly measure battery capacity, but rather tries to infer it by adding up the power over time.
 
-When the battery is nearing full charge, the speed at which it is charged has to slow down. In order to achieve this, the charge controler enters what's called PWM mode (pulse width modulation) which results in not all of the energy available at the panel being used: there's nowhere to put it. The meter can detect when this is occuring and indicate what percent of the available power is actually being used.
+When the battery is nearing full charge, the speed at which it is charged has to slow down. In order to achieve this, the charge controller enters what's called PWM mode (pulse width modulation) which results in not all of the energy available at the panel being used: there's nowhere to put it. The meter can detect when this is occuring and indicate what percent of the available power is actually being used.
 
 ## Buttons
 
-![button layout](hardware/rev1/pictures/shield.png.png)
+![button layout](hardware/rev1/pictures/shield.png)
 
 There are six black buttons in the bottom left corner.
 
@@ -26,75 +26,91 @@ The reset button (RST) is hardwired in to power cycling the meter. Does the same
 
 The LEFT and RIGHT buttons navigate between pages. Some pages support pressing SELECT to perform actions. More details below.
 
+Buttons must be pressed and released. No press and hold or double-click behaviour going on here.
+
 ## Pages
 
-There are X pages. In order:
-* Summary - shows four key statistics.
+There are 7 pages. In order:
+* Summary - shows most important power and energy numbers.
 * Energy - shows total energy in and out.
-* In - shows stats specific to the solar panel (In).
-* Out - shows stats specific to the load (Out).
-* Bat - shows experimental battery capacity estimations.
+* In - shows readings specific to the solar panel (In).
+* Out - shows readings specific to the load (Out).
+* Bat - shows experimental battery level estimations.
 * Debug - shows low-level troubleshooting information.
-* Time - shows the current time as set by the user. Time isn't used anywhere else yet.
+* Time - allows for setting and then viewing of the time. Time isn't used for anything yet.
 
 Details are provided for each page using sample numbers:
 
 ### Summary
-|Sun 100W In   50W|
-|Out  10W    123Wh|
+    |Sun 100W In   50W|
+    |Out  10W    123Wh|
 
 __Sun__ is the power available at the solar panel.
+
 __In__ is the power actually comming out of the solar panel. May be less than the available power when the battery is nearly charged and the control enters PWM mode. 
+
 __Out__ is the power being used by devices.
-The fourth number in the bottom right, in units of __Wh__, is the net power since last reset. This is the total power in minus the total power out. If this is negative, that means energy has been drawn from the battery and it hasn't been charged back up yet. Due to efficiency reasons, 0 Wh doesn't mean that the battery is fully charged: more energy will have to be put into the battery than was taken out to actually get it to 100% capacity. On the order of 20% more energy.
+
+The fourth number in the bottom right, in units of Wh, is the net power since last reset. This is the total power in minus the total power out. If this is negative, that means energy has been drawn from the battery and it hasn't been charged back up yet. Due to efficiency reasons, 0 Wh doesn't mean that the battery is fully charged: more energy will have to be put into the battery than was taken out to actually get it to 100% capacity. On the order of 20% more energy.
 
 __SELECT__: you can press SELECT on this page to reset the total power usage to 0. This is handy to do when you know the battery is fully charged, or on a regular cadence (ex. daily) to know when you're starting point is. 
+
 After pressing SELECT, a confirmation page shows up, press LEFT or RIGHT to pick yes or no and then SELECT again to confirm.
 
 ### Energy
-|In         323Wh|
-|Out        200Wh|
+    |In         323Wh|
+    |Out        200Wh|
 
 __In__ is the total energy from the solar panel since last reset.
+
 __Out__ is the total energy consumed since last reset.
 
 __SELECT__: you can reset the energy just like on the Summary page. See above.
 
 
 ### In
-|In   50W   323Wh| 
-|  2.8 A  18.12 V| 
+    |In   50W   323Wh| 
+    |  2.8 A  18.12 V| 
 
 or
 
-|In   50W PWM 50%| 
-|  2.8 A  18.12 V| 
+    |In   50W PWM 50%| 
+    |  2.8 A  18.12 V| 
 
 __In__ is the actual power coming in from the panel.
+
 The top right number can be one of two things. If PWM mode is engaged, it shows "PWM" and what percentage of the available power is actually coming in. I.e. 50 W and 50% means there's actually 100W available, but nowhere to put it: good time to charge device batteries. IF PWM mode isn't engage, it shows the total energy in, same as the energy page.
+
 The bottom left number is the current in amps.
+
 The bottom right number is the voltage in volts.
 
 __SELECT__ the select button can be used to enter calibration mode for the IN sensor. Press the left or right arrows to pick yes or no. No goes back out without doing anything, yes fully enters calibration mode. For details on calibration, see the section below.
 
 ### Out
-|Out  10W   123Wh| 
-|  0.7 A  13.71 V| 
+    |Out  10W   123Wh| 
+    |  0.7 A  13.71 V| 
 
 Same as the In page, but for the output sensor.
+
 __Out__ is the power being used by devices.
+
 The __Wh__ number in the top right is the total energy measured since last reset.
+
 The bottom left number is the current in amps.
+
 The bottom right number is the voltage in volts. This is effectively the battery voltage although note that it's affected by charging and load: when the battery is being charged, the voltage measure will be high.
 
 __SELECT__ the select button can be used to enter calibration mode for the OUT sensor. For details on calibartion, see the section below.
 
 ### Bat
-|Bat 2200/2500 Wh|
-|-50<->150Wh 88% |
+    |Bat 2200/2500 Wh|
+    |-50<->150Wh 88% |
 
 This is a pretty experimental page.
+
 __2500__ is the hardcoded theoretical battery capacity in watt-hours (Wh).
+
 __2200__ (in this example) is the estimate current battery charge level.
 
 When the energy totals are reset, the meter assumes the battery is at 100% charge and then tracks deviations from that. If the battery is charged more (meaning the 100% assumption was wrong), this energy is tracked on the right side of the __<->__ (150Wh in this case). If the battery is discharged below that starting point, this is tracked of the left side of the __<->__ (-50Wh) in this case. 
@@ -126,8 +142,8 @@ Calibration should need to be done rarely.
 ### Using the calibration mode
 On either the "In" or "Out" pages, press SELECT and then LEFT/RIGHT to pick "yes" and press SELECT again. You will now see a screen like this:
 
-|In A Zero 2.502 |
-|-0.03 A  -0.03 A|
+    |In A Zero 2.502 |
+    |-0.03 A  -0.03 A|
 
 Use the LEFT/RIGHT buttons to nagivate between screens to calibrate each of:
 * A Zero (current zero)
