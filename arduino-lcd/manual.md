@@ -57,6 +57,8 @@ __SELECT__: you can press SELECT on this page to reset the total power usage to 
 
 After pressing SELECT, a confirmation page shows up, press LEFT or RIGHT to pick yes or no and then SELECT again to confirm.
 
+__UP/DOWN__: you can press the UP or DOWN buttons to adjust the LCD brightness.
+
 ### Energy
     |In         323Wh|
     |Out        200Wh|
@@ -79,13 +81,13 @@ or
 
 __In__ is the actual power coming in from the panel.
 
-The top right number can be one of two things. If PWM mode is engaged, it shows "PWM" and what percentage of the available power is actually coming in. I.e. 50 W and 50% means there's actually 100W available, but nowhere to put it: good time to charge device batteries. IF PWM mode isn't engage, it shows the total energy in, same as the energy page.
+The top right number can be one of two things. If PWM mode is engaged, it shows "PWM" and what percentage of the available power is actually coming in. I.e. 50 W and 50% means there's actually 100W available, but nowhere to put it: good time to charge device batteries. If PWM mode isn't engaged, it shows the total energy in, same as the energy page.
 
 The bottom left number is the current in amps.
 
 The bottom right number is the voltage in volts.
 
-__SELECT__ the select button can be used to enter calibration mode for the IN sensor. Press the left or right arrows to pick yes or no. No goes back out without doing anything, yes fully enters calibration mode. For details on calibration, see the section below.
+__SELECT__: the select button can be used to enter calibration mode for this sensor. Press the left or right arrows to pick "yes" or "no". "no" goes back out without doing anything, "ye"s" fully enters calibration mode. For details on calibration, see the Calibration section below.
 
 ### Out
     |Out  10W   123Wh| 
@@ -99,9 +101,9 @@ The __Wh__ number in the top right is the total energy measured since last reset
 
 The bottom left number is the current in amps.
 
-The bottom right number is the voltage in volts. This is effectively the battery voltage although note that it's affected by charging and load: when the battery is being charged, the voltage measure will be high.
+The bottom right number is the voltage in volts. This is effectively the battery voltage although note that it's affected by charging and load: when the battery is being charged, the voltage measured will be high.
 
-__SELECT__ the select button can be used to enter calibration mode for the OUT sensor. For details on calibartion, see the section below.
+__SELECT__: the select button can be used to enter calibration mode for this sensor. For details on calibration, see the Calibration section below.
 
 ### Bat
     |Bat 2200/2500 Wh|
@@ -111,31 +113,31 @@ This is a pretty experimental page.
 
 __2500__ is the hardcoded theoretical battery capacity in watt-hours (Wh).
 
-__2200__ (in this example) is the estimate current battery charge level.
+__2200__ (in this example) is the estimate current battery charge level, also in watt-hours.
 
-When the energy totals are reset, the meter assumes the battery is at 100% charge and then tracks deviations from that. If the battery is charged more (meaning the 100% assumption was wrong), this energy is tracked on the right side of the __<->__ (150Wh in this case). If the battery is discharged below that starting point, this is tracked of the left side of the __<->__ (-50Wh) in this case. 
+When the energy totals are reset, the meter assumes the battery is at 100% charge and then tracks deviations from that. If the battery is charged more (meaning the 100% assumption was wrong), this energy is tracked on the right side of the `<->` (150Wh in this case). If the battery is discharged below that starting point, this is tracked of the left side of the `<->` (-50Wh) in this case. 
 
-The bottom right number is an estimated battery capacity based on these energy totals and a hardcoded efficiency value. It's not proven to be accurate but may be in the right ballpark. Note that the deeper lead acid batteries are discharged, the more they are damanged. These batteries should never go below 50%, or really below 80% for maximum lifetime.
+The bottom right number is an estimated battery capacity based on these energy totals and a hardcoded efficiency value. It's not proven to be accurate but may be in the right ballpark. Note that the deeper lead acid batteries are discharged, the more they are damaged. These batteries should never go below 50%, or really below 80% for maximum lifetime.
 
 ### Debug
 Low level debug information subject to change.
 
-__SELECT__ the select button can be used to immediately save energy totals which are usually only persisted every 15 minutes. You can use this right before powering off if you really want to count those last few minutes of power readings.
+__SELECT__: the select button can be used to immediately save energy totals which are usually only persisted every 15 minutes. You can use this right before powering off if you really want to count those last few minutes of power readings.
 
 ### Time
-Experimental time setting and viewing. Future features may incorporate day and time, such as a daily history of energy usage over the last 7 days. For now, it's a very innacurate wall clock. The day and time must be set manually every time the meter is restarted. The time is not very accurate: loses minutes every day.
+Experimental time setting and viewing. Future features may incorporate day and time, such as a daily history of energy usage over the last 7 days. For now, it's a very innacurate wall clock. The day and time must be set manually everytime the meter is restarted. The time is not very accurate: loses minutes every day.
 
-Only day of week (Monday, Tuesday, etc...) and time of day are tracked. Not a full calendar.
+Only day of week (Monday, Tuesday, etc...) and time of day are tracked. Not a full calendar with years and months.
 
-__SELECT__ press SELECT to set the time. UP/DOWN to adjust the flashing part and LEFT/RIGHT to switch between parts. Press SELECT to save.
+__SELECT__: press SELECT to set the time. UP/DOWN to adjust the flashing part and LEFT/RIGHT to switch between parts. Press SELECT to save.
 
 
 ## Calibration
-The power meter uses very simple, dumb, voltage and current sensors to measure power. Power is voltage times current. The sensors convert current and voltage to signals in the range of 0 to 5 which are then turned into digital numbers by the meter.
+The power meter uses very simple voltage and current sensors to measure power. Power is voltage times current. The sensors convert current and voltage to signals in the range of 0 to 5 which are then turned into digital numbers by the meter.
 For measuring voltage, the meter needs to know how much voltage a signal of 1 means and it can then interpolate for other readings. If a measurement of 1 means 7 volts, then the meter knows that a measurement of 5 means 35 volts, etc... This value of "7" is called the multiplier, or "Mult" for short.
 The current sensors are bi-directional, meaning they can tell if electricity is flowing backwards. This means they require two calibration values: 1) what measurement is 0 A and 2) how many amps does a signal of +1 from this zero mean? Nominally, 0 A is a signal of 2.5.
 
-Calibration is specific to the sensors plugged in to the meter, the power source (USB cable) the meter is connected to, and possibly other factors outside of our control like temperature, signal noise, and RF interference.
+Calibration is specific to the sensors plugged in to the meter, the power source the meter is connected to (through the USB cable), and possibly other factors outside of our control like temperature, signal noise, and RF interference.
 
 Calibration should need to be done rarely.
 
@@ -152,7 +154,7 @@ Use the LEFT/RIGHT buttons to nagivate between screens to calibrate each of:
 
 and screens to save, reset to defaults, or cancel calibration.
 
-On any of the three calibration screens, the calibration value is shown in the top right. The calculated reading value using the old calibration value is shown in the bottom left and the calculate reading value using the new calibration value is shown in the bottom right. Press UP/DOWN to slowly adjust the calibration value and see the new reading value change. 
+On any of the three calibration screens, the calibration value is shown in the top right. The calculated reading using the old calibration value is shown in the bottom left and the calculate reading using the new calibration value is shown in the bottom right. They will start the same but press UP/DOWN to slowly adjust the calibration value and see the new reading change. 
 
 To exit calibration mode, press SELECT on any of the following screens:
 * "Save Changes?"
