@@ -36,5 +36,10 @@ Board* initDisplayAndLvgl() {
     Serial.println("Initializing LVGL");
     lvgl_port_init(board->getLCD(), board->getTouch());
 
+    // if (lvgl_port_lock(-1)) {
+    //     lv_disp_set_rotation(lv_disp_get_default(), LV_DISP_ROT_90); // 0, 90, 180, 270
+    //     lvgl_port_unlock();
+    // }
+
     return board;
 }

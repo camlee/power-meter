@@ -1,38 +1,37 @@
 #pragma once
 #include <lvgl.h>
-#include <cstdint>
+#include <vector>
 
-enum class ScreenId : uint8_t {
-    Realtime = 0,
-    Info,
-    WiFi,
-    Count
-};
+// Signature: screens receive their parent tab page.
+typedef lv_obj_t* (*ScreenCreateFunc)(lv_obj_t* parent);
 
-// Lightweight registry + router. Screens are created lazily (on first visit)
-// and cached, so navigating back to one just reloads the existing lv_obj_t.
 class ScreenManager {
 public:
-    static ScreenManager& instance();
+    static ScreenManager& instance() {
+        static ScreenManager instance;
+        return instance;
+    }
 
-    // Call once per screen during setup(), before any navigateTo().
-    void registerScreen(ScreenId id, const char* title, lv_obj_t* (*createFn)());
+    // Initialize the root layout (Tabview)
+    void init();
 
-    void navigateTo(ScreenId id);
+    // Queue up a screen to be created
+    void registerScreen(const char* name, ScreenCreateFunc createFunc);
 
-    // Used by nav_bar to build its buttons without hardcoding screen list twice.
-    size_t screenCount() const { return registeredCount_; }
-    ScreenId screenIdAt(size_t idx) const { return order_[idx]; }
-    const char* screenTitleAt(size_t idx) const { return entries_[(size_t)order_[idx]].title; }
+    // Build all the registered tabs
+    void build();
 
 private:
-    struct Entry {
-        const char* title = nullptr;
-        lv_obj_t* (*createFn)() = nullptr;
-        lv_obj_t* screenObj = nullptr;
+    ScreenManager() = default;
+
+    lv_obj_t* root_scr = nullptr;
+    lv_obj_t* tabview = nullptr;
+
+    struct ScreenDef {
+        const char* name;
+        ScreenCreateFunc createFunc;
+        lv_obj_t* tab = nullptr;
     };
 
-    Entry entries_[(size_t)ScreenId::Count];
-    ScreenId order_[(size_t)ScreenId::Count];
-    size_t registeredCount_ = 0;
+    std::vector<ScreenDef> screens;
 };

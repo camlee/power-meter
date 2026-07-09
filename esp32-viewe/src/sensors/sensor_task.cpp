@@ -1,4 +1,5 @@
 #include "sensor_task.h"
+#include <cmath>
 #include <Arduino.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -18,23 +19,19 @@ constexpr float kMin = 0.0f;
 constexpr float kMax = 100.0f;
 
 void taskFn(void*) {
-    float value = (kMin + kMax) / 2.0f;
-
+    uint32_t startMs = millis();
     for (;;) {
-        float step = ((float)random(-1000, 1001) / 1000.0f) * kStepSize;
-        value += step;
-        // reflect off the bounds so it doesn't just clamp and flatline
-        if (value < kMin) value = kMin + (kMin - value);
-        if (value > kMax) value = kMax - (value - kMax);
+        float t = (millis() - startMs) / 1000.0f;
+        float baseline = 50.0f + 30.0f * sinf(t * 0.05f);           // slow drift
+        float noise = ((float)random(-1000, 1001) / 1000.0f) * 2.0f; // small jitter
+        float value = baseline + noise;
 
         Reading r{value, millis()};
-
         xSemaphoreTake(mutex, portMAX_DELAY);
         buffer[writeIndex] = r;
         writeIndex = (writeIndex + 1) % kHistorySize;
         if (count < kHistorySize) count++;
         xSemaphoreGive(mutex);
-
         vTaskDelay(pdMS_TO_TICKS(kSampleIntervalMs));
     }
 }

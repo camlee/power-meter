@@ -18,10 +18,10 @@ The active ESP Display Panel board is configured in `include/esp/esp_panel_board
 #define BOARD_VIEWE_UEDX32480035E_WB_A
 ```
 
-## Build
+## Build and Upload
 
 ```sh
-PLATFORMIO_CORE_DIR=.platformio pio run
+pio run --target upload
 ```
 
 ## WSL

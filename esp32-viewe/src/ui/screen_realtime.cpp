@@ -1,7 +1,6 @@
 #include <cstdio>
 
 #include "screen_realtime.h"
-#include "nav_bar.h"
 #include "screen_manager.h"
 #include "../sensors/sensor_task.h"
 
@@ -17,13 +16,31 @@ constexpr uint32_t kUpdateIntervalMs = 500;
 constexpr size_t kChartPoints = 60; // visible window; must be <= sensor_task::kHistorySize
 
 void updateCb(lv_timer_t*) {
+    static uint32_t lastTimestamp = 0;
+    static bool primed = false;
+
     sensor_task::Reading readings[kChartPoints];
     size_t n = sensor_task::getRecent(readings, kChartPoints);
     if (n == 0) return;
 
-    for (size_t i = 0; i < n; i++) {
+    size_t start = 0;
+    if (primed) {
+        start = n; // assume nothing new unless we find it below
+        for (size_t i = 0; i < n; i++) {
+            if (readings[i].timestamp_ms > lastTimestamp) {
+                start = i;
+                break;
+            }
+        }
+    } else {
+        primed = true; // first successful update: draw the whole window we have
+    }
+
+    for (size_t i = start; i < n; i++) {
         lv_chart_set_next_value(chart, series, (lv_coord_t)readings[i].value);
     }
+
+    lastTimestamp = readings[n - 1].timestamp_ms;
 
     char buf[32];
     snprintf(buf, sizeof(buf), "%.1f", readings[n - 1].value);
@@ -32,11 +49,13 @@ void updateCb(lv_timer_t*) {
 
 } // namespace
 
-lv_obj_t* create() {
-    lv_obj_t* scr = lv_obj_create(nullptr);
-    lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
+lv_obj_t* create(lv_obj_t* parent) {
+    lv_obj_t* scr = lv_obj_create(parent);
+    lv_obj_set_size(scr, lv_pct(100), lv_pct(100)); // Take up the whole tile
+    lv_obj_set_style_pad_all(scr, 2, 2);            // Fixes inconsistent screen edges
+    lv_obj_set_style_border_width(scr, 0, 0);
 
-    nav_bar::create(scr, ScreenId::Realtime);
+    lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
 
     valueLabel = lv_label_create(scr);
     lv_obj_set_style_text_font(valueLabel, &lv_font_montserrat_32, 0); // enable LV_FONT_MONTSERRAT_32 in lv_conf.h
