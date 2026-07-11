@@ -3,7 +3,9 @@
 #include <WiFi.h>
 #include <esp_wifi.h>
 #include <Preferences.h>
+#include <ESPmDNS.h>
 #include <time.h>
+#include "device/device_identity.h"
 
 namespace network_manager {
 namespace {
@@ -13,9 +15,13 @@ uint32_t connectStartTime = 0;
 char targetSsid[33] = {0};
 char lastPassword[64] = {0};
 bool apRunning = false; // Add this discrete AP state flag
+bool mdnsRunning = false;
+uint32_t nextReconnectAt = 0;
+uint32_t reconnectDelayMs = 1000;
 
 // Scan state
 int scanCount = 0;
+NetworkState stateBeforeScan = NetworkState::Disconnected;
 
 // SNTP configuration
 constexpr char kNtpServer1[] = "pool.ntp.org";
@@ -25,6 +31,7 @@ bool ntpConfigured = false;
 
 constexpr uint32_t kConnectTimeoutMs = 15000;
 constexpr int kMaxSavedNetworks = 8;
+constexpr uint32_t kReconnectMaxDelayMs = 60000;
 
 // --- Persistence Helpers ---
 
@@ -38,7 +45,7 @@ int findSavedNetworkSlot(Preferences& prefs, uint8_t count, const char* ssid) {
 }
 
 void saveNetworkCredential(const char* ssid, const char* password) {
-    if (!ssid || ssid[0] == '\0' || !password || password[0] == '\0') return;
+    if (!ssid || ssid[0] == '\0') return;
     Preferences prefs;
     if (!prefs.begin("wifi_net", false)) return;
 
@@ -59,8 +66,55 @@ void saveNetworkCredential(const char* ssid, const char* password) {
     }
     char passKey[4];
     snprintf(passKey, sizeof(passKey), "p%d", slot);
-    prefs.putString(passKey, password);
+    prefs.putString(passKey, password ? password : "");
+    prefs.putUChar("last", slot);
     prefs.end();
+}
+
+bool loadLastNetwork(char* ssidOut, size_t ssidLen, char* passOut, size_t passLen) {
+    Preferences prefs;
+    if (!prefs.begin("wifi_net", true)) return false;
+    uint8_t count = prefs.getUChar("cnt", 0);
+    uint8_t slot = prefs.getUChar("last", kMaxSavedNetworks);
+    if (slot >= count) {
+        prefs.end();
+        return false;
+    }
+    char ssidKey[4], passKey[4];
+    snprintf(ssidKey, sizeof(ssidKey), "s%u", slot);
+    snprintf(passKey, sizeof(passKey), "p%u", slot);
+    String ssid = prefs.getString(ssidKey, "");
+    String password = prefs.getString(passKey, "");
+    prefs.end();
+    if (ssid.isEmpty()) return false;
+    strncpy(ssidOut, ssid.c_str(), ssidLen - 1);
+    ssidOut[ssidLen - 1] = '\0';
+    strncpy(passOut, password.c_str(), passLen - 1);
+    passOut[passLen - 1] = '\0';
+    return true;
+}
+
+void stopMdns() {
+    if (mdnsRunning) {
+        MDNS.end();
+        mdnsRunning = false;
+    }
+}
+
+void ensureMdns() {
+    if (mdnsRunning || (!apRunning && WiFi.status() != WL_CONNECTED)) return;
+    if (!MDNS.begin(device_identity::getHostname())) return;
+    // ESPmDNS adds the leading underscores in the DNS-SD record, yielding
+    // _viewe-ota._tcp.local.
+    MDNS.addService("viewe-ota", "tcp", 80);
+    MDNS.addServiceTxt("viewe-ota", "tcp", "id", device_identity::getDeviceId());
+    MDNS.addServiceTxt("viewe-ota", "tcp", "hardware_id", device_identity::getHardwareId());
+    mdnsRunning = true;
+}
+
+void scheduleReconnect() {
+    nextReconnectAt = millis() + reconnectDelayMs;
+    reconnectDelayMs = min(reconnectDelayMs * 2, kReconnectMaxDelayMs);
 }
 
 void saveApSettings(const char* ssid, bool secure, const char* password) {
@@ -75,8 +129,14 @@ void saveApSettings(const char* ssid, bool secure, const char* password) {
 } // namespace
 
 void init() {
+    device_identity::init();
     WiFi.mode(WIFI_STA);
-    WiFi.disconnect(true);
+    WiFi.setHostname(device_identity::getHostname());
+    WiFi.disconnect(false);
+    char ssid[33], password[64];
+    if (loadLastNetwork(ssid, sizeof(ssid), password, sizeof(password))) {
+        connectTo(ssid, password);
+    }
 }
 
 void update() {
@@ -85,7 +145,12 @@ void update() {
             int n = WiFi.scanComplete();
             if (n != WIFI_SCAN_RUNNING) {
                 scanCount = (n < 0) ? 0 : n;
-                currentState = NetworkState::Disconnected;
+                currentState = WiFi.status() == WL_CONNECTED
+                    ? NetworkState::ConnectedStaLocal
+                    : stateBeforeScan;
+                if (currentState == NetworkState::Disconnected && targetSsid[0] != '\0') {
+                    scheduleReconnect();
+                }
             }
             break;
         }
@@ -93,38 +158,47 @@ void update() {
             if (WiFi.status() == WL_CONNECTED) {
                 currentState = NetworkState::ConnectedStaLocal;
 
-                if (lastPassword[0] != '\0') {
-                    saveNetworkCredential(targetSsid, lastPassword);
-                }
+                saveNetworkCredential(targetSsid, lastPassword);
 
                 if (!ntpConfigured) {
                     configTzTime(kTimezonePosix, kNtpServer1, kNtpServer2);
                     ntpConfigured = true;
                 }
+                reconnectDelayMs = 1000;
+                ensureMdns();
             } else if (millis() - connectStartTime > kConnectTimeoutMs) {
                 WiFi.disconnect();
                 currentState = NetworkState::Disconnected;
+                scheduleReconnect();
             }
             break;
         }
         case NetworkState::ConnectedStaLocal: {
             if (WiFi.status() != WL_CONNECTED) {
                 currentState = NetworkState::Disconnected;
+                stopMdns();
+                scheduleReconnect();
                 break;
             }
-            // Execute DNS probe to verify external route
-            IPAddress ip;
-            if (WiFi.hostByName("pool.ntp.org", ip)) {
-                currentState = NetworkState::ConnectedStaInternet;
-            }
+            // Do not probe external DNS here.  This manager is also used on
+            // isolated networks, and name resolution can block the UI loop.
             break;
         }
         case NetworkState::ConnectedStaInternet: {
             if (WiFi.status() != WL_CONNECTED) {
                 currentState = NetworkState::Disconnected;
+                stopMdns();
+                scheduleReconnect();
             }
             break;
         }
+        case NetworkState::Disconnected:
+            ensureMdns();
+            if (targetSsid[0] != '\0' && nextReconnectAt != 0 &&
+                static_cast<int32_t>(millis() - nextReconnectAt) >= 0) {
+                connectTo(targetSsid, lastPassword);
+            }
+            break;
         default:
             break;
     }
@@ -153,6 +227,7 @@ void connectTo(const char* ssid, const char* password) {
     }
 
     connectStartTime = millis();
+    nextReconnectAt = 0;
     currentState = NetworkState::ConnectingSta;
 }
 
@@ -161,6 +236,7 @@ void startAp(const char* ssid, const char* password, bool secure) {
     if (WiFi.softAP(ssid, secure ? password : nullptr)) {
         apRunning = true;
         saveApSettings(ssid, secure, password);
+        ensureMdns();
     }
 }
 
@@ -168,13 +244,35 @@ void stopAp() {
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA); // Revert to STA-only to save power/cycles
     apRunning = false;
+    if (WiFi.status() != WL_CONNECTED) stopMdns();
 }
 
 bool isApEnabled() {
     return apRunning;
 }
 
+const char* getStaIpAddress() {
+    static char ip[16];
+    snprintf(ip, sizeof(ip), "%s", WiFi.localIP().toString().c_str());
+    return ip;
+}
+
+const char* getApIpAddress() {
+    static char ip[16];
+    snprintf(ip, sizeof(ip), "%s", WiFi.softAPIP().toString().c_str());
+    return ip;
+}
+
+const char* getHostname() { return device_identity::getHostname(); }
+
+void restartMdns() {
+    WiFi.setHostname(device_identity::getHostname());
+    stopMdns();
+    ensureMdns();
+}
+
 void scanNetworks() {
+    stateBeforeScan = currentState;
     WiFi.scanNetworks(true); // async
     currentState = NetworkState::Scanning;
 }

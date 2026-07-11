@@ -89,13 +89,17 @@ LVGL owns the display and touch UI. `ScreenManager` provides the persistent
 top-level tab layout; screens should only consume public service APIs, never
 read hardware or files directly.
 
-Current screens are:
+Current top-level screens are:
 
 - **Now:** raw per-sensor voltage/current/power and short trend charts.
 - **Power:** derived battery and solar/PWM-related metrics.
 - **Usage:** long-term history (currently provisional).
-- **Wi-Fi:** station scan/connect plus local AP control.
-- **Info:** device/build, memory, storage, clock, and reset information.
+- **Settings:** nested configuration and diagnostics pages:
+  - **Wi-Fi:** station scan/connect, station IP/RSSI, plus local AP control
+    and its gateway IP;
+  - **Setup:** persisted device ID/hostname (`meter-...`) and hardware ID;
+  - **Info:** build, current date/time, uptime, and current station/AP IPs;
+  - **Debug:** SDK/chip/reset details, free memory, and storage diagnostics.
 
 The display is a first-class offline interface. Network operations must be
 asynchronous and must not stall sampling or rendering.

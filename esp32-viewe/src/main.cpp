@@ -9,6 +9,7 @@
 #include "sensors/sensors.h"
 #include "data/historical_storage.h"
 #include "network/network_manager.h"
+#include "network/ota_service.h"
 
 #include "ui/screen_manager.h"
 #include "ui/screen_realtime.h"
@@ -16,6 +17,7 @@
 #include "ui/screen_historical.h"
 #include "ui/screen_wifi.h"
 #include "ui/screen_info.h"
+#include "ui/screen_settings.h"
 
 using namespace esp_panel::board;
 using namespace esp_panel::drivers;
@@ -34,6 +36,9 @@ void setup()
     sensors::start();
     historical_storage::init();
     network_manager::init();
+    // The server binds before an interface is available and becomes reachable
+    // as soon as station or AP networking comes up.
+    ota_service::begin();
 
     initDisplayAndLvgl();
 
@@ -46,8 +51,7 @@ void setup()
     screens.registerScreen("Now", screen_realtime::create);
     screens.registerScreen("Power", screen_system::create);
     screens.registerScreen("Usage", screen_historical::create);
-    screens.registerScreen("WiFi", screen_wifi::create);
-    screens.registerScreen("Info", screen_info::create);
+    screens.registerScreen(LV_SYMBOL_SETTINGS, screen_settings::create);
 
     screens.build(); // Builds tiles and dots
 
@@ -63,6 +67,7 @@ void loop()
         lastNetworkUpdateMs = now;
         network_manager::update();
     }
+    ota_service::update();
 
     if (now - lastStorageFeedMs >= sensors::kSampleIntervalMs) {
         lastStorageFeedMs = now;

@@ -1,2 +1,9 @@
 .pio*
 include/build_time.h
+include/ota_public_key.h
+.build_number
+.env
+secrets/
+dist/
+__pycache__/
+*.pyc

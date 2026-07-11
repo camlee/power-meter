@@ -25,6 +25,7 @@ lv_obj_t* activeConnPanel = nullptr;
 lv_obj_t* activeSsidLabel = nullptr;
 lv_obj_t* activeStatusLabel = nullptr;
 lv_obj_t* activeRssiLabel = nullptr;
+lv_obj_t* activeIpLabel = nullptr;
 
 lv_obj_t* scanLabel = nullptr;
 lv_obj_t* scanBtn = nullptr;
@@ -55,6 +56,7 @@ lv_obj_t* apKeyboard = nullptr;
 lv_timer_t* apPollTimer = nullptr;
 int lastApStationCount = -1;
 bool hasScanned = false; // Track if we should say "Scan" or "Rescan"
+
 
 // ============================================================
 // UI Updates
@@ -114,14 +116,17 @@ void refreshConnectionLabel() {
         lv_label_set_text_fmt(activeSsidLabel, "Connecting to %s...", network_manager::getCurrentSsid());
         lv_label_set_text(activeStatusLabel, "Authenticating...");
         lv_label_set_text(activeRssiLabel, "");
+        lv_label_set_text(activeIpLabel, "");
     } else if (st == NetworkState::ConnectedStaLocal) {
         lv_label_set_text(activeSsidLabel, network_manager::getCurrentSsid());
         lv_label_set_text(activeStatusLabel, LV_SYMBOL_WARNING " Local Network Only");
         lv_label_set_text_fmt(activeRssiLabel, "Signal: %d dBm", network_manager::getRssi());
+        lv_label_set_text_fmt(activeIpLabel, "IP: %s", network_manager::getStaIpAddress());
     } else if (st == NetworkState::ConnectedStaInternet) {
         lv_label_set_text(activeSsidLabel, network_manager::getCurrentSsid());
         lv_label_set_text(activeStatusLabel, LV_SYMBOL_OK " Internet Connected");
         lv_label_set_text_fmt(activeRssiLabel, "Signal: %d dBm", network_manager::getRssi());
+        lv_label_set_text_fmt(activeIpLabel, "IP: %s", network_manager::getStaIpAddress());
     }
 }
 
@@ -383,7 +388,7 @@ void apToggleEventCb(lv_event_t*) {
         lv_obj_add_state(apSsidInput, LV_STATE_DISABLED);
         lv_obj_add_state(apSecureSwitch, LV_STATE_DISABLED);
         lv_obj_add_state(apPasswordInput, LV_STATE_DISABLED);
-        lv_label_set_text(apInfoLabel, "Access point running.");
+        lv_label_set_text_fmt(apInfoLabel, "IP: %s", network_manager::getApIpAddress());
         apRefreshClientList();
     } else {
         network_manager::stopAp();
@@ -476,6 +481,7 @@ lv_obj_t* create(lv_obj_t* parent) {
 
     activeStatusLabel = lv_label_create(activeConnPanel);
     activeRssiLabel = lv_label_create(activeConnPanel);
+    activeIpLabel = lv_label_create(activeConnPanel);
 
     // 2. Scan Label
     scanLabel = lv_label_create(clientPanel);

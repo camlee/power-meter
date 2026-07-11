@@ -18,17 +18,82 @@ The active ESP Display Panel board is configured in `include/esp/esp_panel_board
 #define BOARD_VIEWE_UEDX32480035E_WB_A
 ```
 
-## Build and Upload
+## Updating firmware
+
+Firmware versions are generated as
+`0.0.N` and increment once per build. A single build can therefore update many
+meters with the exact same signed firmware.
+
+### USB / hardwired update
+
+Connect one meter over USB, then run:
 
 ```sh
-pio run --target upload
+pio run -t upload
 ```
 
-## View Serial Logs
+To watch logs:
 
 ```sh
 screen /dev/ttyACM0 -s 115200
 ```
+
+### OTA setup
+
+Do this before the first USB flash that should enable OTA updates:
+
+```sh
+cp .env.example .env
+openssl rand -hex 32
+# Paste that value as VIEWE_OTA_TOKEN=... in .env.
+python3 tools/create_ota_keys.py
+```
+
+Keep `.env` and `secrets/ota_signing_private.pem` on this trusted build
+machine. Do not commit either file. The first USB flash embeds the shared token
+and public signing key in the meter.
+
+Also re-flash over USB for recovery, or whenever changing the OTA token,
+signing key, bootloader, partition table, or LittleFS contents.
+
+### OTA update: one meter
+
+For a meter named `meter1` in Settings → Setup:
+
+```sh
+python3 tools/ota.py meter1
+```
+
+This builds, signs, uploads to `meter1.local`, and waits for the reboot. If
+`.local` discovery is unavailable, use the Station/AP IP shown by the meter:
+
+```sh
+python3 tools/ota.py --host 192.168.1.217
+```
+
+### OTA update: several meters, one build
+
+Pass all device names in one command. It builds and signs once, then uploads
+that same release/version to each meter in order:
+
+```sh
+python3 tools/ota.py meter1 meter2 meter3
+```
+
+### Reuse the same release later
+
+`tools/ota.py` leaves its signed release in `dist/latest/`. Upload that exact
+release to another meter without building again:
+
+```sh
+python3 tools/ota_upload.py --device meter4 --release dist/latest
+```
+
+Use `--host <IP>` instead of `--device <name>` when connecting through an AP
+or when mDNS is unavailable.
+
+For release internals, signature details, and recovery behavior, see
+[docs/OTA.md](docs/OTA.md).
 
 ## WSL
 Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/usbipd-win)
@@ -36,7 +101,8 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 ## Layout
 
 - `src/main.cpp`: board, display, LVGL, storage, and network startup
-- `src/ui/`: screen navigation and UI screens
+- `src/ui/`: screen navigation and UI screens; the top-level Settings screen
+  contains Wi-Fi, Setup, Info, and Debug sub-pages
 - `src/sensors/`: sensor acquisition, simulated source, and ESP32 ADC source
 - `src/sensors/sensor_config.h`: source selection and provisional pin mapping
 - `src/data/`: minute-level historical storage

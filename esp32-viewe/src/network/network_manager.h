@@ -29,6 +29,11 @@ NetworkState getState();
 const char* getCurrentSsid();
 int getRssi();
 bool isApEnabled();
+const char* getStaIpAddress();
+const char* getApIpAddress();
+const char* getHostname();
+// Re-advertise the current device identity after a device ID change.
+void restartMdns();
 
 // Scan Results API
 int getScanResultCount();
