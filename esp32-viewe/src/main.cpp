@@ -64,8 +64,6 @@ void setup()
 
 void loop()
 {
-    lv_timer_handler();
-
     uint32_t now = millis();
     if (now - lastNetworkUpdateMs >= 200) {
         lastNetworkUpdateMs = now;

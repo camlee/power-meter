@@ -666,16 +666,6 @@ static lv_disp_t *display_init(LCD *lcd)
 
 static void touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 {
-    uint16_t remoteX = 0;
-    uint16_t remoteY = 0;
-    bool remotePressed = false;
-    if (remote_input::read(remoteX, remoteY, remotePressed)) {
-        data->point.x = remoteX;
-        data->point.y = remoteY;
-        data->state = remotePressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
-        return;
-    }
-
     Touch *tp = (Touch *)indev_drv->user_data;
     TouchPoint point;
 
@@ -688,6 +678,17 @@ static void touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
     } else {
         data->state = LV_INDEV_STATE_RELEASED;
     }
+}
+
+static void remote_touchpad_read(lv_indev_drv_t *, lv_indev_data_t *data)
+{
+    uint16_t x = 0;
+    uint16_t y = 0;
+    bool pressed = false;
+    remote_input::read(x, y, pressed);
+    data->point.x = x;
+    data->point.y = y;
+    data->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
 }
 
 static lv_indev_t *indev_init(Touch *tp)
@@ -704,6 +705,15 @@ static lv_indev_t *indev_init(Touch *tp)
     indev_drv_tp.user_data = (void *)tp;
 
     return lv_indev_drv_register(&indev_drv_tp);
+}
+
+static lv_indev_t *remote_indev_init()
+{
+    static lv_indev_drv_t indev_drv_remote;
+    lv_indev_drv_init(&indev_drv_remote);
+    indev_drv_remote.type = LV_INDEV_TYPE_POINTER;
+    indev_drv_remote.read_cb = remote_touchpad_read;
+    return lv_indev_drv_register(&indev_drv_remote);
 }
 
 #if !LV_TICK_CUSTOM
@@ -825,6 +835,10 @@ bool lvgl_port_init(LCD *lcd, Touch *tp)
 #endif
 #endif
     }
+
+    // Keep remote input separate from the physical controller. Merging the
+    // two sources made an in-progress remote press mask real touches.
+    ESP_UTILS_CHECK_NULL_RETURN(remote_indev_init(), false, "Initialize remote input driver failed");
 
     ESP_UTILS_LOGD("Create mutex for LVGL");
     lvgl_mux = xSemaphoreCreateRecursiveMutex();

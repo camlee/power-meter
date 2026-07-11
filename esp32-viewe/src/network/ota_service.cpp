@@ -199,14 +199,9 @@ void putLe32(uint8_t* dest, uint32_t value) {
 // faithful capture of the physical display rather than a second UI renderer.
 void screenshot() {
     if (!authorised()) { server.send(401, "application/json", "{\"error\":\"unauthorised\"}"); return; }
-    if (!lvgl_port_lock(500)) {
-        server.send(503, "application/json", "{\"error\":\"screenshot busy\"}");
-        return;
-    }
     uint16_t width = 0, height = 0;
     const uint8_t* frameBuffer = lvgl_port_get_remote_framebuffer(&width, &height);
     if (!frameBuffer) {
-        lvgl_port_unlock();
         server.send(503, "application/json", "{\"error\":\"framebuffer unavailable\"}");
         return;
     }
@@ -234,7 +229,6 @@ void screenshot() {
             }
             client.write(line, width * 3);
         }
-        lvgl_port_unlock();
         return;
     }
 
@@ -281,7 +275,6 @@ void screenshot() {
         }
         delay(0);
     }
-    lvgl_port_unlock();
 }
 
 bool parseRemotePoint(uint16_t& x, uint16_t& y, bool* pressed = nullptr) {
