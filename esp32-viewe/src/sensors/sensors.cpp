@@ -1,5 +1,7 @@
 #include "sensors.h"
+#include "sensor_config.h"
 #include "sensor_source.h"
+#include "sensor_source_adc.h"
 #include "sensor_source_sim.h"
 #include <algorithm>
 #include <cmath>
@@ -21,19 +23,19 @@ SemaphoreHandle_t mutex = nullptr; // one mutex guards all 3 buffers; they're sm
 // duty cycle, so we just report 1.0 (fully on) instead of a noisy ratio.
 constexpr float kMinPowerForDutyWatts = 0.5f;
 
-// --- Sensor sources -------------------------------------------------------
-// THIS IS THE ONLY PLACE THAT NEEDS TO CHANGE once real hardware is known.
-// Replace each `new SimulatedSensorSource(...)` with e.g.
-//   new Ina219SensorSource(I2C_ADDR_0)
-// as long as the replacement implements SensorSource, nothing else in the
-// app (UI, storage) needs to be touched.
 SensorSource* makeSource(SensorId id) {
+#if POWER_METER_USE_SIMULATED_SENSORS
     switch (id) {
         case SENSOR_IN:  return new SimulatedSensorSource(/*V*/ 18.0f, /*A*/ 2.0f, /*phase*/ 0);
         case SENSOR_OUT: return new SimulatedSensorSource(/*V*/ 13.0f, /*A*/ 1.5f, /*phase*/ 1);
         case SENSOR_AUX: return new SimulatedSensorSource(/*V*/ 5.0f, /*A*/ 0.4f, /*phase*/ 2);
         default: return nullptr;
     }
+#else
+    if (id >= SENSOR_COUNT) return nullptr;
+    const config::Pins& pins = config::kPins[id];
+    return new Esp32AnalogSource(pins.voltage, pins.current);
+#endif
 }
 SensorSource* sources[SENSOR_COUNT] = {nullptr, nullptr, nullptr};
 
@@ -58,14 +60,21 @@ void taskFn(void*) {
 
 void start() {
     mutex = xSemaphoreCreateMutex();
+    if (!mutex) {
+        Serial.println("sensors: failed to create mutex");
+        return;
+    }
+
     randomSeed(esp_random());
     for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
         sources[i] = makeSource(static_cast<SensorId>(i));
-        if (!sources[i]->init()) {
+        if (!sources[i] || !sources[i]->init()) {
             Serial.printf("sensors: sensor %u failed to init\n", i);
         }
     }
-    xTaskCreatePinnedToCore(taskFn, "sensors_task", 4096, nullptr, 1, nullptr, 0);
+    if (xTaskCreatePinnedToCore(taskFn, "sensors_task", 4096, nullptr, 1, nullptr, 0) != pdPASS) {
+        Serial.println("sensors: failed to start task");
+    }
 }
 
 size_t getRecent(SensorId id, Reading* out, size_t maxCount) {

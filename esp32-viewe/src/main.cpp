@@ -8,6 +8,7 @@
 
 #include "sensors/sensors.h"
 #include "data/historical_storage.h"
+#include "network/network_manager.h"
 
 #include "ui/screen_manager.h"
 #include "ui/screen_realtime.h"
@@ -21,6 +22,7 @@ using namespace esp_panel::drivers;
 
 namespace {
 uint32_t lastStorageFeedMs = 0;
+uint32_t lastNetworkUpdateMs = 0;
 } // namespace
 
 void setup()
@@ -31,8 +33,9 @@ void setup()
 
     sensors::start();
     historical_storage::init();
+    network_manager::init();
 
-    Board* board = initDisplayAndLvgl();
+    initDisplayAndLvgl();
 
     lvgl_port_lock(-1);
 
@@ -56,6 +59,11 @@ void loop()
     lv_timer_handler();
 
     uint32_t now = millis();
+    if (now - lastNetworkUpdateMs >= 200) {
+        lastNetworkUpdateMs = now;
+        network_manager::update();
+    }
+
     if (now - lastStorageFeedMs >= sensors::kSampleIntervalMs) {
         lastStorageFeedMs = now;
         for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {

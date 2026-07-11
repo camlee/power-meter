@@ -1,34 +1,29 @@
-#pragma once
-#include "sensor_source.h"
+#include "sensor_source_adc.h"
+#include "sensor_config.h"
+
 #include <Arduino.h>
 
-class ESP32AnalogSource : public SensorSource {
-private:
-    uint8_t v_pin;
-    uint8_t i_pin;
-    const float v_offset = 0.0f;
-    const float v_gain = 0.027027f;
-    const float i_offset = 1.667f;
-    const float i_gain = 0.026667f;
+Esp32AnalogSource::Esp32AnalogSource(uint8_t voltagePin, uint8_t currentPin)
+    : voltagePin_(voltagePin), currentPin_(currentPin) {}
 
-public:
-    ESP32AnalogSource(uint8_t v_pin, uint8_t i_pin) : v_pin(v_pin), i_pin(i_pin) {}
+bool Esp32AnalogSource::init()
+{
+    pinMode(voltagePin_, INPUT);
+    pinMode(currentPin_, INPUT);
+    analogSetPinAttenuation(voltagePin_, ADC_11db);
+    analogSetPinAttenuation(currentPin_, ADC_11db);
+    return true;
+}
 
-    bool init() override {
-        pinMode(v_pin, INPUT);
-        pinMode(i_pin, INPUT);
-        analogSetPinAttenuation(v_pin, ADC_11db);
-        analogSetPinAttenuation(i_pin, ADC_11db);
-        return true;
-    }
+SensorSample Esp32AnalogSource::read()
+{
+    const float voltageInputV = analogReadMilliVolts(voltagePin_) / 1000.0f;
+    const float currentInputV = analogReadMilliVolts(currentPin_) / 1000.0f;
 
-    SensorSample read() override {
-        float v_mv = analogReadMilliVolts(v_pin) / 1000.0f;
-        float i_mv = analogReadMilliVolts(i_pin) / 1000.0f;
-        
-        return {
-            (v_mv - v_offset) / v_gain,
-            (i_mv - i_offset) / i_gain
-        };
-    }
-};
+    return {
+        .voltage = (voltageInputV - sensors::config::kVoltageOffsetV)
+            * sensors::config::kVoltageVoltsPerInputVolt,
+        .current = (currentInputV - sensors::config::kCurrentOffsetV)
+            * sensors::config::kCurrentAmpsPerInputVolt,
+    };
+}

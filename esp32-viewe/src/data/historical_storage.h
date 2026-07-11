@@ -20,9 +20,10 @@ constexpr uint8_t kSensorCount = 3;
 // Packed so the on-disk layout is stable and doesn't depend on compiler
 // padding choices -- this struct is written to flash byte-for-byte.
 struct __attribute__((packed)) MinuteRecord {
-    uint32_t epoch_s;               // minute start time (seconds since boot until an RTC/NTP source exists)
-    float avgPowerW[kSensorCount];  // average power per sensor over the minute
-    float energyWh[kSensorCount];   // energy accumulated per sensor over the minute, in Wh
+    uint32_t uptime_m;              // Minutes since boot (always valid)
+    uint32_t epoch_s;               // 0 if NTP is not yet synced, valid epoch otherwise
+    float avgPowerW[kSensorCount];
+    float energyWh[kSensorCount];
 };
 
 // Mounts LittleFS and opens/creates the ring buffer file. Call once from
@@ -46,6 +47,12 @@ void tick();
 // Copies up to maxCount most-recent minute records into `out`, oldest
 // first. Returns the number actually copied.
 size_t getRecent(MinuteRecord* out, size_t maxCount);
+
+// Fetches a decimated time series for UI rendering.
+// maxPoints: The size of the allocated 'out' buffer (e.g., chart width).
+// lookbackMinutes: The time domain to query (e.g., 60 for 1h, 1440 for 1d, 10080 for 1w).
+// Returns the actual number of populated records in 'out'.
+size_t getTimeSeries(MinuteRecord* out, size_t maxPoints, uint32_t lookbackMinutes);
 
 // Total records currently stored (<= kMaxRecords).
 size_t recordCount();

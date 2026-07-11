@@ -280,8 +280,6 @@ void scanEventCb(lv_event_t*) {
 }
 
 void pollCb(lv_timer_t*) {
-    network_manager::update();
-
     NetworkState currentState = network_manager::getState();
 
     if (currentState != lastState) {
@@ -434,8 +432,6 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_border_width(scr, 0, 0);
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(scr, 10, 0); // Gap between tabs and panels
-
-    network_manager::init();
 
     // ---- Tab switcher ----
     lv_obj_t* tabRow = lv_obj_create(scr);
