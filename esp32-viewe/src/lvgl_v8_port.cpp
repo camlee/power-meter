@@ -9,6 +9,8 @@
 #define ESP_UTILS_LOG_TAG "LvPort"
 #include "esp_lib_utils.h"
 #include "lvgl_v8_port.h"
+#include "ui/remote_input.h"
+#include <esp_heap_caps.h>
 
 using namespace esp_panel::drivers;
 
@@ -19,6 +21,21 @@ static SemaphoreHandle_t lvgl_mux = nullptr;                  // LVGL mutex
 static TaskHandle_t lvgl_task_handle = nullptr;
 static esp_timer_handle_t lvgl_tick_timer = NULL;
 static void *lvgl_buf[LVGL_PORT_BUFFER_NUM_MAX] = {};
+static uint8_t *remote_framebuffer = nullptr;
+static uint16_t remote_framebuffer_width = 0;
+static uint16_t remote_framebuffer_height = 0;
+
+static void remote_framebuffer_capture(const lv_area_t *area, const lv_color_t *color_map)
+{
+    if (!remote_framebuffer) return;
+    const uint16_t copy_width = area->x2 - area->x1 + 1;
+    const uint16_t copy_height = area->y2 - area->y1 + 1;
+    for (uint16_t row = 0; row < copy_height; ++row) {
+        memcpy(remote_framebuffer + ((area->y1 + row) * remote_framebuffer_width + area->x1) * 2,
+               reinterpret_cast<const uint8_t *>(color_map) + row * copy_width * 2,
+               copy_width * 2);
+    }
+}
 
 #if LVGL_PORT_ROTATION_DEGREE != 0
 static void *get_next_frame_buffer(LCD *lcd)
@@ -479,6 +496,7 @@ void flush_callback(lv_disp_drv_t *drv, const lv_area_t *area, lv_color_t *color
     const int offsety1 = area->y1;
     const int offsety2 = area->y2;
 
+    remote_framebuffer_capture(area, color_map);
     lcd->drawBitmap(offsetx1, offsety1, offsetx2 - offsetx1 + 1, offsety2 - offsety1 + 1, (const uint8_t *)color_map);
     // For RGB LCD, directly notify LVGL that the buffer is ready
     if (lcd->getBus()->getBasicAttributes().type == ESP_PANEL_BUS_TYPE_RGB) {
@@ -564,6 +582,14 @@ static lv_disp_t *display_init(LCD *lcd)
     auto lcd_height = lcd->getFrameHeight();
     int buffer_size = 0;
 
+    remote_framebuffer_width = lcd_width;
+    remote_framebuffer_height = lcd_height;
+    remote_framebuffer = static_cast<uint8_t *>(heap_caps_malloc(
+        static_cast<size_t>(lcd_width) * lcd_height * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!remote_framebuffer) {
+        ESP_UTILS_LOGW("Remote framebuffer disabled: no PSRAM available");
+    }
+
     ESP_UTILS_LOGD("Malloc memory for LVGL buffer");
 #if !LVGL_PORT_AVOID_TEAR
     // Avoid tearing function is disabled
@@ -640,6 +666,16 @@ static lv_disp_t *display_init(LCD *lcd)
 
 static void touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
 {
+    uint16_t remoteX = 0;
+    uint16_t remoteY = 0;
+    bool remotePressed = false;
+    if (remote_input::read(remoteX, remoteY, remotePressed)) {
+        data->point.x = remoteX;
+        data->point.y = remoteY;
+        data->state = remotePressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+        return;
+    }
+
     Touch *tp = (Touch *)indev_drv->user_data;
     TouchPoint point;
 
@@ -822,6 +858,13 @@ bool lvgl_port_unlock(void)
     xSemaphoreGiveRecursive(lvgl_mux);
 
     return true;
+}
+
+const uint8_t* lvgl_port_get_remote_framebuffer(uint16_t* width, uint16_t* height)
+{
+    if (width) *width = remote_framebuffer_width;
+    if (height) *height = remote_framebuffer_height;
+    return remote_framebuffer;
 }
 
 bool lvgl_port_deinit(void)

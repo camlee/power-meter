@@ -120,6 +120,31 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 - `src/data/`: minute-level historical storage
 - `include/esp/`: ESP Display Panel, ESP utility, and LVGL configuration headers
 
+## Remote display and control
+
+Once the meter is on Wi-Fi or its local AP, the authenticated HTTP service
+also exposes the actual LCD framebuffer and a virtual touch input:
+
+```sh
+# Use the same bearer token configured for signed OTA updates.
+curl -H "Authorization: Bearer $VIEWE_OTA_TOKEN" \
+  http://device1.local/api/v1/display/screenshot.bmp -o display.bmp
+
+# A raw PPM variant is convenient for CLI image tools.
+curl -H "Authorization: Bearer $VIEWE_OTA_TOKEN" \
+  'http://device1.local/api/v1/display/screenshot.bmp?format=ppm' -o display.ppm
+
+curl -X POST -H "Authorization: Bearer $VIEWE_OTA_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"x":160,"y":240}' \
+  http://device1.local/api/v1/display/tap
+```
+
+Open `http://device1.local/remote` for **power-meter remote**, a small browser
+viewer. It remembers the bearer token in that browser for that device, refreshes
+the true 320×480 display about once per second, and maps a click/tap back to
+the display.
+
 ## Sensor source
 
 Simulation is enabled by default so UI and storage work without sensor

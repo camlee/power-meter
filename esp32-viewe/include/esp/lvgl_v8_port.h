@@ -169,6 +169,10 @@ bool lvgl_port_lock(int timeout_ms);
  */
 bool lvgl_port_unlock(void);
 
+// Valid while the caller holds lvgl_port_lock(). Returns a RGB565 shadow of
+// the pixels sent to SPI/QSPI panels; RGB panels may expose their framebuffer.
+const uint8_t* lvgl_port_get_remote_framebuffer(uint16_t* width, uint16_t* height);
+
 #ifdef __cplusplus
 }
 #endif

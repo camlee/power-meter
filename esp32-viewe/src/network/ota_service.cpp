@@ -1,6 +1,7 @@
 #include "ota_service.h"
 
 #include <Arduino.h>
+#include <WiFi.h>
 #include <Preferences.h>
 #include <WebServer.h>
 #include <Update.h>
@@ -15,6 +16,8 @@
 // These definitions are deliberately supplied by the local build environment,
 // never committed credentials.  An empty value disables firmware updates.
 #include "ota_public_key.h" // generated locally from keys/ota_signing_public.pem
+#include "lvgl_v8_port.h"
+#include "ui/remote_input.h"
 
 #ifndef OTA_SHARED_TOKEN
 #define OTA_SHARED_TOKEN ""
@@ -166,6 +169,157 @@ bool jsonUnsigned(const String& json, const char* name, uint32_t& value) {
     if (end == start || (end - start) > 10) return false;
     for (int i = start; i < end; ++i) value = value * 10 + (json[i] - '0');
     return true;
+}
+
+bool jsonBool(const String& json, const char* name, bool& value) {
+    String key = String("\"") + name + "\"";
+    int keyAt = json.indexOf(key);
+    if (keyAt < 0) return false;
+    int colon = json.indexOf(':', keyAt + key.length());
+    if (colon < 0) return false;
+    const String tail = json.substring(colon + 1);
+    if (tail.startsWith("true")) { value = true; return true; }
+    if (tail.startsWith("false")) { value = false; return true; }
+    return false;
+}
+
+void putLe16(uint8_t* dest, uint16_t value) {
+    dest[0] = value & 0xff;
+    dest[1] = value >> 8;
+}
+
+void putLe32(uint8_t* dest, uint32_t value) {
+    dest[0] = value & 0xff;
+    dest[1] = (value >> 8) & 0xff;
+    dest[2] = (value >> 16) & 0xff;
+    dest[3] = (value >> 24) & 0xff;
+}
+
+// The RGB panel retains the rendered image in its framebuffer, making this a
+// faithful capture of the physical display rather than a second UI renderer.
+void screenshot() {
+    if (!authorised()) { server.send(401, "application/json", "{\"error\":\"unauthorised\"}"); return; }
+    if (!lvgl_port_lock(500)) {
+        server.send(503, "application/json", "{\"error\":\"screenshot busy\"}");
+        return;
+    }
+    uint16_t width = 0, height = 0;
+    const uint8_t* frameBuffer = lvgl_port_get_remote_framebuffer(&width, &height);
+    if (!frameBuffer) {
+        lvgl_port_unlock();
+        server.send(503, "application/json", "{\"error\":\"framebuffer unavailable\"}");
+        return;
+    }
+
+    // PPM is useful for CLI automation and is directly readable by common
+    // image tooling without an encoder. The browser viewer uses BMP below.
+    if (server.arg("format") == "ppm") {
+        const String ppmHeader = String("P6\n") + width + " " + height + "\n255\n";
+        server.setContentLength(ppmHeader.length() + static_cast<size_t>(width) * height * 3);
+        server.send(200, "image/x-portable-pixmap", "");
+        WiFiClient client = server.client();
+        client.write(reinterpret_cast<const uint8_t*>(ppmHeader.c_str()), ppmHeader.length());
+        uint8_t line[320 * 3];
+        for (uint16_t y = 0; y < height && client.connected(); ++y) {
+            for (uint16_t x = 0; x < width; ++x) {
+                const size_t source = (static_cast<size_t>(y) * width + x) * 2;
+#if LV_COLOR_16_SWAP
+                const uint16_t rgb565 = (static_cast<uint16_t>(frameBuffer[source]) << 8) | frameBuffer[source + 1];
+#else
+                const uint16_t rgb565 = frameBuffer[source] | (static_cast<uint16_t>(frameBuffer[source + 1]) << 8);
+#endif
+                line[x * 3] = ((rgb565 >> 11) & 0x1f) * 255 / 31;
+                line[x * 3 + 1] = ((rgb565 >> 5) & 0x3f) * 255 / 63;
+                line[x * 3 + 2] = (rgb565 & 0x1f) * 255 / 31;
+            }
+            client.write(line, width * 3);
+        }
+        lvgl_port_unlock();
+        return;
+    }
+
+    // 24-bit BMP is universally displayable in browsers and requires no JPEG
+    // encoder or a second full-size output buffer on the ESP32.
+    constexpr size_t kHeaderBytes = 54;
+    const uint32_t pixelBytes = static_cast<uint32_t>(width) * height * 3;
+    uint8_t header[kHeaderBytes] = {};
+    header[0] = 'B'; header[1] = 'M';
+    putLe32(header + 2, kHeaderBytes + pixelBytes);
+    putLe32(header + 10, kHeaderBytes);
+    putLe32(header + 14, 40);
+    putLe32(header + 18, width);
+    putLe32(header + 22, height);
+    putLe16(header + 26, 1);
+    putLe16(header + 28, 24);
+    putLe32(header + 34, pixelBytes);
+
+    server.setContentLength(kHeaderBytes + pixelBytes);
+    server.send(200, "image/bmp", "");
+    WiFiClient client = server.client();
+    client.write(header, sizeof(header));
+    uint8_t line[320 * 3]; // Current panel width; send in chunks for wider boards.
+    for (int y = height - 1; y >= 0 && client.connected(); --y) {
+        size_t x = 0;
+        while (x < width) {
+            const size_t pixels = min<size_t>(width - x, sizeof(line) / 3);
+            for (size_t i = 0; i < pixels; ++i) {
+                const size_t source = (static_cast<size_t>(y) * width + x + i) * 2;
+#if LV_COLOR_16_SWAP
+                const uint16_t rgb565 = (static_cast<uint16_t>(frameBuffer[source]) << 8) | frameBuffer[source + 1];
+#else
+                const uint16_t rgb565 = frameBuffer[source] | (static_cast<uint16_t>(frameBuffer[source + 1]) << 8);
+#endif
+                const uint8_t r = ((rgb565 >> 11) & 0x1f) * 255 / 31;
+                const uint8_t g = ((rgb565 >> 5) & 0x3f) * 255 / 63;
+                const uint8_t b = (rgb565 & 0x1f) * 255 / 31;
+                line[i * 3] = b;
+                line[i * 3 + 1] = g;
+                line[i * 3 + 2] = r;
+            }
+            client.write(line, pixels * 3);
+            x += pixels;
+        }
+        delay(0);
+    }
+    lvgl_port_unlock();
+}
+
+bool parseRemotePoint(uint16_t& x, uint16_t& y, bool* pressed = nullptr) {
+    if (!authorised()) { server.send(401, "application/json", "{\"error\":\"unauthorised\"}"); return false; }
+    uint32_t parsedX = 0, parsedY = 0;
+    const String body = server.arg("plain");
+    if (!jsonUnsigned(body, "x", parsedX) || !jsonUnsigned(body, "y", parsedY) || parsedX > 319 || parsedY > 479) {
+        server.send(400, "application/json", "{\"error\":\"x and y must be display coordinates\"}");
+        return false;
+    }
+    if (pressed && !jsonBool(body, "pressed", *pressed)) {
+        server.send(400, "application/json", "{\"error\":\"pressed must be boolean\"}");
+        return false;
+    }
+    x = parsedX;
+    y = parsedY;
+    return true;
+}
+
+void remoteTap() {
+    uint16_t x, y;
+    if (!parseRemotePoint(x, y)) return;
+    remote_input::tap(x, y);
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void remotePointer() {
+    uint16_t x, y;
+    bool pressed = false;
+    if (!parseRemotePoint(x, y, &pressed)) return;
+    remote_input::setPointer(x, y, pressed);
+    server.send(200, "application/json", "{\"ok\":true}");
+}
+
+const char kRemoteViewer[] PROGMEM = R"HTML(<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>power-meter remote</title><style>body{font:16px system-ui;margin:1rem;background:#111;color:#eee}input,button{font:inherit;padding:.45rem}img{display:block;width:min(100%,480px);height:auto;margin-top:1rem;touch-action:none;background:#222}</style><h1>power-meter remote</h1><p>Enter the device API token. It is saved only in this browser for this device. The display refreshes about once per second.</p><input id=t type=password placeholder="API token" autocomplete=off><button id=c>Connect</button><button id=f>Forget token</button><span id=s></span><p id=e>Connect to view and control the display.</p><img id=i alt="Device display" hidden><script>const t=document.querySelector('#t'),i=document.querySelector('#i'),s=document.querySelector('#s'),e=document.querySelector('#e'),key='power-meter.remote.token';let active=false,last='',lastMove=0;t.value=localStorage.getItem(key)||'';const h=()=>({Authorization:'Bearer '+t.value}),pos=x=>{let r=i.getBoundingClientRect();return{x:Math.max(0,Math.min(319,Math.round((x.clientX-r.left)*320/r.width))),y:Math.max(0,Math.min(479,Math.round((x.clientY-r.top)*480/r.height)))}};async function shot(){if(!active)return;try{let r=await fetch('/api/v1/display/screenshot.bmp',{headers:h()});if(!r.ok)throw Error(r.status);let u=URL.createObjectURL(await r.blob());URL.revokeObjectURL(last);last=u;i.src=u;i.hidden=false;e.hidden=true;s.textContent=' connected'}catch(x){s.textContent=' '+x}setTimeout(shot,900)}async function pointer(x,pressed){if(!active)return;await fetch('/api/v1/display/pointer',{method:'POST',headers:{...h(),'Content-Type':'application/json'},body:JSON.stringify({...pos(x),pressed})})}document.querySelector('#c').onclick=()=>{if(!t.value)return;s.textContent=' connecting';localStorage.setItem(key,t.value);active=true;shot()};document.querySelector('#f').onclick=()=>{localStorage.removeItem(key);t.value='';active=false;i.hidden=true;e.hidden=false;s.textContent=' token forgotten'};i.addEventListener('pointerdown',x=>{i.setPointerCapture(x.pointerId);pointer(x,true)});i.addEventListener('pointermove',x=>{if(x.buttons&&Date.now()-lastMove>60){lastMove=Date.now();pointer(x,true)}});i.addEventListener('pointerup',x=>pointer(x,false));i.addEventListener('pointercancel',x=>pointer(x,false));</script>)HTML";
+
+void remoteViewer() {
+    server.send_P(200, "text/html; charset=utf-8", kRemoteViewer);
 }
 
 // The canonical manifest bytes themselves are signed with RSA-PSS/SHA-256.
@@ -342,6 +496,10 @@ void begin() {
     server.collectHeaders(headers, 1);
     server.on("/api/v1/info", HTTP_GET, info);
     server.on("/api/v1/update", HTTP_POST, completeUpload, handleUpload);
+    server.on("/api/v1/display/screenshot.bmp", HTTP_GET, screenshot);
+    server.on("/api/v1/display/tap", HTTP_POST, remoteTap);
+    server.on("/api/v1/display/pointer", HTTP_POST, remotePointer);
+    server.on("/remote", HTTP_GET, remoteViewer);
     server.begin();
     runningPartition = esp_ota_get_running_partition();
     bootPartition = esp_ota_get_boot_partition();
