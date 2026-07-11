@@ -8,22 +8,37 @@
 // samples via addSample(), which keeps this module reusable if the sample
 // source ever changes, and makes it easy to unit-test with fake data.
 //
-// Storage backend note: this implementation uses a fixed-capacity ring
-// buffer file on LittleFS (kMaxRecords, sized for internal flash). If/when
-// you move to an SD card for longer retention, only this .cpp changes --
-// the API below (addSample/tick/getRecent) stays the same, so
-// screen_historical.cpp doesn't need to change at all.
+// The UI and a future API should derive chart power from energy, rather than
+// averaging already-averaged power samples.  PowerBucket is that query result:
+// each value is sum(energyWh) / the fixed bucket duration.
 namespace historical_storage {
 
 constexpr uint8_t kSensorCount = 3;
+
+enum Component : uint8_t {
+    BATTERY_CHARGING = 0,
+    BATTERY_USAGE,
+    PANEL_IN,
+    PANEL_USAGE,
+    PANEL_SURPLUS,
+    COMPONENT_COUNT,
+};
 
 // Packed so the on-disk layout is stable and doesn't depend on compiler
 // padding choices -- this struct is written to flash byte-for-byte.
 struct __attribute__((packed)) MinuteRecord {
     uint32_t uptime_m;              // Minutes since boot (always valid)
     uint32_t epoch_s;               // 0 if NTP is not yet synced, valid epoch otherwise
-    float avgPowerW[kSensorCount];
     float energyWh[kSensorCount];
+    float componentEnergyWh[COMPONENT_COUNT];
+};
+
+struct PowerBucket {
+    uint32_t startUptime_m;         // First minute in this fixed bucket
+    uint16_t durationMinutes;       // May be shorter for the in-progress bucket
+    float energyWh[kSensorCount];
+    float componentEnergyWh[COMPONENT_COUNT];
+    float componentAveragePowerW[COMPONENT_COUNT];
 };
 
 // Mounts LittleFS and opens/creates the ring buffer file. Call once from
@@ -32,12 +47,11 @@ struct __attribute__((packed)) MinuteRecord {
 // Returns false if the filesystem couldn't be mounted.
 bool init();
 
-// Feeds one realtime power sample into the in-progress minute average.
-// Call this at the same cadence sensors are sampled (e.g. once per
-// sensors::kSampleIntervalMs from a hook in loop(), or later from a
-// subscriber callback if sensors.h grows one). sensorIndex must be
-// < kSensorCount.
-void addSample(uint8_t sensorIndex, float powerW, uint32_t timestamp_ms);
+// Feeds one coherent measurement frame into the in-progress minute record.
+// The battery/panel split is calculated at this cadence before any minute or
+// chart aggregation can hide alternating charge/discharge periods.
+void addSampleFrame(float inPowerW, float outPowerW, float auxPowerW,
+                    float availableInPowerW, uint32_t timestamp_ms);
 
 // Call at least once per second from loop(). Checks whether a minute
 // boundary has passed since the last call and, if so, finalizes the
@@ -54,7 +68,16 @@ size_t getRecent(MinuteRecord* out, size_t maxCount);
 // Returns the actual number of populated records in 'out'.
 size_t getTimeSeries(MinuteRecord* out, size_t maxPoints, uint32_t lookbackMinutes);
 
-// Total records currently stored (<= kMaxRecords).
+// Returns complete, fixed-duration buckets in chronological order.  A bucket
+// is returned only when all of its minute records are present and consecutive;
+// this prevents a boot/outage from being displayed as fabricated zero energy.
+// endOffsetMinutes selects an older relative window: for example, a 1440
+// minute lookback with a 1440 minute offset is the prior 24-hour window.
+size_t getPowerBuckets(PowerBucket* out, size_t maxBuckets,
+                       uint32_t lookbackMinutes, uint16_t bucketMinutes,
+                       uint32_t endOffsetMinutes = 0, bool includePartial = true);
+
+// Total minute records currently stored.
 size_t recordCount();
 
 } // namespace historical_storage

@@ -3,6 +3,7 @@ include/build_time.h
 include/ota_public_key.h
 .build_number
 .env
+demo-source/
 secrets/
 dist/
 __pycache__/

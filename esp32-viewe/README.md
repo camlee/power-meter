@@ -56,6 +56,18 @@ and public signing key in the meter.
 Also re-flash over USB for recovery, or whenever changing the OTA token,
 signing key, bootloader, partition table, or LittleFS contents.
 
+### Linux mDNS support
+
+The meter advertises its hostname through its built-in mDNS service, so
+`meter1.local` requires mDNS name resolution on the computer running the OTA
+tool. On Debian/Ubuntu Linux, install it once with:
+
+```sh
+sudo apt install avahi-daemon libnss-mdns
+```
+
+This is not required when using `--host <IP-address>`.
+
 ### OTA update: one meter
 
 For a meter named `meter1` in Settings → Setup:

@@ -2,15 +2,20 @@
 
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <cstring>
 #include <esp_system.h>
+#include "network/ota_service.h"
 
 namespace screen_debug {
 namespace {
 
-lv_obj_t* heapLabel = nullptr;
-lv_obj_t* psramLabel = nullptr;
+lv_obj_t* memoryLabel = nullptr;
 lv_obj_t* storageLabel = nullptr;
+lv_obj_t* otaHealthLabel = nullptr;
+lv_obj_t* otaSlotLabel = nullptr;
+lv_obj_t* otaStateLabel = nullptr;
 lv_timer_t* updateTimer = nullptr;
+uint8_t rowIndex = 0;
 
 lv_obj_t* addRow(lv_obj_t* parent, const char* key, const char* value) {
     lv_obj_t* row = lv_obj_create(parent);
@@ -18,6 +23,10 @@ lv_obj_t* addRow(lv_obj_t* parent, const char* key, const char* value) {
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_all(row, 4, 0);
+    if (rowIndex++ & 1U) {
+        lv_obj_set_style_bg_color(row, lv_color_hex(0xF4F4F4), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    }
 
     lv_obj_t* keyLabel = lv_label_create(row);
     lv_label_set_text(keyLabel, key);
@@ -45,10 +54,9 @@ const char* resetReasonStr(esp_reset_reason_t reason) {
 
 void updateCb(lv_timer_t*) {
     char buffer[64];
-    snprintf(buffer, sizeof(buffer), "%.0f KB", ESP.getFreeHeap() / 1024.0);
-    lv_label_set_text(heapLabel, buffer);
-    snprintf(buffer, sizeof(buffer), "%.0f KB", ESP.getFreePsram() / 1024.0);
-    lv_label_set_text(psramLabel, buffer);
+    snprintf(buffer, sizeof(buffer), "Heap %.0f KB  PSRAM %.0f KB",
+             ESP.getFreeHeap() / 1024.0, ESP.getFreePsram() / 1024.0);
+    lv_label_set_text(memoryLabel, buffer);
 
     const size_t total = LittleFS.totalBytes();
     if (total == 0) {
@@ -57,6 +65,21 @@ void updateCb(lv_timer_t*) {
         snprintf(buffer, sizeof(buffer), "%zu KB / %zu KB", LittleFS.usedBytes() / 1024, total / 1024);
         lv_label_set_text(storageLabel, buffer);
     }
+
+    const uint32_t remainingMs = ota_service::validationRemainingMs();
+    if (remainingMs > 0) {
+        snprintf(buffer, sizeof(buffer), "%s; verify %.1f s", ota_service::healthStatus(), remainingMs / 1000.0f);
+    } else if (strcmp(ota_service::healthStatus(), "confirmed") == 0) {
+        snprintf(buffer, sizeof(buffer), "%s; verified", ota_service::healthStatus());
+    } else {
+        snprintf(buffer, sizeof(buffer), "%s", ota_service::healthStatus());
+    }
+    lv_label_set_text(otaHealthLabel, buffer);
+    snprintf(buffer, sizeof(buffer), "%s -> %s", ota_service::runningPartitionLabel(), ota_service::bootPartitionLabel());
+    lv_label_set_text(otaSlotLabel, buffer);
+    snprintf(buffer, sizeof(buffer), "%s%s", ota_service::runningImageState(),
+             ota_service::rollbackDetected() ? "; rollback detected" : "");
+    lv_label_set_text(otaStateLabel, buffer);
 }
 
 } // namespace
@@ -65,6 +88,9 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* screen = lv_obj_create(parent);
     lv_obj_remove_style_all(screen);
     lv_obj_set_size(screen, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(screen, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(screen, 3, 0);
     lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
 
     lv_obj_t* list = lv_obj_create(screen);
@@ -72,20 +98,22 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_size(list, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 
+    rowIndex = 0;
     char buffer[64];
     snprintf(buffer, sizeof(buffer), "%d.%d.%d", LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH);
     addRow(list, "LVGL", buffer);
     addRow(list, "ESP-IDF / SDK", ESP.getSdkVersion());
     snprintf(buffer, sizeof(buffer), "%s rev %d", ESP.getChipModel(), ESP.getChipRevision());
     addRow(list, "Chip", buffer);
-    snprintf(buffer, sizeof(buffer), "%d MHz", ESP.getCpuFreqMHz());
-    addRow(list, "CPU", buffer);
-    snprintf(buffer, sizeof(buffer), "%u MB", (unsigned)(ESP.getFlashChipSize() / (1024 * 1024)));
-    addRow(list, "Flash", buffer);
-    addRow(list, "Reset", resetReasonStr(esp_reset_reason()));
-    heapLabel = addRow(list, "Free heap", "--");
-    psramLabel = addRow(list, "Free PSRAM", "--");
+    snprintf(buffer, sizeof(buffer), "%d MHz / %u MB flash", ESP.getCpuFreqMHz(),
+             (unsigned)(ESP.getFlashChipSize() / (1024 * 1024)));
+    addRow(list, "CPU / flash", buffer);
+    addRow(list, "Last reset", resetReasonStr(esp_reset_reason()));
+    memoryLabel = addRow(list, "Memory", "--");
     storageLabel = addRow(list, "Data storage", "--");
+    otaHealthLabel = addRow(list, "OTA", "--");
+    otaSlotLabel = addRow(list, "OTA slots", "--");
+    otaStateLabel = addRow(list, "OTA image", "--");
 
     updateTimer = lv_timer_create(updateCb, 1000, nullptr);
     updateCb(nullptr);

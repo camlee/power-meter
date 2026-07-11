@@ -114,21 +114,30 @@ POSTs `multipart/form-data` to `/api/v1/update`, and sends:
 - `signature` as base64 text; and
 - `firmware` as `application/octet-stream`.
 
-It then polls `/api/v1/info` for a short time after the device reboots. An
-accepted update can be installed regardless of whether its version is lower or
-higher than the currently running firmware.
+It then polls `/api/v1/info` until the expected board/version reports a
+confirmed health state. An accepted update can be installed regardless of
+whether its version is lower or higher than the currently running firmware.
 
 ## Failure and recovery
 
 The device writes to the inactive OTA application partition. It does not choose
 that partition for the next boot until signature, manifest, and written-image
-hash verification complete. If upload or verification fails, the currently
-running application remains selected. If the device cannot return after an
-accepted update, inspect the display/serial log and use USB recovery:
+hash verification complete. A newly booted image remains pending until setup
+has completed and it has serviced the normal main loop for 10 seconds. A reset
+or crash before confirmation automatically rolls back to the last confirmed
+image. `/api/v1/info` and Settings > Debug report the health state, reset
+reason, active/boot slots, and whether the last OTA attempt rolled back. If the
+device cannot return after an accepted update, inspect the display/serial log
+and use USB recovery:
 
 ```sh
 pio run -t upload
 ```
+
+Rollback depends on a rollback-enabled bootloader. The configured ESP32-S3
+Arduino framework supplies one, but a device originally provisioned with an
+older bootloader must receive one USB flash (which writes the bootloader and
+partition table) before application-only OTA updates can use rollback.
 
 USB upload is also required if the partition table, bootloader, LittleFS image,
 public signing key, or shared token changes. Manual OTA updates only carry the

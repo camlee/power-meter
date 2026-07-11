@@ -15,6 +15,7 @@ lv_obj_t* staIpLabel = nullptr;
 lv_obj_t* apIpLabel = nullptr;
 lv_obj_t* storagePercentLabel = nullptr;
 lv_timer_t* updateTimer = nullptr;
+uint8_t rowIndex = 0;
 
 lv_obj_t* addRow(lv_obj_t* parent, const char* key, const char* value) {
     lv_obj_t* row = lv_obj_create(parent);
@@ -26,6 +27,10 @@ lv_obj_t* addRow(lv_obj_t* parent, const char* key, const char* value) {
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_all(row, 4, 0);
+    if (rowIndex++ & 1U) {
+        lv_obj_set_style_bg_color(row, lv_color_hex(0xF4F4F4), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    }
 
     lv_obj_t* keyLabel = lv_label_create(row);
     lv_label_set_text(keyLabel, key);
@@ -96,6 +101,7 @@ lv_obj_t* create(lv_obj_t* parent) {
 
     lv_obj_set_size(scr, lv_pct(100), lv_pct(100));
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(scr, 3, 0);
     // Explicitly disable scrollbar rendering to avoid visual artifacts
     lv_obj_set_scrollbar_mode(scr, LV_SCROLLBAR_MODE_OFF);
 
@@ -107,6 +113,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_size(list, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 
+    rowIndex = 0;
     uptimeLabel  = addRow(list, "Uptime", "--");
     dateLabel    = addRow(list, "Date", "--");
     timeLabel    = addRow(list, "Time", "--");
@@ -114,7 +121,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     snprintf(build, sizeof(build), "v%s", BUILD_VERSION);
     addRow(list, "Build", build);
     addRow(list, "Build Date", BUILD_DATE);
-    addRow(list, "Build Date", BUILD_TIME);
+    addRow(list, "Build Time", BUILD_TIME);
     storagePercentLabel = addRow(list, "Data storage", "--");
     staIpLabel = addRow(list, "Station IP", "--");
     apIpLabel = addRow(list, "AP IP", "--");

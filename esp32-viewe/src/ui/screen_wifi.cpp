@@ -432,18 +432,21 @@ void apTabCb(lv_event_t*) { setMode(true); }
 
 lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* scr = lv_obj_create(parent);
+    lv_obj_remove_style_all(scr);
     lv_obj_set_size(scr, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_pad_all(scr, 8, 0); // Increased screen padding to stop edge touching
+    lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(scr, 3, 0);
     lv_obj_set_style_border_width(scr, 0, 0);
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(scr, 10, 0); // Gap between tabs and panels
+    lv_obj_set_style_pad_row(scr, 3, 0);
 
     // ---- Tab switcher ----
     lv_obj_t* tabRow = lv_obj_create(scr);
     lv_obj_remove_style_all(tabRow);
     lv_obj_set_size(tabRow, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(tabRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(tabRow, 8, 0); // Spacing between tab buttons
+    lv_obj_set_style_pad_column(tabRow, 3, 0);
 
     clientTabBtn = lv_btn_create(tabRow);
     lv_obj_set_flex_grow(clientTabBtn, 1);
@@ -465,15 +468,17 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_size(clientPanel, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(clientPanel, 1);
     lv_obj_set_flex_flow(clientPanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(clientPanel, 10, 0); // Gap between connection, list, and buttons
+    lv_obj_set_style_pad_row(clientPanel, 3, 0);
 
     // 1. Prominent Active Connection Panel (Hidden by default)
     activeConnPanel = lv_obj_create(clientPanel);
+    lv_obj_remove_style_all(activeConnPanel);
     lv_obj_set_width(activeConnPanel, lv_pct(100));
     lv_obj_set_flex_flow(activeConnPanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(activeConnPanel, 12, 0);
-    lv_obj_set_style_pad_row(activeConnPanel, 4, 0);
-    lv_obj_set_style_bg_color(activeConnPanel, lv_palette_lighten(LV_PALETTE_BLUE, 4), 0); // Light highlight
+    lv_obj_set_style_pad_all(activeConnPanel, 2, 0);
+    lv_obj_set_style_pad_row(activeConnPanel, 2, 0);
+    lv_obj_set_style_bg_color(activeConnPanel, lv_color_white(), 0);
+    lv_obj_set_style_bg_opa(activeConnPanel, LV_OPA_COVER, 0);
     lv_obj_add_flag(activeConnPanel, LV_OBJ_FLAG_HIDDEN);
 
     activeSsidLabel = lv_label_create(activeConnPanel);
@@ -509,7 +514,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_size(apPanel, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(apPanel, 1);
     lv_obj_set_flex_flow(apPanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(apPanel, 10, 0); // Gap between AP elements
+    lv_obj_set_style_pad_row(apPanel, 3, 0);
     lv_obj_add_flag(apPanel, LV_OBJ_FLAG_HIDDEN);
 
     apSsidInput = lv_textarea_create(apPanel);

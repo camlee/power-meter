@@ -132,6 +132,7 @@ struct SensorTab {
 struct PowerTab {
     lv_obj_t* chart = nullptr;
     lv_chart_series_t* series[sensors::SENSOR_COUNT] = {nullptr, nullptr, nullptr};
+    lv_obj_t* valueLabels[sensors::SENSOR_COUNT] = {nullptr, nullptr, nullptr};
     AxisRangeState pRange;
 };
 
@@ -215,9 +216,12 @@ static void styleFlatContainer(lv_obj_t *obj)
 // chart is actively scrolling.
 void addTimeAxisLabels(lv_obj_t* parent) {
     lv_obj_t* row = lv_obj_create(parent);
+    lv_obj_remove_style_all(row);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
+    // Keep the endpoint labels inside the draw area; otherwise the final
+    // "now" glyph can be clipped by the tab content boundary.
+    lv_obj_set_style_pad_left(row, 2, 0);
+    lv_obj_set_style_pad_right(row, 6, 0);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
@@ -250,10 +254,12 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color
     lv_obj_set_flex_flow(block, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_flex_grow(block, 1);
 
-    lv_obj_t* titleLabel = lv_label_create(block);
-    lv_label_set_text(titleLabel, title);
-    lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(titleLabel, lv_palette_main(LV_PALETTE_GREY), 0);
+    if (title && title[0]) {
+        lv_obj_t* titleLabel = lv_label_create(block);
+        lv_label_set_text(titleLabel, title);
+        lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(titleLabel, lv_palette_main(LV_PALETTE_GREY), 0);
+    }
 
     lv_obj_t* chart = lv_chart_create(block);
     lv_obj_set_size(chart, lv_pct(100), lv_pct(100));
@@ -364,46 +370,52 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
 
 lv_obj_t* createPowerTab(lv_obj_t* tabParent) {
     lv_obj_t* tab = lv_obj_create(tabParent);
+    styleFlatContainer(tab);
     lv_obj_set_size(tab, lv_pct(100), lv_pct(100));
     lv_obj_set_style_pad_all(tab, 2, 0);
     lv_obj_set_style_pad_row(tab, 4, 0);
     lv_obj_set_style_border_width(tab, 0, 0);
     lv_obj_set_flex_flow(tab, LV_FLEX_FLOW_COLUMN);
 
-    // Legend row: one colored dot + name per sensor.
+    // Live power KPIs also act as a compact legend for the three traces.
     static const char* names[sensors::SENSOR_COUNT] = {"In", "Out", "Aux"};
     static const lv_palette_t palettes[sensors::SENSOR_COUNT] = {
         LV_PALETTE_BLUE, LV_PALETTE_ORANGE, LV_PALETTE_GREEN};
 
-    lv_obj_t* legendRow = lv_obj_create(tab);
-    styleFlatContainer(legendRow);
-    lv_obj_set_size(legendRow, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_border_width(legendRow, 0, 0);
-    lv_obj_set_style_pad_all(legendRow, 0, 0);
-    lv_obj_set_style_pad_column(legendRow, 16, 0);
-    lv_obj_set_flex_flow(legendRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(legendRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* kpiRow = lv_obj_create(tab);
+    styleFlatContainer(kpiRow);
+    lv_obj_set_size(kpiRow, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_pad_column(kpiRow, 10, 0);
+    lv_obj_set_flex_flow(kpiRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(kpiRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
     for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
-        lv_obj_t* item = lv_obj_create(legendRow);
+        lv_obj_t* item = lv_obj_create(kpiRow);
         styleFlatContainer(item);
         lv_obj_set_size(item, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
         lv_obj_set_style_border_width(item, 0, 0);
         lv_obj_set_style_pad_all(item, 0, 0);
-        lv_obj_set_style_pad_column(item, 4, 0);
+        lv_obj_set_style_pad_column(item, 3, 0);
         lv_obj_set_flex_flow(item, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(item, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-        lv_obj_t* dot = lv_obj_create(item);
-        lv_obj_set_size(dot, 10, 10);
-        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-        lv_obj_set_style_border_width(dot, 0, 0);
-        lv_obj_set_style_bg_color(dot, lv_palette_main(palettes[i]), 0);
-        lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
 
         lv_obj_t* lbl = lv_label_create(item);
         lv_label_set_text(lbl, names[i]);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(lbl, lv_palette_main(palettes[i]), 0);
+
+        lv_obj_t* value = lv_label_create(item);
+        lv_label_set_text(value, "--.-");
+        lv_obj_set_style_text_font(value, &lv_font_montserrat_20, 0);
+        lv_obj_set_width(value, 44);
+        lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_RIGHT, 0);
+        powerTab.valueLabels[i] = value;
+
+        lv_obj_t* unit = lv_label_create(item);
+        lv_label_set_text(unit, "W");
+        lv_obj_set_style_text_font(unit, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(unit, lv_palette_main(LV_PALETTE_GREY), 0);
+        lv_obj_set_style_pad_bottom(unit, 3, 0);
     }
 
     lv_obj_t* chartsCol = lv_obj_create(tab);
@@ -414,7 +426,7 @@ lv_obj_t* createPowerTab(lv_obj_t* tabParent) {
     lv_obj_set_flex_grow(chartsCol, 1);
 
     lv_chart_series_t* dummySeries = nullptr; // first series created by createChartBlock; rest added below
-    powerTab.chart = createChartBlock(chartsCol, "Power (W)", lv_palette_main(palettes[0]),
+    powerTab.chart = createChartBlock(chartsCol, nullptr, lv_palette_main(palettes[0]),
                                        &kPowerAxisScale, &dummySeries);
     powerTab.series[0] = dummySeries;
     powerTab.series[1] = lv_chart_add_series(powerTab.chart, lv_palette_main(palettes[1]), LV_CHART_AXIS_PRIMARY_Y);
@@ -510,6 +522,7 @@ void updateCb(lv_timer_t*) {
             lv_label_set_text(tab.iValueLabel, buf);
             snprintf(buf, sizeof(buf), "%.1f", sumP / count);
             lv_label_set_text(tab.pValueLabel, buf);
+            lv_label_set_text(powerTab.valueLabels[i], buf);
 
             tab.lastKpiTimestamp = latest.timestamp_ms;
             tab.kpiPrimed = true;

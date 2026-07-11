@@ -22,6 +22,8 @@
 using namespace esp_panel::board;
 using namespace esp_panel::drivers;
 
+void ensureRollbackVerificationDeferral();
+
 namespace {
 uint32_t lastStorageFeedMs = 0;
 uint32_t lastNetworkUpdateMs = 0;
@@ -29,6 +31,7 @@ uint32_t lastNetworkUpdateMs = 0;
 
 void setup()
 {
+    ensureRollbackVerificationDeferral();
     Serial.begin(115200);
 
     delay(3000);
@@ -56,6 +59,7 @@ void setup()
     screens.build(); // Builds tiles and dots
 
     lvgl_port_unlock();
+    ota_service::setApplicationReady();
 }
 
 void loop()
@@ -71,14 +75,24 @@ void loop()
 
     if (now - lastStorageFeedMs >= sensors::kSampleIntervalMs) {
         lastStorageFeedMs = now;
+        sensors::Reading readings[sensors::SENSOR_COUNT];
+        bool haveReadings = true;
         for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
-            sensors::Reading r;
-            if (sensors::getLatest(static_cast<sensors::SensorId>(i), r)) {
-                historical_storage::addSample(i, r.power, r.timestamp_ms);
-            }
+            haveReadings &= sensors::getLatest(static_cast<sensors::SensorId>(i), readings[i]);
+        }
+        if (haveReadings) {
+            float availableInPowerW = readings[sensors::SENSOR_IN].power;
+            sensors::getAvailablePower(sensors::SENSOR_IN, availableInPowerW);
+            historical_storage::addSampleFrame(
+                readings[sensors::SENSOR_IN].power,
+                readings[sensors::SENSOR_OUT].power,
+                readings[sensors::SENSOR_AUX].power,
+                availableInPowerW,
+                now);
         }
     }
     historical_storage::tick(); // cheap; fine to call every loop()
+    ota_service::noteHealthyLoop();
 
     delay(5);
 }

@@ -66,7 +66,7 @@ def main():
     parser.add_argument("--env-file", type=Path, default=PROJECT_DIR / ".env")
     parser.add_argument("--token", help="override VIEWE_OTA_TOKEN from .env")
     parser.add_argument("--timeout", type=float, default=30, help="upload request timeout in seconds")
-    parser.add_argument("--wait", type=float, default=20, help="seconds to wait for device reboot; 0 disables")
+    parser.add_argument("--wait", type=float, default=45, help="seconds to wait for device reboot and image confirmation; 0 disables")
     args = parser.parse_args()
 
     if not args.host and not args.device:
@@ -93,6 +93,7 @@ def main():
         "manifest": manifest.read_text(encoding="ascii"),
         "signature": signature.read_text(encoding="ascii").strip(),
     }
+    expected = json.loads(fields["manifest"])
     body, content_type = multipart(fields, [
         ("firmware", firmware, "application/octet-stream"),
     ])
@@ -116,12 +117,19 @@ def main():
         time.sleep(1)
         try:
             with request(base_url + "/api/v1/info", token, timeout=2) as response:
-                info = response.read().decode("utf-8", errors="replace")
-                print("\nDevice is back (HTTP {}): {}".format(response.status, info or "ready"))
-                return
+                info = json.loads(response.read().decode("utf-8", errors="strict"))
+                if info.get("board") != expected["board"] or info.get("version") != expected["version"]:
+                    print(".", end="", flush=True)
+                    continue
+                if info.get("rollback_detected") or info.get("health") == "rolled_back":
+                    sys.exit("\nDevice rolled back instead of confirming version {}.".format(expected["version"]))
+                if info.get("health") == "confirmed" and info.get("validated") is True:
+                    print("\nDevice confirmed version {} on {}.".format(info["version"], info.get("running_partition", "unknown slot")))
+                    return
+                print(".", end="", flush=True)
         except (urllib.error.URLError, urllib.error.HTTPError):
             print(".", end="", flush=True)
-    print("\nTimed out waiting for the device to return. Check its display or serial log.")
+    sys.exit("\nTimed out waiting for the new firmware to confirm. Check its display or serial log.")
 
 
 if __name__ == "__main__":

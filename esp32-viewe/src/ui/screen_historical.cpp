@@ -1,74 +1,148 @@
 #include "screen_historical.h"
 
 #include "../data/historical_storage.h"
+#include "stacked_bar_chart.h"
+
+#include <cmath>
+#include <cstdio>
 
 namespace screen_historical {
 namespace {
 
-constexpr size_t kMaxPoints = 180;
-constexpr uint32_t kLookbackMinutes = 180;
-constexpr uint32_t kRefreshIntervalMs = 30000;
+constexpr size_t kMaxPoints = 336; // 14 days * 24 one-hour buckets
+constexpr uint32_t kRefreshIntervalMs = 60000;
+
+struct Range {
+    const char* title;
+    uint32_t lookbackMinutes;
+    uint16_t bucketMinutes;
+    uint32_t endOffsetMinutes;
+};
+
+constexpr Range kRanges[] = {
+    {"Last hour", 60, 2, 0},
+    {"Last 6 hours", 360, 15, 0},
+    {"Last 12 hours", 720, 15, 0},
+    {"Last 24 hours", 1440, 30, 0},
+    {"Previous 24 hours", 1440, 30, 1440},
+    {"Last 2 days", 2880, 60, 0},
+    {"Last week", 10080, 240, 0},
+    {"Last 14 days", 20160, 360, 0},
+};
 
 lv_obj_t* chart = nullptr;
-lv_chart_series_t* inSeries = nullptr;
-lv_chart_series_t* outSeries = nullptr;
-lv_chart_series_t* auxSeries = nullptr;
-lv_obj_t* statusLabel = nullptr;
+float chartValues[5][kMaxPoints] = {};
+stacked_bar_chart::Series chartSeries[5] = {
+    {lv_color_hex(0x159947), chartValues[0], true}, {lv_color_hex(0x0000FF), chartValues[1], true},
+    {lv_color_hex(0x00BFFF), chartValues[2], true}, {lv_color_hex(0xFF4500), chartValues[3], false},
+    {lv_color_hex(0xFFA500), chartValues[4], false},
+};
+lv_obj_t* rangeDropdown = nullptr;
+lv_obj_t* emptyLabel = nullptr;
+uint8_t selectedRange = 0;
+uint8_t visibleRanges[sizeof(kRanges) / sizeof(kRanges[0])];
+uint8_t visibleRangeCount = 0;
+
+void formatRelativeAge(char* out, size_t outSize, uint32_t minutes)
+{
+    if (minutes == 0) {
+        lv_snprintf(out, outSize, "now");
+    } else if (minutes < 60) {
+        lv_snprintf(out, outSize, "-%um", static_cast<unsigned>(minutes));
+    } else if (minutes < 1440) {
+        lv_snprintf(out, outSize, "-%uh", static_cast<unsigned>(minutes / 60));
+    } else {
+        lv_snprintf(out, outSize, "-%ud", static_cast<unsigned>(minutes / 1440));
+    }
+}
+
+void updateRangeOptions()
+{
+    // Keep the short ranges available from first boot.  Longer choices appear
+    // only after there is enough retained history, plus the next useful range.
+    const uint32_t availableMinutes = historical_storage::recordCount();
+    const uint8_t regularRanges[] = {0, 1, 2, 3, 5, 6, 7};
+    visibleRangeCount = 0;
+
+    for (uint8_t pos = 0; pos < sizeof(regularRanges); ++pos) {
+        const uint8_t index = regularRanges[pos];
+        if (pos < 2 || availableMinutes >= kRanges[index].lookbackMinutes) {
+            visibleRanges[visibleRangeCount++] = index;
+            continue;
+        }
+        visibleRanges[visibleRangeCount++] = index; // one range beyond the available data
+        break;
+    }
+
+    // The previous-day window needs a full additional day of earlier data.
+    if (availableMinutes >= 2880) {
+        for (uint8_t i = visibleRangeCount; i > 4; --i) visibleRanges[i] = visibleRanges[i - 1];
+        visibleRanges[4] = 4;
+        ++visibleRangeCount;
+    }
+
+    char options[112] = {};
+    size_t used = 0;
+    uint8_t selectedOption = 0;
+    for (uint8_t i = 0; i < visibleRangeCount; ++i) {
+        if (i > 0 && used + 1 < sizeof(options)) options[used++] = '\n';
+        const int written = lv_snprintf(options + used, sizeof(options) - used, "%s", kRanges[visibleRanges[i]].title);
+        if (written > 0) used += static_cast<size_t>(written);
+        if (visibleRanges[i] == selectedRange) selectedOption = i;
+    }
+    lv_dropdown_set_options(rangeDropdown, options);
+    lv_dropdown_set_selected(rangeDropdown, selectedOption);
+}
 
 void updateChart()
 {
-    static historical_storage::MinuteRecord records[kMaxPoints];
-    const size_t count = historical_storage::getTimeSeries(
-        records, kMaxPoints, kLookbackMinutes);
+    const Range& range = kRanges[selectedRange];
+    static historical_storage::PowerBucket buckets[kMaxPoints];
+    const size_t count = historical_storage::getPowerBuckets(
+        buckets, kMaxPoints, range.lookbackMinutes, range.bucketMinutes, range.endOffsetMinutes);
 
-    if (count == 0) {
-        lv_chart_set_point_count(chart, 1);
-        lv_chart_set_value_by_id(chart, inSeries, 0, LV_CHART_POINT_NONE);
-        lv_chart_set_value_by_id(chart, outSeries, 0, LV_CHART_POINT_NONE);
-        lv_chart_set_value_by_id(chart, auxSeries, 0, LV_CHART_POINT_NONE);
-        lv_label_set_text(statusLabel, "Waiting for the first completed minute.");
-        lv_chart_refresh(chart);
-        return;
-    }
+    updateRangeOptions();
+    const size_t expectedPoints = range.lookbackMinutes / range.bucketMinutes;
+    for (size_t i = 0; i < expectedPoints; ++i) for (auto& values : chartValues) values[i] = 0;
 
-    lv_chart_set_point_count(chart, count);
+    // Right-align the completed buckets. The empty columns preserve the full
+    // selected duration instead of visually shrinking the time axis at boot.
+    const size_t firstPoint = count < expectedPoints ? expectedPoints - count : 0;
     for (size_t i = 0; i < count; ++i) {
-        lv_chart_set_value_by_id(chart, inSeries, i,
-            static_cast<lv_coord_t>(records[i].avgPowerW[0]));
-        lv_chart_set_value_by_id(chart, outSeries, i,
-            static_cast<lv_coord_t>(records[i].avgPowerW[1]));
-        lv_chart_set_value_by_id(chart, auxSeries, i,
-            static_cast<lv_coord_t>(records[i].avgPowerW[2]));
-    }
+        const size_t point = firstPoint + i;
+        if (point >= expectedPoints) break;
+        const float charge = buckets[i].componentAveragePowerW[historical_storage::BATTERY_CHARGING];
+        const float use = buckets[i].componentAveragePowerW[historical_storage::BATTERY_USAGE];
+        const float panel = buckets[i].componentAveragePowerW[historical_storage::PANEL_IN];
+        const float surplus = buckets[i].componentAveragePowerW[historical_storage::PANEL_SURPLUS];
 
-    char status[72];
-    lv_snprintf(status, sizeof(status), "%u minute%s shown; newest values may still be in RAM.",
-        static_cast<unsigned>(count), count == 1 ? "" : "s");
-    lv_label_set_text(statusLabel, status);
-    lv_chart_refresh(chart);
+        chartValues[0][point] = charge;
+        chartValues[1][point] = panel;
+        chartValues[2][point] = surplus;
+        chartValues[3][point] = use;
+        chartValues[4][point] = panel;
+    }
+    if (count == 0) lv_label_set_text(emptyLabel, "No complete intervals yet");
+    else lv_label_set_text(emptyLabel, "");
+    const uint32_t tickMinutes = range.lookbackMinutes <= 60 ? 15 : range.lookbackMinutes <= 720 ? 60 :
+        range.lookbackMinutes <= 1440 ? 180 : range.lookbackMinutes <= 2880 ? 360 : 1440;
+    stacked_bar_chart::setData(chart, {chartSeries, 5, expectedPoints, range.lookbackMinutes, tickMinutes, nullptr});
 }
 
-void refreshCb(lv_timer_t*)
+void refreshCb(lv_timer_t*) { updateChart(); }
+
+void rangeChangedCb(lv_event_t* event)
 {
+    const uint16_t selected = lv_dropdown_get_selected(lv_event_get_target(event));
+    if (selected >= visibleRangeCount) return;
+    selectedRange = visibleRanges[selected];
     updateChart();
 }
 
-void addLegendItem(lv_obj_t* parent, lv_palette_t palette, const char* text)
+void addLegendItem(lv_obj_t* parent, lv_color_t color, const char* text)
 {
-    lv_obj_t* item = lv_obj_create(parent);
-    lv_obj_remove_style_all(item);
-    lv_obj_set_size(item, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(item, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(item, 4, 0);
-
-    lv_obj_t* dot = lv_obj_create(item);
-    lv_obj_remove_style_all(dot);
-    lv_obj_set_size(dot, 10, 10);
-    lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(dot, lv_palette_main(palette), 0);
-    lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
-
-    lv_obj_t* label = lv_label_create(item);
+    lv_obj_t* label = lv_label_create(parent);
+    lv_obj_set_style_text_color(label, color, 0);
     lv_label_set_text(label, text);
 }
 
@@ -82,38 +156,32 @@ lv_obj_t* create(lv_obj_t* parent)
     lv_obj_set_style_bg_color(screen, lv_color_white(), 0);
     lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(screen, 8, 0);
-    lv_obj_set_style_pad_row(screen, 6, 0);
+    lv_obj_set_style_pad_row(screen, 5, 0);
     lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
 
-    lv_obj_t* title = lv_label_create(screen);
-    lv_label_set_text(title, "History — average power");
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_20, 0);
+    rangeDropdown = lv_dropdown_create(screen);
+    lv_obj_set_width(rangeDropdown, lv_pct(100));
+    lv_obj_set_height(rangeDropdown, 38);
+    lv_dropdown_set_symbol(rangeDropdown, LV_SYMBOL_DOWN);
+    lv_dropdown_set_dir(rangeDropdown, LV_DIR_BOTTOM);
+    lv_obj_set_style_text_font(rangeDropdown, &lv_font_montserrat_20, LV_PART_MAIN);
+    lv_obj_add_event_cb(rangeDropdown, rangeChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
 
     lv_obj_t* legend = lv_obj_create(screen);
     lv_obj_remove_style_all(legend);
     lv_obj_set_size(legend, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(legend, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(legend, 12, 0);
-    addLegendItem(legend, LV_PALETTE_BLUE, "In");
-    addLegendItem(legend, LV_PALETTE_ORANGE, "Out");
-    addLegendItem(legend, LV_PALETTE_GREEN, "Aux");
+    lv_obj_set_flex_align(legend, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    addLegendItem(legend, lv_color_hex(0x159947), "Charge");
+    addLegendItem(legend, lv_color_hex(0xFF4500), "Battery");
+    addLegendItem(legend, lv_color_hex(0x0000FF), "Panel");
+    addLegendItem(legend, lv_color_hex(0xFFA500), "Load");
+    addLegendItem(legend, lv_color_hex(0x00BFFF), "Surplus");
 
-    chart = lv_chart_create(screen);
-    lv_obj_set_width(chart, lv_pct(100));
-    lv_obj_set_flex_grow(chart, 1);
-    lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
-    lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
-    lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, 0, 100);
-    lv_chart_set_div_line_count(chart, 5, 4);
-    lv_obj_set_style_line_width(chart, 2, LV_PART_ITEMS);
-    lv_obj_set_style_size(chart, 0, LV_PART_INDICATOR);
+    chart = stacked_bar_chart::create(screen);
 
-    inSeries = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
-    outSeries = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_ORANGE), LV_CHART_AXIS_PRIMARY_Y);
-    auxSeries = lv_chart_add_series(chart, lv_palette_main(LV_PALETTE_GREEN), LV_CHART_AXIS_PRIMARY_Y);
-
-    statusLabel = lv_label_create(screen);
-    lv_obj_set_style_text_color(statusLabel, lv_palette_main(LV_PALETTE_GREY), 0);
+    emptyLabel = lv_label_create(screen);
+    lv_obj_set_style_text_color(emptyLabel, lv_palette_main(LV_PALETTE_GREY), 0);
 
     lv_timer_create(refreshCb, kRefreshIntervalMs, nullptr);
     updateChart();

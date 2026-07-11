@@ -30,9 +30,9 @@ file_path = os.path.join(include_dir, "build_time.h")
 # Write to the header. This updates the file modification timestamp,
 # forcing SCons to rebuild only the C++ files that include this header.
 with open(file_path, "w") as f:
-    f.write(f'''
-        #pragma once
-        #define BUILD_VERSION "{build_version}"
-        #define BUILD_DATE "{build_date}"
-        #define BUILD_TIME "{build_time}"
-        ''')
+    f.write(
+        "#pragma once\n"
+        f"#define BUILD_VERSION \"{build_version}\"\n"
+        f"#define BUILD_DATE \"{build_date}\"\n"
+        f"#define BUILD_TIME \"{build_time}\"\n"
+    )

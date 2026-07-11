@@ -1,8 +1,11 @@
 #include "ota_service.h"
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WebServer.h>
 #include <Update.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
 #include <esp_system.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/pk.h>
@@ -34,10 +37,83 @@ bool running = false;
 bool uploadAccepted = false;
 String uploadError;
 String expectedSha256;
+String expectedVersion;
 uint32_t expectedImageSize = 0;
 uint32_t receivedImageSize = 0;
 mbedtls_sha256_context shaContext;
 bool shaStarted = false;
+constexpr uint32_t kValidationWindowMs = 10000;
+bool applicationReady = false;
+bool healthyLoopSeen = false;
+bool pendingVerify = false;
+bool imageConfirmed = false;
+bool didRollback = false;
+uint32_t validationStartedAt = 0;
+const esp_partition_t* runningPartition = nullptr;
+const esp_partition_t* bootPartition = nullptr;
+esp_ota_img_states_t runningState = ESP_OTA_IMG_UNDEFINED;
+
+const char* imageStateName(esp_ota_img_states_t state) {
+    switch (state) {
+        case ESP_OTA_IMG_NEW: return "new";
+        case ESP_OTA_IMG_PENDING_VERIFY: return "pending_verify";
+        case ESP_OTA_IMG_VALID: return "valid";
+        case ESP_OTA_IMG_INVALID: return "invalid";
+        case ESP_OTA_IMG_ABORTED: return "aborted";
+        default: return "undefined";
+    }
+}
+
+const char* partitionLabel(const esp_partition_t* partition) {
+    return partition ? partition->label : "unknown";
+}
+
+const char* resetReasonName(esp_reset_reason_t reason) {
+    switch (reason) {
+        case ESP_RST_POWERON: return "power_on";
+        case ESP_RST_SW: return "software";
+        case ESP_RST_PANIC: return "panic";
+        case ESP_RST_INT_WDT: return "interrupt_watchdog";
+        case ESP_RST_TASK_WDT: return "task_watchdog";
+        case ESP_RST_WDT: return "watchdog";
+        case ESP_RST_BROWNOUT: return "brownout";
+        default: return "other";
+    }
+}
+
+void persistPendingAttempt(const char* targetPartition, const String& targetVersion) {
+    Preferences prefs;
+    if (!prefs.begin("ota_diag", false)) return;
+    prefs.putString("target_slot", targetPartition);
+    prefs.putString("target_ver", targetVersion);
+    prefs.putString("result", "pending");
+    prefs.end();
+}
+
+void recordBootOutcome() {
+    Preferences prefs;
+    if (!prefs.begin("ota_diag", false)) return;
+    const String target = prefs.getString("target_slot", "");
+    const String result = prefs.getString("result", "");
+    if (result == "pending" && !target.isEmpty() && target != partitionLabel(runningPartition)) {
+        didRollback = true;
+        prefs.putString("result", "rolled_back");
+    } else if (result == "rolled_back") {
+        didRollback = true;
+    } else if (result == "confirmed") {
+        didRollback = false;
+    }
+    prefs.end();
+}
+
+void recordConfirmation() {
+    Preferences prefs;
+    if (!prefs.begin("ota_diag", false)) return;
+    prefs.putString("result", "confirmed");
+    prefs.putString("confirmed_slot", partitionLabel(runningPartition));
+    prefs.putString("confirmed_ver", OTA_FIRMWARE_VERSION);
+    prefs.end();
+}
 
 bool constantTimeEqual(const String& supplied, const char* expected) {
     const size_t expectedLength = strlen(expected);
@@ -160,6 +236,7 @@ bool prepareUpload() {
     if (!validSha256(hash)) { uploadError = "invalid manifest sha256"; return false; }
     if (!verifyManifestSignature(manifest, signature)) return false;
     expectedSha256 = hash;
+    expectedVersion = version;
     expectedImageSize = imageSize;
     receivedImageSize = 0;
     mbedtls_sha256_init(&shaContext);
@@ -183,6 +260,7 @@ void handleUpload() {
         uploadAccepted = false;
         uploadError = "";
         expectedSha256 = "";
+        expectedVersion = "";
         expectedImageSize = 0;
         receivedImageSize = 0;
         shaStarted = false;
@@ -226,7 +304,15 @@ void completeUpload() {
                     String("{\"ok\":false,\"error\":\"") + uploadError + "\"}");
         return;
     }
-    server.send(200, "application/json", "{\"ok\":true,\"rebooting\":true}");
+    const esp_partition_t* target = esp_ota_get_next_update_partition(nullptr);
+    if (!target) {
+        server.send(500, "application/json", "{\"ok\":false,\"error\":\"OTA target partition unavailable\"}");
+        return;
+    }
+    // This marker is deliberately written before reboot. If the candidate
+    // never reaches confirmation, the previous image can report its rollback.
+    persistPendingAttempt(target->label, expectedVersion);
+    server.send(200, "application/json", String("{\"ok\":true,\"rebooting\":true,\"target_partition\":\"") + target->label + "\"}");
     delay(250); // flush HTTP response before booting the selected OTA partition
     ESP.restart();
 }
@@ -235,8 +321,17 @@ void info() {
     if (!authorised()) { server.send(401, "application/json", "{\"error\":\"unauthorised\"}"); return; }
     char id[20];
     snprintf(id, sizeof(id), "%012llx", ESP.getEfuseMac());
+    const uint32_t remaining = validationRemainingMs();
     server.send(200, "application/json", String("{\"board\":\"") + OTA_BOARD_ID +
-                "\",\"version\":\"" + OTA_FIRMWARE_VERSION + "\",\"hardware_id\":\"" + id + "\"}");
+                "\",\"version\":\"" + OTA_FIRMWARE_VERSION + "\",\"hardware_id\":\"" + id +
+                "\",\"health\":\"" + healthStatus() + "\",\"validated\":" +
+                (imageConfirmed ? "true" : "false") + ",\"validation_remaining_ms\":" + remaining +
+                ",\"reset_reason\":\"" + resetReasonName(esp_reset_reason()) +
+                "\",\"uptime_ms\":" + millis() + ",\"running_partition\":\"" + partitionLabel(runningPartition) +
+                "\",\"boot_partition\":\"" + partitionLabel(bootPartition) +
+                "\",\"image_state\":\"" + imageStateName(runningState) +
+                "\",\"rollback_detected\":" + (didRollback ? "true" : "false") +
+                ",\"rollback_supported\":" + (esp_ota_check_rollback_is_possible() ? "true" : "false") + "}");
 }
 
 } // namespace
@@ -248,10 +343,50 @@ void begin() {
     server.on("/api/v1/info", HTTP_GET, info);
     server.on("/api/v1/update", HTTP_POST, completeUpload, handleUpload);
     server.begin();
+    runningPartition = esp_ota_get_running_partition();
+    bootPartition = esp_ota_get_boot_partition();
+    if (runningPartition && esp_ota_get_state_partition(runningPartition, &runningState) == ESP_OK) {
+        pendingVerify = runningState == ESP_OTA_IMG_PENDING_VERIFY;
+        imageConfirmed = !pendingVerify;
+    }
+    recordBootOutcome();
     running = true;
 }
 
-void update() { if (running) server.handleClient(); }
+void update() {
+    if (running) server.handleClient();
+    if (!pendingVerify || !applicationReady || !healthyLoopSeen) return;
+    if (millis() - validationStartedAt < kValidationWindowMs) return;
+    if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+        pendingVerify = false;
+        imageConfirmed = true;
+        runningState = ESP_OTA_IMG_VALID;
+        recordConfirmation();
+        Serial.println("OTA image confirmed after stable operation");
+    } else {
+        Serial.println("OTA image confirmation failed; rollback remains armed");
+    }
+}
 bool isRunning() { return running; }
+void setApplicationReady() {
+    applicationReady = true;
+    validationStartedAt = millis();
+}
+void noteHealthyLoop() { healthyLoopSeen = true; }
+const char* healthStatus() {
+    if (didRollback) return "rolled_back";
+    if (pendingVerify) return applicationReady && healthyLoopSeen ? "pending_verify" : "starting";
+    return imageConfirmed ? "confirmed" : "ready";
+}
+const char* runningPartitionLabel() { return partitionLabel(runningPartition); }
+const char* bootPartitionLabel() { return partitionLabel(bootPartition); }
+const char* runningImageState() { return imageStateName(runningState); }
+bool rollbackDetected() { return didRollback; }
+bool rollbackSupported() { return esp_ota_check_rollback_is_possible(); }
+uint32_t validationRemainingMs() {
+    if (!pendingVerify || !applicationReady) return 0;
+    const uint32_t elapsed = millis() - validationStartedAt;
+    return elapsed < kValidationWindowMs ? kValidationWindowMs - elapsed : 0;
+}
 
 } // namespace ota_service

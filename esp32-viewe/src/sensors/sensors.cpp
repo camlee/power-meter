@@ -3,6 +3,7 @@
 #include "sensor_source.h"
 #include "sensor_source_adc.h"
 #include "sensor_source_sim.h"
+#include "sensor_mode.h"
 #include <algorithm>
 #include <cmath>
 #include <Arduino.h>
@@ -24,18 +25,17 @@ SemaphoreHandle_t mutex = nullptr; // one mutex guards all 3 buffers; they're sm
 constexpr float kMinPowerForDutyWatts = 0.5f;
 
 SensorSource* makeSource(SensorId id) {
-#if POWER_METER_USE_SIMULATED_SENSORS
+    if (sensor_mode::get() == sensor_mode::Mode::Demo) {
     switch (id) {
         case SENSOR_IN:  return new SimulatedSensorSource(/*V*/ 18.0f, /*A*/ 2.0f, /*phase*/ 0);
         case SENSOR_OUT: return new SimulatedSensorSource(/*V*/ 13.0f, /*A*/ 1.5f, /*phase*/ 1);
         case SENSOR_AUX: return new SimulatedSensorSource(/*V*/ 5.0f, /*A*/ 0.4f, /*phase*/ 2);
         default: return nullptr;
     }
-#else
+    }
     if (id >= SENSOR_COUNT) return nullptr;
     const config::Pins& pins = config::kPins[id];
     return new Esp32AnalogSource(pins.voltage, pins.current);
-#endif
 }
 SensorSource* sources[SENSOR_COUNT] = {nullptr, nullptr, nullptr};
 
