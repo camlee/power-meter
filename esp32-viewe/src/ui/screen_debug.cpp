@@ -5,6 +5,7 @@
 #include <cstring>
 #include <esp_system.h>
 #include "network/ota_service.h"
+#include "ui_theme.h"
 
 namespace screen_debug {
 namespace {
@@ -22,15 +23,17 @@ lv_obj_t* addRow(lv_obj_t* parent, const char* key, const char* value) {
     lv_obj_remove_style_all(row);
     lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_all(row, 4, 0);
+    lv_obj_set_style_pad_hor(row, 6, 0);
+    lv_obj_set_style_pad_ver(row, 3, 0);
+    lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     if (rowIndex++ & 1U) {
-        lv_obj_set_style_bg_color(row, lv_color_hex(0xF4F4F4), 0);
+        lv_obj_set_style_bg_color(row, ui_theme::surfaceAlt(), 0);
         lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
     }
 
     lv_obj_t* keyLabel = lv_label_create(row);
     lv_label_set_text(keyLabel, key);
-    lv_obj_set_style_text_color(keyLabel, lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_set_style_text_color(keyLabel, ui_theme::mutedText(), 0);
     lv_obj_set_width(keyLabel, lv_pct(45));
 
     lv_obj_t* valueLabel = lv_label_create(row);
@@ -86,17 +89,15 @@ void updateCb(lv_timer_t*) {
 
 lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* screen = lv_obj_create(parent);
-    lv_obj_remove_style_all(screen);
-    lv_obj_set_size(screen, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(screen, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(screen, 3, 0);
+    ui_theme::styleScreen(screen, 4);
     lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
 
     lv_obj_t* list = lv_obj_create(screen);
-    lv_obj_remove_style_all(list);
+    ui_theme::styleCard(list, 2);
     lv_obj_set_size(list, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(list, 0, 0);
+    lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
 
     rowIndex = 0;
     char buffer[64];

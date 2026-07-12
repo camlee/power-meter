@@ -1,6 +1,7 @@
 #include "screen_wifi.h"
 #include "screen_manager.h"
 #include "network/network_manager.h"
+#include "ui_theme.h"
 #include <Arduino.h>
 
 namespace screen_wifi {
@@ -432,25 +433,21 @@ void apTabCb(lv_event_t*) { setMode(true); }
 
 lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* scr = lv_obj_create(parent);
-    lv_obj_remove_style_all(scr);
-    lv_obj_set_size(scr, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(scr, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(scr, 3, 0);
-    lv_obj_set_style_border_width(scr, 0, 0);
+    ui_theme::styleScreen(scr, 4);
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(scr, 3, 0);
+    lv_obj_set_style_pad_row(scr, 4, 0);
 
     // ---- Tab switcher ----
     lv_obj_t* tabRow = lv_obj_create(scr);
     lv_obj_remove_style_all(tabRow);
     lv_obj_set_size(tabRow, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(tabRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(tabRow, 3, 0);
+    lv_obj_set_style_pad_column(tabRow, 4, 0);
 
     clientTabBtn = lv_btn_create(tabRow);
     lv_obj_set_flex_grow(clientTabBtn, 1);
     lv_obj_add_event_cb(clientTabBtn, clientTabCb, LV_EVENT_CLICKED, nullptr);
+    ui_theme::styleSegment(clientTabBtn);
     clientTabLabel = lv_label_create(clientTabBtn);
     lv_label_set_text(clientTabLabel, "Client");
     lv_obj_center(clientTabLabel);
@@ -458,6 +455,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     apTabBtn = lv_btn_create(tabRow);
     lv_obj_set_flex_grow(apTabBtn, 1);
     lv_obj_add_event_cb(apTabBtn, apTabCb, LV_EVENT_CLICKED, nullptr);
+    ui_theme::styleSegment(apTabBtn);
     apTabLabel = lv_label_create(apTabBtn);
     lv_label_set_text(apTabLabel, "Access Point");
     lv_obj_center(apTabLabel);
@@ -468,17 +466,14 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_size(clientPanel, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(clientPanel, 1);
     lv_obj_set_flex_flow(clientPanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(clientPanel, 3, 0);
+    lv_obj_set_style_pad_row(clientPanel, 4, 0);
 
     // 1. Prominent Active Connection Panel (Hidden by default)
     activeConnPanel = lv_obj_create(clientPanel);
-    lv_obj_remove_style_all(activeConnPanel);
+    ui_theme::styleCard(activeConnPanel, 9);
     lv_obj_set_width(activeConnPanel, lv_pct(100));
     lv_obj_set_flex_flow(activeConnPanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(activeConnPanel, 2, 0);
     lv_obj_set_style_pad_row(activeConnPanel, 2, 0);
-    lv_obj_set_style_bg_color(activeConnPanel, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(activeConnPanel, LV_OPA_COVER, 0);
     lv_obj_add_flag(activeConnPanel, LV_OBJ_FLAG_HIDDEN);
 
     activeSsidLabel = lv_label_create(activeConnPanel);
@@ -488,7 +483,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     activeRssiLabel = lv_label_create(activeConnPanel);
     activeIpLabel = lv_label_create(activeConnPanel);
 
-    // 2. Scan Label
+    // 2. Scan status
     scanLabel = lv_label_create(clientPanel);
     lv_obj_set_width(scanLabel, lv_pct(100));
     lv_label_set_text(scanLabel, "Tap Scan to find networks.");
@@ -496,13 +491,16 @@ lv_obj_t* create(lv_obj_t* parent) {
     // 3. Network List
     networkList = lv_list_create(clientPanel);
     lv_obj_set_width(networkList, lv_pct(100));
-    lv_obj_set_flex_grow(networkList, 1);
+    lv_obj_set_height(networkList, 50);
+    ui_theme::styleCard(networkList, 2);
+    lv_obj_set_style_pad_row(networkList, 0, 0);
     lv_list_add_text(networkList, "No networks yet");
 
     // 4. Scan Button (Moved to bottom)
     scanBtn = lv_btn_create(clientPanel);
     lv_obj_set_width(scanBtn, lv_pct(100));
     lv_obj_add_event_cb(scanBtn, scanEventCb, LV_EVENT_CLICKED, nullptr);
+    ui_theme::stylePrimaryButton(scanBtn);
     scanBtnLabel = lv_label_create(scanBtn);
     lv_label_set_text(scanBtnLabel, LV_SYMBOL_REFRESH " Scan");
     lv_obj_center(scanBtnLabel);
@@ -514,7 +512,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_size(apPanel, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_grow(apPanel, 1);
     lv_obj_set_flex_flow(apPanel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(apPanel, 3, 0);
+    lv_obj_set_style_pad_row(apPanel, 4, 0);
     lv_obj_add_flag(apPanel, LV_OBJ_FLAG_HIDDEN);
 
     apSsidInput = lv_textarea_create(apPanel);
@@ -566,6 +564,8 @@ lv_obj_t* create(lv_obj_t* parent) {
     apClientList = lv_list_create(apPanel);
     lv_obj_set_width(apClientList, lv_pct(100));
     lv_obj_set_flex_grow(apClientList, 1);
+    ui_theme::styleCard(apClientList, 2);
+    lv_obj_set_style_pad_row(apClientList, 0, 0);
 
     apKeyboard = lv_keyboard_create(scr);
     lv_obj_add_flag(apKeyboard, LV_OBJ_FLAG_HIDDEN);

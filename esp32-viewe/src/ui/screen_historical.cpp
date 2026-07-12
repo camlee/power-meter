@@ -2,6 +2,7 @@
 
 #include "../data/historical_storage.h"
 #include "stacked_bar_chart.h"
+#include "ui_theme.h"
 
 #include <cmath>
 #include <cstdio>
@@ -42,6 +43,15 @@ lv_obj_t* emptyLabel = nullptr;
 uint8_t selectedRange = 0;
 uint8_t visibleRanges[sizeof(kRanges) / sizeof(kRanges[0])];
 uint8_t visibleRangeCount = 0;
+
+lv_color_t seriesColor(uint8_t index)
+{
+    // Preserve the familiar energy semantics in both themes, while lifting
+    // and softening the traces enough to remain comfortable on a dark panel.
+    static constexpr uint32_t light[] = {0x159947, 0x0000FF, 0x00BFFF, 0xFF4500, 0xFFA500};
+    static constexpr uint32_t dark[] = {0x3CA76C, 0x5596E6, 0x4DB6D0, 0xE56C63, 0xD99A58};
+    return lv_color_hex(ui_theme::isDark() ? dark[index] : light[index]);
+}
 
 void formatRelativeAge(char* out, size_t outSize, uint32_t minutes)
 {
@@ -151,17 +161,15 @@ void addLegendItem(lv_obj_t* parent, lv_color_t color, const char* text)
 lv_obj_t* create(lv_obj_t* parent)
 {
     lv_obj_t* screen = lv_obj_create(parent);
-    lv_obj_remove_style_all(screen);
-    lv_obj_set_size(screen, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(screen, lv_color_white(), 0);
-    lv_obj_set_style_bg_opa(screen, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(screen, 8, 0);
-    lv_obj_set_style_pad_row(screen, 5, 0);
+    // Usage is chart-first: compact controls leave the rest of the page for
+    // the data rather than a visually empty footer.
+    ui_theme::styleScreen(screen, 4);
+    lv_obj_set_style_pad_row(screen, 4, 0);
     lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
 
     rangeDropdown = lv_dropdown_create(screen);
     lv_obj_set_width(rangeDropdown, lv_pct(100));
-    lv_obj_set_height(rangeDropdown, 38);
+    lv_obj_set_height(rangeDropdown, 36);
     lv_dropdown_set_symbol(rangeDropdown, LV_SYMBOL_DOWN);
     lv_dropdown_set_dir(rangeDropdown, LV_DIR_BOTTOM);
     lv_obj_set_style_text_font(rangeDropdown, &lv_font_montserrat_20, LV_PART_MAIN);
@@ -172,13 +180,16 @@ lv_obj_t* create(lv_obj_t* parent)
     lv_obj_set_size(legend, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(legend, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(legend, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    addLegendItem(legend, lv_color_hex(0x159947), "Charge");
-    addLegendItem(legend, lv_color_hex(0xFF4500), "Battery");
-    addLegendItem(legend, lv_color_hex(0x0000FF), "Panel");
-    addLegendItem(legend, lv_color_hex(0xFFA500), "Load");
-    addLegendItem(legend, lv_color_hex(0x00BFFF), "Surplus");
+    for (uint8_t i = 0; i < 5; ++i) chartSeries[i].color = seriesColor(i);
+    addLegendItem(legend, seriesColor(0), "Charge");
+    addLegendItem(legend, seriesColor(3), "Battery");
+    addLegendItem(legend, seriesColor(1), "Panel");
+    addLegendItem(legend, seriesColor(4), "Load");
+    addLegendItem(legend, seriesColor(2), "Surplus");
 
     chart = stacked_bar_chart::create(screen);
+    lv_obj_set_height(chart, 0);
+    lv_obj_set_flex_grow(chart, 1);
 
     emptyLabel = lv_label_create(screen);
     lv_obj_set_style_text_color(emptyLabel, lv_palette_main(LV_PALETTE_GREY), 0);

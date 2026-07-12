@@ -1,5 +1,6 @@
 #include "screen_realtime.h"
 #include "../sensors/sensors.h"
+#include "ui_theme.h"
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
@@ -27,11 +28,10 @@ constexpr size_t kGridDivisions = kChartPoints / kGridPointsPerDiv;       // e.g
 constexpr float kDutyShowThreshold = 0.80f;           // duty reveal trips below this, then stays shown
 
 // Chart values are stored as integers (lv_coord_t). To keep one decimal place
-// of resolution on V/I/P we store value*kXxxAxisScale and divide back down
+// of resolution on V/I we store value*kXxxAxisScale and divide back down
 // when drawing tick labels (see axisTickLabelCb).
 static const float kVoltageAxisScale = 10.0f;
 static const float kCurrentAxisScale = 10.0f;
-static const float kPowerAxisScale = 10.0f;
 
 // Sane default axis windows; these expand automatically if real data falls
 // outside them (see computeDynamicRange), and use a bit of margin so the
@@ -40,8 +40,6 @@ constexpr float kVoltageDefaultMin = 12.0f;
 constexpr float kVoltageDefaultMax = 14.0f;
 constexpr float kCurrentDefaultMin = 0.0f;
 constexpr float kCurrentDefaultMax = 5.0f;
-constexpr float kPowerDefaultMin = 0.0f;
-constexpr float kPowerDefaultMax = 60.0f;
 
 // ---------------------------------------------------------------------------
 // Dynamic "nice" axis ranging
@@ -129,15 +127,7 @@ struct SensorTab {
     AxisRangeState iRange;
 };
 
-struct PowerTab {
-    lv_obj_t* chart = nullptr;
-    lv_chart_series_t* series[sensors::SENSOR_COUNT] = {nullptr, nullptr, nullptr};
-    lv_obj_t* valueLabels[sensors::SENSOR_COUNT] = {nullptr, nullptr, nullptr};
-    AxisRangeState pRange;
-};
-
 SensorTab sensorTabs[sensors::SENSOR_COUNT];
-PowerTab powerTab;
 
 lv_timer_t* updateTimer = nullptr;
 
@@ -167,8 +157,8 @@ size_t findStartAndAdvance(const sensors::Reading* readings, size_t n,
 // Chart building helpers
 // ---------------------------------------------------------------------------
 
-// Draw-event callback that turns the raw (scaled) tick values back into
-// real units with one decimal place, e.g. stored 123 -> "12.3".
+// Draw-event callback that turns raw (scaled) tick values back into real
+// units with one decimal place.
 void axisTickLabelCb(lv_event_t* e) {
     lv_obj_draw_part_dsc_t* dsc = lv_event_get_draw_part_dsc(e);
     if (dsc == nullptr || dsc->part != LV_PART_TICKS || dsc->id != LV_CHART_AXIS_PRIMARY_Y) return;
@@ -186,7 +176,7 @@ void styleChartMinimal(lv_obj_t* chart) {
 
     // Thin, muted grid/div lines instead of the default heavy ones.
     lv_obj_set_style_line_width(chart, 1, LV_PART_MAIN);
-    lv_obj_set_style_line_color(chart, lv_palette_main(LV_PALETTE_GREY), LV_PART_MAIN);
+    lv_obj_set_style_line_color(chart, ui_theme::border(), LV_PART_MAIN);
     lv_obj_set_style_line_opa(chart, LV_OPA_50, LV_PART_MAIN);
 
     // Trace: visible line, no per-point circles (cleaner at 500ms update rate).
@@ -194,7 +184,7 @@ void styleChartMinimal(lv_obj_t* chart) {
     lv_obj_set_style_size(chart, 0, LV_PART_INDICATOR);
 
     lv_obj_set_style_text_font(chart, &lv_font_montserrat_14, LV_PART_TICKS);
-    lv_obj_set_style_text_color(chart, lv_palette_main(LV_PALETTE_GREY), LV_PART_TICKS);
+    lv_obj_set_style_text_color(chart, ui_theme::mutedText(), LV_PART_TICKS);
 }
 
 static void styleFlatContainer(lv_obj_t *obj)
@@ -202,7 +192,7 @@ static void styleFlatContainer(lv_obj_t *obj)
     lv_obj_set_style_border_width(obj, 0, 0);
     lv_obj_set_style_radius(obj, 0, 0);
 
-    lv_obj_set_style_bg_color(obj, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(obj, ui_theme::background(), 0);
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
 
     lv_obj_set_style_shadow_width(obj, 0, 0);
@@ -237,7 +227,7 @@ void addTimeAxisLabels(lv_obj_t* parent) {
         lv_obj_t* lbl = lv_label_create(row);
         lv_label_set_text(lbl, buf);
         lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(lbl, lv_palette_main(LV_PALETTE_GREY), 0);
+        lv_obj_set_style_text_color(lbl, ui_theme::mutedText(), 0);
     }
 }
 
@@ -248,7 +238,9 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color
                             const float* axisScale, lv_chart_series_t** seriesOut) {
     lv_obj_t* block = lv_obj_create(parent);
     styleFlatContainer(block);
-    lv_obj_set_size(block, lv_pct(100), lv_pct(100));
+    // A zero base height lets the two blocks share all remaining tab height
+    // rather than each claiming a full-height basis and leaving dead space.
+    lv_obj_set_size(block, lv_pct(100), 0);
     lv_obj_set_style_border_width(block, 0, 0);
     lv_obj_set_style_pad_all(block, 0, 0);
     lv_obj_set_flex_flow(block, LV_FLEX_FLOW_COLUMN);
@@ -258,20 +250,23 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color
         lv_obj_t* titleLabel = lv_label_create(block);
         lv_label_set_text(titleLabel, title);
         lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(titleLabel, lv_palette_main(LV_PALETTE_GREY), 0);
+        lv_obj_set_style_text_color(titleLabel, ui_theme::mutedText(), 0);
     }
 
     lv_obj_t* chart = lv_chart_create(block);
-    lv_obj_set_size(chart, lv_pct(100), lv_pct(100));
+    lv_obj_set_size(chart, lv_pct(100), 0);
     lv_obj_set_flex_grow(chart, 1);
     lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
     lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
     lv_chart_set_point_count(chart, kChartPoints);
     lv_chart_set_div_line_count(chart, 5, (uint8_t)kGridDivisions - 1);
-    lv_chart_set_axis_tick(chart, LV_CHART_AXIS_PRIMARY_Y, 4, 2, 3, 1, true, 48);
+    // Five major marks make the live scale legible at a glance (including
+    // useful anchors such as 0, 5 and 10) without crowding the trace.
+    lv_chart_set_axis_tick(chart, LV_CHART_AXIS_PRIMARY_Y, 4, 2, 5, 1, true, 52);
     lv_obj_set_style_clip_corner(chart, false, 0);
 
     styleChartMinimal(chart);
+    lv_obj_set_style_pad_left(chart, 48, 0);
     lv_obj_add_event_cb(chart, axisTickLabelCb, LV_EVENT_DRAW_PART_BEGIN, (void*)axisScale);
 
     *seriesOut = lv_chart_add_series(chart, color, LV_CHART_AXIS_PRIMARY_Y);
@@ -285,6 +280,7 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color
 // doesn't shift left/right as the number of digits changes.
 lv_obj_t* createKpiItem(lv_obj_t* parent, const char* unit, lv_coord_t valueWidth, lv_obj_t** valueLabelOut) {
     lv_obj_t* item = lv_obj_create(parent);
+    lv_obj_remove_style_all(item);
     lv_obj_set_size(item, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
     lv_obj_set_style_border_width(item, 0, 0);
     lv_obj_set_style_pad_all(item, 0, 0);
@@ -301,7 +297,7 @@ lv_obj_t* createKpiItem(lv_obj_t* parent, const char* unit, lv_coord_t valueWidt
     lv_obj_t* unitLabel = lv_label_create(item);
     lv_label_set_text(unitLabel, unit);
     lv_obj_set_style_text_font(unitLabel, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(unitLabel, lv_palette_main(LV_PALETTE_GREY), 0);
+    lv_obj_set_style_text_color(unitLabel, ui_theme::mutedText(), 0);
     lv_obj_set_style_pad_bottom(unitLabel, 3, 0); // baseline-align with the larger value font
 
     *valueLabelOut = valueLabel;
@@ -309,7 +305,7 @@ lv_obj_t* createKpiItem(lv_obj_t* parent, const char* unit, lv_coord_t valueWidt
 }
 
 lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
-    lv_obj_set_style_bg_color(tabParent, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(tabParent, ui_theme::background(), 0);
     lv_obj_set_style_bg_opa(tabParent, LV_OPA_COVER, 0);
 
     lv_obj_set_style_border_width(tabParent, 0, 0);
@@ -339,14 +335,15 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
 
     createKpiItem(kpiRow, "V", 54, &t.vValueLabel);
     createKpiItem(kpiRow, "A", 54, &t.iValueLabel);
-    createKpiItem(kpiRow, "W", 60, &t.pValueLabel);
+    createKpiItem(kpiRow, "W", 48, &t.pValueLabel);
+    lv_label_set_text(t.pValueLabel, "--");
     t.dutyRow = createKpiItem(kpiRow, "% duty", 40, &t.dutyValueLabel);
     lv_obj_add_flag(t.dutyRow, LV_OBJ_FLAG_HIDDEN); // hidden until it's seen below threshold
 
     // --- Voltage + current charts, stacked, sharing remaining space --------
     lv_obj_t* chartsCol = lv_obj_create(tab);
-    styleFlatContainer(tab);
-    lv_obj_set_size(chartsCol, lv_pct(100), lv_pct(100));
+    styleFlatContainer(chartsCol);
+    lv_obj_set_size(chartsCol, lv_pct(100), 0);
     lv_obj_set_style_border_width(chartsCol, 0, 0);
     lv_obj_set_style_pad_all(chartsCol, 0, 0);
     lv_obj_set_style_pad_row(chartsCol, 6, 0);
@@ -368,86 +365,12 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     return tab;
 }
 
-lv_obj_t* createPowerTab(lv_obj_t* tabParent) {
-    lv_obj_t* tab = lv_obj_create(tabParent);
-    styleFlatContainer(tab);
-    lv_obj_set_size(tab, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_pad_all(tab, 2, 0);
-    lv_obj_set_style_pad_row(tab, 4, 0);
-    lv_obj_set_style_border_width(tab, 0, 0);
-    lv_obj_set_flex_flow(tab, LV_FLEX_FLOW_COLUMN);
-
-    // Live power KPIs also act as a compact legend for the three traces.
-    static const char* names[sensors::SENSOR_COUNT] = {"In", "Out", "Aux"};
-    static const lv_palette_t palettes[sensors::SENSOR_COUNT] = {
-        LV_PALETTE_BLUE, LV_PALETTE_ORANGE, LV_PALETTE_GREEN};
-
-    lv_obj_t* kpiRow = lv_obj_create(tab);
-    styleFlatContainer(kpiRow);
-    lv_obj_set_size(kpiRow, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_style_pad_column(kpiRow, 10, 0);
-    lv_obj_set_flex_flow(kpiRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(kpiRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-    for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
-        lv_obj_t* item = lv_obj_create(kpiRow);
-        styleFlatContainer(item);
-        lv_obj_set_size(item, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_obj_set_style_border_width(item, 0, 0);
-        lv_obj_set_style_pad_all(item, 0, 0);
-        lv_obj_set_style_pad_column(item, 3, 0);
-        lv_obj_set_flex_flow(item, LV_FLEX_FLOW_ROW);
-        lv_obj_set_flex_align(item, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-        lv_obj_t* lbl = lv_label_create(item);
-        lv_label_set_text(lbl, names[i]);
-        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(lbl, lv_palette_main(palettes[i]), 0);
-
-        lv_obj_t* value = lv_label_create(item);
-        lv_label_set_text(value, "--.-");
-        lv_obj_set_style_text_font(value, &lv_font_montserrat_20, 0);
-        lv_obj_set_width(value, 44);
-        lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_RIGHT, 0);
-        powerTab.valueLabels[i] = value;
-
-        lv_obj_t* unit = lv_label_create(item);
-        lv_label_set_text(unit, "W");
-        lv_obj_set_style_text_font(unit, &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_color(unit, lv_palette_main(LV_PALETTE_GREY), 0);
-        lv_obj_set_style_pad_bottom(unit, 3, 0);
-    }
-
-    lv_obj_t* chartsCol = lv_obj_create(tab);
-    lv_obj_set_size(chartsCol, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_border_width(chartsCol, 0, 0);
-    lv_obj_set_style_pad_all(chartsCol, 0, 0);
-    lv_obj_set_flex_flow(chartsCol, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_grow(chartsCol, 1);
-
-    lv_chart_series_t* dummySeries = nullptr; // first series created by createChartBlock; rest added below
-    powerTab.chart = createChartBlock(chartsCol, nullptr, lv_palette_main(palettes[0]),
-                                       &kPowerAxisScale, &dummySeries);
-    powerTab.series[0] = dummySeries;
-    powerTab.series[1] = lv_chart_add_series(powerTab.chart, lv_palette_main(palettes[1]), LV_CHART_AXIS_PRIMARY_Y);
-    powerTab.series[2] = lv_chart_add_series(powerTab.chart, lv_palette_main(palettes[2]), LV_CHART_AXIS_PRIMARY_Y);
-
-    lv_chart_set_range(powerTab.chart, LV_CHART_AXIS_PRIMARY_Y,
-                        (lv_coord_t)(kPowerDefaultMin * kPowerAxisScale),
-                        (lv_coord_t)(kPowerDefaultMax * kPowerAxisScale));
-
-    return tab;
-}
-
 // ---------------------------------------------------------------------------
 // Update loop
 // ---------------------------------------------------------------------------
 
 void updateCb(lv_timer_t*) {
     sensors::Reading readings[kChartPoints];
-
-    float powerDataMin = 0.0f, powerDataMax = 0.0f;
-    bool havePowerData = false;
 
     for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
         size_t n = sensors::getRecent(static_cast<sensors::SensorId>(i), readings, kChartPoints);
@@ -462,21 +385,16 @@ void updateCb(lv_timer_t*) {
                                      (lv_coord_t)lroundf(readings[k].voltage * kVoltageAxisScale));
             lv_chart_set_next_value(tab.iChart, tab.iSeries,
                                      (lv_coord_t)lroundf(readings[k].current * kCurrentAxisScale));
-            lv_chart_set_next_value(powerTab.chart, powerTab.series[i],
-                                     (lv_coord_t)lroundf(readings[k].power * kPowerAxisScale));
         }
 
         // --- Dynamic Y ranges, computed off the full visible window --------
         float vMin = readings[0].voltage, vMax = readings[0].voltage;
         float iMin = readings[0].current, iMax = readings[0].current;
-        float pMin = readings[0].power, pMax = readings[0].power;
         for (size_t k = 1; k < n; k++) {
             vMin = std::min(vMin, readings[k].voltage);
             vMax = std::max(vMax, readings[k].voltage);
             iMin = std::min(iMin, readings[k].current);
             iMax = std::max(iMax, readings[k].current);
-            pMin = std::min(pMin, readings[k].power);
-            pMax = std::max(pMax, readings[k].power);
         }
 
         float outMin, outMax;
@@ -487,15 +405,6 @@ void updateCb(lv_timer_t*) {
         computeDynamicRange(iMin, iMax, kCurrentDefaultMin, kCurrentDefaultMax, 0.3f, tab.iRange, outMin, outMax);
         lv_chart_set_range(tab.iChart, LV_CHART_AXIS_PRIMARY_Y,
                             (lv_coord_t)(outMin * kCurrentAxisScale), (lv_coord_t)(outMax * kCurrentAxisScale));
-
-        if (!havePowerData) {
-            powerDataMin = pMin;
-            powerDataMax = pMax;
-            havePowerData = true;
-        } else {
-            powerDataMin = std::min(powerDataMin, pMin);
-            powerDataMax = std::max(powerDataMax, pMax);
-        }
 
         // --- KPI numbers: trailing 1s average, refreshed every 2s ----------
         bool dueForUpdate = !tab.kpiPrimed ||
@@ -520,10 +429,8 @@ void updateCb(lv_timer_t*) {
             lv_label_set_text(tab.vValueLabel, buf);
             snprintf(buf, sizeof(buf), "%.1f", sumI / count);
             lv_label_set_text(tab.iValueLabel, buf);
-            snprintf(buf, sizeof(buf), "%.1f", sumP / count);
+            snprintf(buf, sizeof(buf), "%.0f", sumP / count);
             lv_label_set_text(tab.pValueLabel, buf);
-            lv_label_set_text(powerTab.valueLabels[i], buf);
-
             tab.lastKpiTimestamp = latest.timestamp_ms;
             tab.kpiPrimed = true;
         }
@@ -541,13 +448,6 @@ void updateCb(lv_timer_t*) {
         }
     }
 
-    if (havePowerData) {
-        float outMin, outMax;
-        computeDynamicRange(powerDataMin, powerDataMax, kPowerDefaultMin, kPowerDefaultMax, 5.0f,
-                             powerTab.pRange, outMin, outMax);
-        lv_chart_set_range(powerTab.chart, LV_CHART_AXIS_PRIMARY_Y,
-                            (lv_coord_t)(outMin * kPowerAxisScale), (lv_coord_t)(outMax * kPowerAxisScale));
-    }
 }
 
 } // namespace
@@ -557,7 +457,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_pad_all(tabview, 0, 0);
     lv_obj_set_style_border_width(tabview, 0, 0);
     lv_obj_set_style_radius(tabview, 0, 0);
-    lv_obj_set_style_bg_color(tabview, lv_color_white(), 0);
+    lv_obj_set_style_bg_color(tabview, ui_theme::background(), 0);
     lv_obj_set_style_bg_opa(tabview, LV_OPA_COVER, 0);
 
     const char* names[sensors::SENSOR_COUNT] = {"In", "Out", "Aux"};
@@ -565,9 +465,6 @@ lv_obj_t* create(lv_obj_t* parent) {
         lv_obj_t* tabBtn = lv_tabview_add_tab(tabview, names[i]);
         createSensorTab(tabBtn, i);
     }
-
-    lv_obj_t* powerTabBtn = lv_tabview_add_tab(tabview, "Power");
-    createPowerTab(powerTabBtn);
 
     updateTimer = lv_timer_create(updateCb, kUpdateIntervalMs, nullptr);
 

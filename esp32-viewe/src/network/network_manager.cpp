@@ -342,4 +342,22 @@ void getSavedApSettings(char* ssidOut, size_t ssidLen, bool& secureOut, char* pa
     prefs.end();
 }
 
+bool clearSavedCredentials() {
+    Preferences networks;
+    Preferences accessPoint;
+    const bool networksOpen = networks.begin("wifi_net", false);
+    const bool accessPointOpen = accessPoint.begin("wifi_ap", false);
+    if (!networksOpen || !accessPointOpen) {
+        if (networksOpen) networks.end();
+        if (accessPointOpen) accessPoint.end();
+        return false;
+    }
+    const bool cleared = networks.clear() && accessPoint.clear();
+    networks.end();
+    accessPoint.end();
+    // Also remove the Wi-Fi driver's remembered station configuration.
+    WiFi.disconnect(true, true);
+    return cleared;
+}
+
 } // namespace network_manager

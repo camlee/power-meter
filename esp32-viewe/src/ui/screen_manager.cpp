@@ -1,8 +1,12 @@
 #include "screen_manager.h"
+#include "ui_theme.h"
 
 void ScreenManager::init() {
+    ui_theme::init();
     // Create a single persistent root screen
     root_scr = lv_obj_create(nullptr);
+    lv_obj_set_style_bg_color(root_scr, ui_theme::background(), 0);
+    lv_obj_set_style_bg_opa(root_scr, LV_OPA_COVER, 0);
     // lv_obj_set_style_bg_color(root_scr, lv_color_black(), 0);
 
     // Remove default padding
@@ -12,6 +16,8 @@ void ScreenManager::init() {
     // Create Tabview
     // Parameters: parent, tab direction (e.g., top, bottom, left, right), header size
     tabview = lv_tabview_create(root_scr, LV_DIR_TOP, 40);
+    lv_obj_set_style_bg_color(tabview, ui_theme::background(), 0);
+    lv_obj_set_style_bg_opa(tabview, LV_OPA_COVER, 0);
     // lv_obj_set_style_bg_color(tabview, lv_color_black(), 0);
 
     // Optional: Style the tab buttons background (the header area)

@@ -1,5 +1,6 @@
 #include "screen_system.h"
 #include "../sensors/sensors.h"
+#include "ui_theme.h"
 #include <cmath>
 
 namespace screen_system {
@@ -25,9 +26,9 @@ void drawCb(lv_event_t* e) {
  for(int s=0;s<4;s++){lv_draw_line_dsc_t line;lv_draw_line_dsc_init(&line);line.color=colors[s];line.width=2;for(size_t i=1;i<count;i++){int x1=left+(int)((i-1)*w/(kPoints-1)),x2=left+(int)(i*w/(kPoints-1));lv_point_t p1{(lv_coord_t)x1,(lv_coord_t)yFor(a,values[s][i-1])},p2{(lv_coord_t)x2,(lv_coord_t)yFor(a,values[s][i])};lv_draw_line(ctx,&line,&p1,&p2);}}
 }
 void kpi(lv_obj_t* parent, int index, lv_color_t color, const char* name) {
- lv_obj_t* item=lv_obj_create(parent);lv_obj_remove_style_all(item);lv_obj_set_flex_grow(item,1);lv_obj_set_flex_flow(item,LV_FLEX_FLOW_COLUMN);lv_obj_set_flex_align(item,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
+ lv_obj_t* item=lv_obj_create(parent);lv_obj_remove_style_all(item);lv_obj_set_size(item,0,LV_SIZE_CONTENT);lv_obj_set_flex_grow(item,1);lv_obj_set_flex_flow(item,LV_FLEX_FLOW_COLUMN);lv_obj_set_flex_align(item,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
  lv_obj_t* label=lv_label_create(item);lv_obj_set_style_text_color(label,color,0);lv_obj_set_style_text_font(label,&lv_font_montserrat_14,0);lv_label_set_text(label,name);
- kpiValues[index]=lv_label_create(item);lv_obj_set_style_text_font(kpiValues[index],&lv_font_montserrat_20,0);lv_label_set_text(kpiValues[index],"--");
+ kpiValues[index]=lv_label_create(item);lv_obj_set_style_text_font(kpiValues[index],&lv_font_montserrat_28,0);lv_label_set_text(kpiValues[index],"--");
 }
 void update(lv_timer_t*) {
  const size_t inCount=sensors::getRecent(sensors::SENSOR_IN,samples[0],kPoints); const size_t outCount=sensors::getRecent(sensors::SENSOR_OUT,samples[1],kPoints); const size_t auxCount=sensors::getRecent(sensors::SENSOR_AUX,samples[2],kPoints); const size_t n=fminf(inCount,fminf(outCount,auxCount)); count=n; float lo=0,hi=0;
@@ -35,5 +36,5 @@ void update(lv_timer_t*) {
  step=nice((hi-lo)/6);maximum=ceilf(hi/step)*step;minimum=floorf(lo/step)*step;if(maximum<=minimum){maximum=step;minimum=-step;}for(int s=0;s<4;s++){char b[12];lv_snprintf(b,sizeof(b),"%d",(int)lroundf(n?values[s][n-1]:0));lv_label_set_text(kpiValues[s],b);}lv_obj_invalidate(plot);
 }
 }
-lv_obj_t* create(lv_obj_t* parent){lv_obj_t* screen=lv_obj_create(parent);lv_obj_remove_style_all(screen);lv_obj_set_size(screen,lv_pct(100),lv_pct(100));lv_obj_set_style_bg_color(screen,lv_color_white(),0);lv_obj_set_style_bg_opa(screen,LV_OPA_COVER,0);lv_obj_set_style_pad_all(screen,3,0);lv_obj_set_flex_flow(screen,LV_FLEX_FLOW_COLUMN);lv_obj_set_style_pad_row(screen,2,0);lv_obj_t* row=lv_obj_create(screen);lv_obj_remove_style_all(row);lv_obj_set_width(row,lv_pct(100));lv_obj_set_flex_flow(row,LV_FLEX_FLOW_ROW);kpi(row,0,lv_color_hex(0x0000FF),"In");kpi(row,1,lv_color_hex(0xFFA500),"Out");kpi(row,2,lv_color_hex(0x00BFFF),"Aux");kpi(row,3,lv_color_hex(0x7CFC00),"Net");plot=lv_obj_create(screen);lv_obj_remove_style_all(plot);lv_obj_set_width(plot,lv_pct(100));lv_obj_set_flex_grow(plot,1);lv_obj_add_event_cb(plot,drawCb,LV_EVENT_DRAW_MAIN,nullptr);lv_timer_create(update,kRefreshMs,nullptr);update(nullptr);return screen;}
+lv_obj_t* create(lv_obj_t* parent){lv_obj_t* screen=lv_obj_create(parent);ui_theme::styleScreen(screen,6);lv_obj_set_flex_flow(screen,LV_FLEX_FLOW_COLUMN);lv_obj_set_style_pad_row(screen,4,0);lv_obj_t* row=lv_obj_create(screen);lv_obj_remove_style_all(row);lv_obj_set_size(row,lv_pct(100),LV_SIZE_CONTENT);lv_obj_set_style_pad_all(row,0,0);lv_obj_set_flex_flow(row,LV_FLEX_FLOW_ROW);kpi(row,0,lv_color_hex(0x0000FF),"In");kpi(row,1,lv_color_hex(0xFFA500),"Out");kpi(row,2,lv_color_hex(0x00BFFF),"Aux");kpi(row,3,lv_color_hex(0x7CFC00),"Net");plot=lv_obj_create(screen);lv_obj_remove_style_all(plot);lv_obj_set_width(plot,lv_pct(100));lv_obj_set_flex_grow(plot,1);lv_obj_add_event_cb(plot,drawCb,LV_EVENT_DRAW_MAIN,nullptr);lv_timer_create(update,kRefreshMs,nullptr);update(nullptr);return screen;}
 }

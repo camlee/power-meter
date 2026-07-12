@@ -46,5 +46,7 @@ bool getApClientMac(int index, char* macStrOut, size_t maxLen);
 // Persistence (NVS) Queries for the UI
 bool getSavedPassword(const char* ssid, char* passOut, size_t maxLen);
 void getSavedApSettings(char* ssidOut, size_t ssidLen, bool& secureOut, char* passOut, size_t passLen);
+// Removes both station and access-point credentials from NVS.
+bool clearSavedCredentials();
 
 } // namespace network_manager
