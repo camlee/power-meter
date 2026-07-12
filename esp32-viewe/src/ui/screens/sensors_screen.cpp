@@ -23,6 +23,7 @@ constexpr uint32_t kWindowMs = kChartPoints * kUpdateIntervalMs; // 30s visible 
 
 constexpr uint32_t kKpiUpdateIntervalMs = 2000;       // how often the numeric readouts refresh
 constexpr uint32_t kKpiAverageWindowMs = 1000;        // readouts show the trailing 1s average
+constexpr uint32_t kCalibrationUpdateIntervalMs = 2000;
 
 constexpr uint32_t kGridIntervalMs = 10000;           // vertical grid line spacing
 constexpr size_t kGridPointsPerDiv = kGridIntervalMs / kUpdateIntervalMs; // points per grid column
@@ -35,7 +36,6 @@ constexpr float kDutyShowThreshold = 0.80f;           // duty reveal trips below
 // when drawing tick labels (see axisTickLabelCb).
 static const float kVoltageAxisScale = 10.0f;
 static const float kCurrentAxisScale = 10.0f;
-static const float kCalibrationAxisScale = 1.0f;
 
 // Sane default axis windows; these expand automatically if real data falls
 // outside them (see computeDynamicRange), and use a bit of margin so the
@@ -108,6 +108,7 @@ void computeDynamicRange(float dataMin, float dataMax, float defaultMin, float d
 // ---------------------------------------------------------------------------
 
 struct SensorTab {
+    lv_obj_t* contentRoot = nullptr;
     lv_obj_t* vChart = nullptr;
     lv_obj_t* iChart = nullptr;
     lv_chart_series_t* vSeries = nullptr;
@@ -140,6 +141,7 @@ struct SensorTab {
         lv_obj_t* measurementInput = nullptr;
         lv_obj_t* keyboard = nullptr;
         lv_obj_t* chart = nullptr;
+        lv_obj_t* axisLabels[4] = {};
         lv_chart_series_t* before = nullptr;
         lv_chart_series_t* after = nullptr;
         sensors::calibration::Measurement measurement = sensors::calibration::Measurement::Voltage;
@@ -147,6 +149,9 @@ struct SensorTab {
         sensors::calibration::Value staged{};
         uint8_t sensor = 0;
         bool visible = false;
+        bool refreshingInputs = false;
+        uint32_t lastPreviewTimestamp = 0;
+        uint32_t lastPreviewUpdateMs = 0;
     } calibration;
 };
 
@@ -162,7 +167,8 @@ const char* measurementUnit(sensors::calibration::Measurement measurement) {
     return measurement == sensors::calibration::Measurement::Voltage ? "V" : "A";
 }
 
-void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Reading* readings = nullptr, size_t n = 0);
+void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Reading* readings = nullptr,
+                             size_t n = 0, bool appendPoint = false);
 void openVoltageCalibrationCb(lv_event_t* event);
 void openCurrentCalibrationCb(lv_event_t* event);
 
@@ -187,6 +193,7 @@ void calibrationInputFocusCb(lv_event_t* event) {
 }
 
 void refreshCalibrationInputs(SensorTab::CalibrationEditor& editor) {
+    editor.refreshingInputs = true;
     char text[20];
     snprintf(text, sizeof(text), "%.3f", editor.staged.offsetInputV);
     lv_textarea_set_text(editor.offsetInput, text);
@@ -194,11 +201,12 @@ void refreshCalibrationInputs(SensorTab::CalibrationEditor& editor) {
     // volt/amp. It keeps values close to the divider/sensor data sheet.
     snprintf(text, sizeof(text), "%.3f", 1000.0f / editor.staged.gain);
     lv_textarea_set_text(editor.gainInput, text);
+    editor.refreshingInputs = false;
 }
 
 void calibrationInputChangedCb(lv_event_t* event) {
     auto* editor = static_cast<SensorTab::CalibrationEditor*>(lv_event_get_user_data(event));
-    if (!editor) return;
+    if (!editor || editor->refreshingInputs) return;
     char* end = nullptr;
     const float value = strtof(lv_textarea_get_text(static_cast<lv_obj_t*>(lv_event_get_target(event))), &end);
     if (!end || end == lv_textarea_get_text(static_cast<lv_obj_t*>(lv_event_get_target(event))) || *end != '\0') return;
@@ -216,6 +224,7 @@ void calibrationControlCb(lv_event_t* event) {
 
     if (control->action == CalibrationAction::Back) {
         editor.visible = false;
+        lv_obj_clear_flag(tab.contentRoot, LV_OBJ_FLAG_HIDDEN);
         // The keyboard/editor widgets use internal RAM. Keep only the active
         // editor alive, then release it fully on return to the live charts.
         lv_obj_del(editor.root);
@@ -407,10 +416,6 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color
             lv_obj_set_size(calibrate, 42, 28);
             lv_obj_set_style_text_color(calibrate, ui_theme::mutedText(), 0);
             lv_label_set_text(calibrate, LV_SYMBOL_EDIT);
-            lv_obj_add_flag(calibrate, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(calibrate,
-                measurement == sensors::calibration::Measurement::Voltage ? openVoltageCalibrationCb : openCurrentCalibrationCb,
-                LV_EVENT_CLICKED, tab);
         }
     }
 
@@ -529,17 +534,32 @@ void createCalibrationEditor(lv_obj_t* parent, SensorTab& tab, uint8_t sensor) {
     lv_obj_set_style_text_color(editor.beforeLabel, lv_palette_main(LV_PALETTE_BLUE), 0);
     lv_obj_set_style_text_color(editor.afterLabel, lv_palette_main(LV_PALETTE_ORANGE), 0);
 
-    editor.chart = lv_chart_create(editor.root);
-    lv_obj_set_size(editor.chart, lv_pct(100), 112);
+    lv_obj_t* chartRow = lv_obj_create(editor.root);
+    lv_obj_remove_style_all(chartRow);
+    lv_obj_set_size(chartRow, lv_pct(100), 112);
+    lv_obj_set_flex_flow(chartRow, LV_FLEX_FLOW_ROW);
+
+    lv_obj_t* axis = lv_obj_create(chartRow);
+    lv_obj_remove_style_all(axis);
+    lv_obj_set_size(axis, 40, lv_pct(100));
+    lv_obj_set_flex_flow(axis, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(axis, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    for (size_t i = 0; i < 4; ++i) {
+        editor.axisLabels[i] = lv_label_create(axis);
+        lv_label_set_text(editor.axisLabels[i], "--");
+        lv_obj_set_style_text_font(editor.axisLabels[i], &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(editor.axisLabels[i], ui_theme::mutedText(), 0);
+    }
+
+    editor.chart = lv_chart_create(chartRow);
+    lv_obj_set_size(editor.chart, 0, lv_pct(100));
+    lv_obj_set_flex_grow(editor.chart, 1);
     lv_chart_set_type(editor.chart, LV_CHART_TYPE_LINE);
     lv_chart_set_point_count(editor.chart, kChartPoints);
     lv_chart_set_update_mode(editor.chart, LV_CHART_UPDATE_MODE_CIRCULAR);
     lv_chart_set_div_line_count(editor.chart, 4, 3);
-    lv_chart_set_axis_tick(editor.chart, LV_CHART_AXIS_PRIMARY_Y, 3, 1, 4, 1, true, 42);
     lv_obj_set_style_clip_corner(editor.chart, false, 0);
     styleChartMinimal(editor.chart);
-    lv_obj_set_style_pad_left(editor.chart, 48, 0);
-    lv_obj_add_event_cb(editor.chart, axisTickLabelCb, LV_EVENT_DRAW_PART_BEGIN, (void*)&kCalibrationAxisScale);
     editor.before = lv_chart_add_series(editor.chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
     editor.after = lv_chart_add_series(editor.chart, lv_palette_main(LV_PALETTE_ORANGE), LV_CHART_AXIS_PRIMARY_Y);
     lv_obj_t* offsetTitle = lv_label_create(editor.root);
@@ -616,12 +636,22 @@ void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measu
     editor.saved = sensors::calibration::get(sensor, measurement);
     editor.staged = editor.saved;
     editor.visible = true;
+    // The editor is a sibling of the live sensor content. Hide that content
+    // while calibrating so its two charts are not continuously rendered
+    // underneath the calibration chart.
+    lv_obj_add_flag(tab.contentRoot, LV_OBJ_FLAG_HIDDEN);
     refreshCalibrationInputs(editor);
     // Units are tied to the selected engineering measurement, while gain is
     // shown as ADC millivolts per engineering unit.
     lv_label_set_text(lv_obj_get_child(lv_obj_get_parent(editor.gainInput), 2),
                       measurement == sensors::calibration::Measurement::Voltage ? "mV/V" : "mV/A");
     lv_label_set_text(lv_obj_get_child(lv_obj_get_parent(editor.measurementInput), 2), measurementUnit(measurement));
+    lv_chart_set_all_value(editor.chart, editor.before, LV_CHART_POINT_NONE);
+    lv_chart_set_all_value(editor.chart, editor.after, LV_CHART_POINT_NONE);
+    sensors::Reading latest{};
+    editor.lastPreviewTimestamp = sensors::getLatest(static_cast<sensors::SensorId>(sensor), latest)
+        ? latest.timestamp_ms : 0;
+    editor.lastPreviewUpdateMs = lv_tick_get();
     lv_obj_clear_flag(editor.root, LV_OBJ_FLAG_HIDDEN);
     updateCalibrationEditor(tab, sensor);
 }
@@ -659,6 +689,7 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
 
     SensorTab& t = sensorTabs[sensorIndex];
     t.calibrationParent = tabParent;
+    t.contentRoot = tab;
 
     // --- KPI row -----------------------------------------------------------
     lv_obj_t* kpiRow = lv_obj_create(tab);
@@ -702,7 +733,8 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     return tab;
 }
 
-void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Reading* suppliedReadings, size_t suppliedCount) {
+void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Reading* suppliedReadings,
+                             size_t suppliedCount, bool appendPoint) {
     auto& editor = tab.calibration;
     if (!editor.visible) return;
 
@@ -735,20 +767,24 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Read
     snprintf(text, sizeof(text), "After %.1f %s", preview, unit);
     lv_label_set_text(editor.afterLabel, text);
 
+    if (!appendPoint || latest.timestamp_ms <= editor.lastPreviewTimestamp) return;
+
+    // Each point is a historical comparison using the staged coefficients at
+    // the moment it was sampled. Later +/- edits affect only future points.
+    lv_chart_set_next_value(editor.chart, editor.before, lroundf(savedReading));
+    lv_chart_set_next_value(editor.chart, editor.after, lroundf(preview));
+    editor.lastPreviewTimestamp = latest.timestamp_ms;
+
     float low = savedReading;
     float high = savedReading;
     for (size_t i = 0; i < kChartPoints; ++i) {
-        if (i < n) {
-            const float before = voltage ? readings[i].voltage : readings[i].current;
-            const float raw = inputFor(readings[i]);
-            const float after = sensors::calibration::apply(raw, editor.staged);
-            lv_chart_set_value_by_id(editor.chart, editor.before, i, lroundf(before));
-            lv_chart_set_value_by_id(editor.chart, editor.after, i, lroundf(after));
-            low = std::min(low, std::min(before, after));
-            high = std::max(high, std::max(before, after));
-        } else {
-            lv_chart_set_value_by_id(editor.chart, editor.before, i, LV_CHART_POINT_NONE);
-            lv_chart_set_value_by_id(editor.chart, editor.after, i, LV_CHART_POINT_NONE);
+        if (editor.before->y_points[i] != LV_CHART_POINT_NONE) {
+            low = std::min(low, static_cast<float>(editor.before->y_points[i]));
+            high = std::max(high, static_cast<float>(editor.before->y_points[i]));
+        }
+        if (editor.after->y_points[i] != LV_CHART_POINT_NONE) {
+            low = std::min(low, static_cast<float>(editor.after->y_points[i]));
+            high = std::max(high, static_cast<float>(editor.after->y_points[i]));
         }
     }
     const float maxAllowed = voltage ? sensors::calibration::kVoltageMaxV : sensors::calibration::kCurrentMaxA;
@@ -756,6 +792,12 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Read
     high = std::min(maxAllowed, high + 1.0f);
     if (high <= low) high = low + 1.0f;
     lv_chart_set_range(editor.chart, LV_CHART_AXIS_PRIMARY_Y, lroundf(low), lroundf(high));
+    for (size_t i = 0; i < 4; ++i) {
+        const float value = high - (high - low) * i / 3.0f;
+        char axisText[12];
+        snprintf(axisText, sizeof(axisText), "%.1f", value);
+        lv_label_set_text(editor.axisLabels[i], axisText);
+    }
     lv_chart_refresh(editor.chart);
 }
 
@@ -764,6 +806,7 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Read
 // ---------------------------------------------------------------------------
 
 void updateCb(lv_timer_t*) {
+    const uint32_t now = lv_tick_get();
     sensors::Reading readings[kChartPoints];
 
     for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
@@ -841,7 +884,10 @@ void updateCb(lv_timer_t*) {
             lv_label_set_text(tab.dutyValueLabel, buf);
         }
 
-        updateCalibrationEditor(tab, i, readings, n);
+        if (tab.calibration.visible && now - tab.calibration.lastPreviewUpdateMs >= kCalibrationUpdateIntervalMs) {
+            tab.calibration.lastPreviewUpdateMs = now;
+            updateCalibrationEditor(tab, i, readings, n, true);
+        }
     }
 
 }
