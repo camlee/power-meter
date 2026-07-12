@@ -9,7 +9,7 @@
 #define ESP_UTILS_LOG_TAG "LvPort"
 #include "esp_lib_utils.h"
 #include "lvgl_v8_port.h"
-#include "ui/remote_input.h"
+#include "ui/input/remote_input.h"
 #include <esp_heap_caps.h>
 
 using namespace esp_panel::drivers;

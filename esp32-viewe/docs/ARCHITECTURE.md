@@ -91,7 +91,7 @@ read hardware or files directly.
 
 Current top-level screens are:
 
-- **Now:** raw per-sensor voltage/current/power and short trend charts.
+- **Sensors:** raw per-sensor voltage/current/power and short trend charts.
 - **Power:** derived battery and solar/PWM-related metrics.
 - **Usage:** long-term history (currently provisional).
 - **Settings:** nested configuration and diagnostics pages:

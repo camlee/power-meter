@@ -1,6 +1,6 @@
-#include "screen_realtime.h"
-#include "../sensors/sensors.h"
-#include "ui_theme.h"
+#include "sensors_screen.h"
+#include "../../sensors/sensors.h"
+#include "../theme/ui_theme.h"
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
@@ -11,7 +11,7 @@
 //    If only the default 14px font is enabled, swap &lv_font_montserrat_20 for
 //    &lv_font_montserrat_14 (or your preferred large font) in createKpiItem().
 
-namespace screen_realtime {
+namespace sensors_screen {
 namespace {
 
 constexpr uint32_t kUpdateIntervalMs = 500;          // match sensors::kSampleIntervalMs
@@ -471,4 +471,4 @@ lv_obj_t* create(lv_obj_t* parent) {
     return tabview;
 }
 
-} // namespace screen_realtime
+} // namespace sensors_screen

@@ -11,13 +11,7 @@
 #include "network/network_manager.h"
 #include "network/ota_service.h"
 
-#include "ui/screen_manager.h"
-#include "ui/screen_realtime.h"
-#include "ui/screen_system.h"
-#include "ui/screen_historical.h"
-#include "ui/screen_wifi.h"
-#include "ui/screen_info.h"
-#include "ui/screen_settings.h"
+#include "ui/navigation/app_navigation.h"
 
 using namespace esp_panel::board;
 using namespace esp_panel::drivers;
@@ -47,16 +41,7 @@ void setup()
 
     lvgl_port_lock(-1);
 
-    ScreenManager& screens = ScreenManager::instance();
-    screens.init(); // Creates the persistent layout
-
-    // Register screens in the order you want them to swipe
-    screens.registerScreen("Now", screen_realtime::create);
-    screens.registerScreen("Power", screen_system::create);
-    screens.registerScreen("Usage", screen_historical::create);
-    screens.registerScreen(LV_SYMBOL_SETTINGS, screen_settings::create);
-
-    screens.build(); // Builds tiles and dots
+    ui_navigation::build();
 
     lvgl_port_unlock();
     ota_service::setApplicationReady();

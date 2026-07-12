@@ -1,10 +1,9 @@
-#include "screen_wifi.h"
-#include "screen_manager.h"
+#include "wifi_screen.h"
 #include "network/network_manager.h"
-#include "ui_theme.h"
+#include "../../theme/ui_theme.h"
 #include <Arduino.h>
 
-namespace screen_wifi {
+namespace wifi_screen {
 namespace {
 
 constexpr uint32_t kPollIntervalMs = 200;
@@ -590,4 +589,4 @@ lv_obj_t* create(lv_obj_t* parent) {
     return scr;
 }
 
-} // namespace screen_wifi
+} // namespace wifi_screen

@@ -2,6 +2,6 @@
 
 #include <lvgl.h>
 
-namespace screen_debug {
+namespace settings_screen {
 lv_obj_t* create(lv_obj_t* parent);
-} // namespace screen_debug
+} // namespace settings_screen

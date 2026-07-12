@@ -1,13 +1,13 @@
-#include "screen_historical.h"
+#include "usage_screen.h"
 
-#include "../data/historical_storage.h"
-#include "stacked_bar_chart.h"
-#include "ui_theme.h"
+#include "../../data/historical_storage.h"
+#include "../components/stacked_bar_chart.h"
+#include "../theme/ui_theme.h"
 
 #include <cmath>
 #include <cstdio>
 
-namespace screen_historical {
+namespace usage_screen {
 namespace {
 
 constexpr size_t kMaxPoints = 336; // 14 days * 24 one-hour buckets
@@ -199,4 +199,4 @@ lv_obj_t* create(lv_obj_t* parent)
     return screen;
 }
 
-} // namespace screen_historical
+} // namespace usage_screen

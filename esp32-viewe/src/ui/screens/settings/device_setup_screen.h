@@ -2,6 +2,6 @@
 
 #include <lvgl.h>
 
-namespace screen_settings {
+namespace device_setup_screen {
 lv_obj_t* create(lv_obj_t* parent);
-} // namespace screen_settings
+} // namespace device_setup_screen

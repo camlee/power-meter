@@ -1,4 +1,4 @@
-#include "screen_setup.h"
+#include "device_setup_screen.h"
 
 #include <Arduino.h>
 #include <Preferences.h>
@@ -7,9 +7,9 @@
 #include "device/device_identity.h"
 #include "network/network_manager.h"
 #include "sensors/sensor_mode.h"
-#include "ui_theme.h"
+#include "../../theme/ui_theme.h"
 
-namespace screen_setup {
+namespace device_setup_screen {
 namespace {
 
 lv_obj_t* deviceIdInput = nullptr;
@@ -286,4 +286,4 @@ lv_obj_t* create(lv_obj_t* parent) {
     return screen;
 }
 
-} // namespace screen_setup
+} // namespace device_setup_screen

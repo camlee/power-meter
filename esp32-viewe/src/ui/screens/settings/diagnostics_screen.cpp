@@ -1,13 +1,13 @@
-#include "screen_debug.h"
+#include "diagnostics_screen.h"
 
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <cstring>
 #include <esp_system.h>
 #include "network/ota_service.h"
-#include "ui_theme.h"
+#include "../../theme/ui_theme.h"
 
-namespace screen_debug {
+namespace diagnostics_screen {
 namespace {
 
 lv_obj_t* memoryLabel = nullptr;
@@ -121,4 +121,4 @@ lv_obj_t* create(lv_obj_t* parent) {
     return screen;
 }
 
-} // namespace screen_debug
+} // namespace diagnostics_screen

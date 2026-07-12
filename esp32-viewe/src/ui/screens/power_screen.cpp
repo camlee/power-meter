@@ -1,9 +1,9 @@
-#include "screen_system.h"
-#include "../sensors/sensors.h"
-#include "ui_theme.h"
+#include "power_screen.h"
+#include "../../sensors/sensors.h"
+#include "../theme/ui_theme.h"
 #include <cmath>
 
-namespace screen_system {
+namespace power_screen {
 namespace {
 constexpr size_t kPoints = 240; // two minutes at the 500 ms sensor cadence
 constexpr uint32_t kRefreshMs = 2000;

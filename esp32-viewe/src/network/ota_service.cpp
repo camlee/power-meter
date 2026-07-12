@@ -17,7 +17,7 @@
 // never committed credentials.  An empty value disables firmware updates.
 #include "ota_public_key.h" // generated locally from keys/ota_signing_public.pem
 #include "lvgl_v8_port.h"
-#include "ui/remote_input.h"
+#include "ui/input/remote_input.h"
 
 #ifndef OTA_SHARED_TOKEN
 #define OTA_SHARED_TOKEN ""

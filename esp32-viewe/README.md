@@ -113,8 +113,10 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 ## Layout
 
 - `src/main.cpp`: board, display, LVGL, storage, and network startup
-- `src/ui/`: screen navigation and UI screens; the top-level Settings screen
-  contains Wi-Fi, Setup, Info, and Debug sub-pages
+- `src/ui/navigation/`: top-level and Settings tab registration
+- `src/ui/screens/`: top-level Sensors, Power, and Usage screens
+- `src/ui/screens/settings/`: Wi-Fi, Setup, Info, and Debug Settings sub-pages
+- `src/ui/components/`, `input/`, and `theme/`: shared UI building blocks
 - `src/sensors/`: sensor acquisition, simulated source, and ESP32 ADC source
 - `src/sensors/sensor_config.h`: source selection and provisional pin mapping
 - `src/data/`: minute-level historical storage
