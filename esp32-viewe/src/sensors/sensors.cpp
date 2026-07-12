@@ -28,7 +28,8 @@ constexpr float kMinPowerForDutyWatts = 0.5f;
 SensorSource* makeSource(SensorId id) {
     if (sensor_mode::get() == sensor_mode::Mode::Demo) {
     switch (id) {
-        case SENSOR_IN:  return new SimulatedSensorSource(/*V*/ 18.0f, /*A*/ 2.0f, /*phase*/ 0);
+        case SENSOR_IN:  return new SimulatedSensorSource(/*V*/ 18.0f, /*A*/ 2.0f, /*phase*/ 0,
+                                                          /*duty*/ 0.5f, 0.8f);
         case SENSOR_OUT: return new SimulatedSensorSource(/*V*/ 13.0f, /*A*/ 1.5f, /*phase*/ 1);
         case SENSOR_AUX: return new SimulatedSensorSource(/*V*/ 5.0f, /*A*/ 0.4f, /*phase*/ 2);
         default: return nullptr;
@@ -53,7 +54,7 @@ void taskFn(void*) {
                 voltage = calibration::apply(s.voltage, calibration::get(i, calibration::Measurement::Voltage));
                 current = calibration::apply(s.current, calibration::get(i, calibration::Measurement::Current));
             }
-            Reading r{now, voltage, current, voltage * current, s.voltage, s.current};
+            Reading r{now, voltage, current, voltage * current, s.voltage, s.current, s.dutyCycle};
             buffer[i][writeIndex[i]] = r;
             writeIndex[i] = (writeIndex[i] + 1) % kHistorySize;
             if (count[i] < kHistorySize) count[i]++;
@@ -112,16 +113,29 @@ float getDutyCycle(SensorId id, size_t window) {
     // Snapshot the window's power values under the lock, then do the math
     // (sorting etc.) outside it so we hold the mutex as briefly as possible.
     float powers[kDutyWindowSize];
+    float directDuties[kDutyWindowSize];
     size_t n;
     xSemaphoreTake(mutex, portMAX_DELAY);
     n = count[id] < window ? count[id] : window;
     size_t start = (writeIndex[id] + kHistorySize - n) % kHistorySize;
     for (size_t i = 0; i < n; i++) {
-        powers[i] = buffer[id][(start + i) % kHistorySize].power;
+        const Reading& reading = buffer[id][(start + i) % kHistorySize];
+        powers[i] = reading.power;
+        directDuties[i] = reading.dutyCycle;
     }
     xSemaphoreGive(mutex);
 
     if (n == 0) return 1.0f;
+
+    // A source that samples faster than our 500 ms history cadence can
+    // provide the true PWM duty while voltage/current carry its averaged
+    // effect. Average the most recent second for a stable KPI.
+    if (directDuties[n - 1] >= 0.0f) {
+        const size_t directCount = std::min(n, static_cast<size_t>(1000 / kSampleIntervalMs));
+        float dutySum = 0.0f;
+        for (size_t i = n - directCount; i < n; ++i) dutySum += directDuties[i];
+        return std::max(0.0f, std::min(1.0f, dutySum / directCount));
+    }
 
     float sum = 0;
     for (size_t i = 0; i < n; i++) sum += powers[i];

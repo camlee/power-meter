@@ -13,10 +13,7 @@ constexpr int kMinApPasswordLen = 8;
 using namespace network_manager;
 
 // ---- UI References ----
-lv_obj_t* clientTabBtn = nullptr;
-lv_obj_t* apTabBtn = nullptr;
-lv_obj_t* clientTabLabel = nullptr;
-lv_obj_t* apTabLabel = nullptr;
+lv_obj_t* modeTabview = nullptr;
 lv_obj_t* clientPanel = nullptr;
 lv_obj_t* apPanel = nullptr;
 
@@ -68,15 +65,14 @@ bool isConnected() {
 }
 
 void updateTabLabels() {
-    if (clientTabLabel) {
-        lv_label_set_text(clientTabLabel, isConnected() ? LV_SYMBOL_OK " Station" : "Station");
-    }
+    if (!modeTabview) return;
+    lv_tabview_rename_tab(modeTabview, 0, isConnected() ? LV_SYMBOL_OK " Station" : "Station");
     char buffer[128];
     if (network_manager::isApEnabled()) {
         snprintf(buffer, sizeof(buffer), "%s (%d Clients)", LV_SYMBOL_OK, lastApStationCount);
-        lv_label_set_text(apTabLabel, buffer);
+        lv_tabview_rename_tab(modeTabview, 1, buffer);
     } else {
-        lv_label_set_text(apTabLabel, "Access Point");
+        lv_tabview_rename_tab(modeTabview, 1, "Access Point");
     }
 }
 
@@ -119,13 +115,13 @@ void refreshConnectionLabel() {
         lv_label_set_text(activeIpLabel, "");
     } else if (st == NetworkState::ConnectedStaLocal) {
         lv_label_set_text(activeSsidLabel, network_manager::getCurrentSsid());
-        lv_label_set_text(activeStatusLabel, LV_SYMBOL_WARNING " Local Network Only");
-        lv_label_set_text_fmt(activeRssiLabel, "Signal: %d dBm", network_manager::getRssi());
+        lv_label_set_text(activeStatusLabel, LV_SYMBOL_WARNING " No Internet");
+        lv_label_set_text_fmt(activeRssiLabel, "%d dBm", network_manager::getRssi());
         lv_label_set_text_fmt(activeIpLabel, "IP: %s", network_manager::getStaIpAddress());
     } else if (st == NetworkState::ConnectedStaInternet) {
         lv_label_set_text(activeSsidLabel, network_manager::getCurrentSsid());
         lv_label_set_text(activeStatusLabel, LV_SYMBOL_OK " Internet Connected");
-        lv_label_set_text_fmt(activeRssiLabel, "Signal: %d dBm", network_manager::getRssi());
+        lv_label_set_text_fmt(activeRssiLabel, "%d dBm", network_manager::getRssi());
         lv_label_set_text_fmt(activeIpLabel, "IP: %s", network_manager::getStaIpAddress());
     }
 }
@@ -259,6 +255,7 @@ void rebuildListFromScan() {
 
         bool connected = (isConnected() && strcmp(network_manager::getCurrentSsid(), ssid) == 0);
         lv_obj_t* btn = lv_list_add_btn(networkList, connected ? LV_SYMBOL_OK : LV_SYMBOL_WIFI, ssid);
+        lv_obj_set_width(btn, lv_pct(100));
         lv_obj_add_flag(btn, LV_OBJ_FLAG_CHECKABLE);
 
         auto* info = (NetworkInfo*)malloc(sizeof(NetworkInfo));
@@ -308,6 +305,7 @@ void apRefreshClientList() {
     int n = network_manager::getApClientCount();
     if (n == lastApStationCount) return;
     lastApStationCount = n;
+    updateTabLabels();
 
     char countBuf[32];
     snprintf(countBuf, sizeof(countBuf), "%d device%s connected", n, n == 1 ? "" : "s");
@@ -411,23 +409,6 @@ void apToggleEventCb(lv_event_t*) {
 // Core Initialization & Tab Switching
 // ============================================================
 
-void setMode(bool ap) {
-    if (ap) {
-        lv_obj_add_state(apTabBtn, LV_STATE_CHECKED);
-        lv_obj_clear_state(clientTabBtn, LV_STATE_CHECKED);
-        lv_obj_clear_flag(apPanel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(clientPanel, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_state(clientTabBtn, LV_STATE_CHECKED);
-        lv_obj_clear_state(apTabBtn, LV_STATE_CHECKED);
-        lv_obj_clear_flag(clientPanel, LV_OBJ_FLAG_HIDDEN);
-        lv_obj_add_flag(apPanel, LV_OBJ_FLAG_HIDDEN);
-    }
-}
-
-void clientTabCb(lv_event_t*) { setMode(false); }
-void apTabCb(lv_event_t*) { setMode(true); }
-
 } // namespace
 
 lv_obj_t* create(lv_obj_t* parent) {
@@ -436,41 +417,32 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_flex_flow(scr, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(scr, 4, 0);
 
-    // ---- Tab switcher ----
-    lv_obj_t* tabRow = lv_obj_create(scr);
-    lv_obj_remove_style_all(tabRow);
-    lv_obj_set_size(tabRow, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_flow(tabRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(tabRow, 4, 0);
-
-    clientTabBtn = lv_btn_create(tabRow);
-    lv_obj_set_flex_grow(clientTabBtn, 1);
-    lv_obj_add_event_cb(clientTabBtn, clientTabCb, LV_EVENT_CLICKED, nullptr);
-    ui_theme::styleSegment(clientTabBtn);
-    clientTabLabel = lv_label_create(clientTabBtn);
-    lv_label_set_text(clientTabLabel, "Client");
-    lv_obj_center(clientTabLabel);
-
-    apTabBtn = lv_btn_create(tabRow);
-    lv_obj_set_flex_grow(apTabBtn, 1);
-    lv_obj_add_event_cb(apTabBtn, apTabCb, LV_EVENT_CLICKED, nullptr);
-    ui_theme::styleSegment(apTabBtn);
-    apTabLabel = lv_label_create(apTabBtn);
-    lv_label_set_text(apTabLabel, "Access Point");
-    lv_obj_center(apTabLabel);
+    // ---- Station / AP sub-tabs ----
+    modeTabview = lv_tabview_create(scr, LV_DIR_TOP, 36);
+    lv_obj_set_size(modeTabview, lv_pct(100), 0);
+    lv_obj_set_flex_grow(modeTabview, 1);
+    lv_obj_set_style_bg_color(modeTabview, ui_theme::background(), 0);
+    lv_obj_set_style_bg_opa(modeTabview, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(modeTabview, 0, 0);
+    lv_obj_set_style_radius(modeTabview, 0, 0);
+    lv_obj_set_style_shadow_width(modeTabview, 0, 0);
+    lv_obj_set_style_pad_all(modeTabview, 0, 0);
 
     // ---- Client panel ----
-    clientPanel = lv_obj_create(scr);
-    lv_obj_remove_style_all(clientPanel);
-    lv_obj_set_size(clientPanel, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_grow(clientPanel, 1);
+    clientPanel = lv_tabview_add_tab(modeTabview, "Station");
+    lv_obj_set_style_bg_color(clientPanel, ui_theme::background(), 0);
+    lv_obj_set_style_bg_opa(clientPanel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(clientPanel, 0, 0);
+    lv_obj_set_style_radius(clientPanel, 0, 0);
+    lv_obj_set_style_shadow_width(clientPanel, 0, 0);
+    lv_obj_set_style_pad_all(clientPanel, 0, 0);
     lv_obj_set_flex_flow(clientPanel, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(clientPanel, 4, 0);
 
     // 1. Prominent Active Connection Panel (Hidden by default)
     activeConnPanel = lv_obj_create(clientPanel);
-    ui_theme::styleCard(activeConnPanel, 9);
-    lv_obj_set_width(activeConnPanel, lv_pct(100));
+    ui_theme::styleCard(activeConnPanel, 5);
+    lv_obj_set_size(activeConnPanel, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(activeConnPanel, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(activeConnPanel, 2, 0);
     lv_obj_add_flag(activeConnPanel, LV_OBJ_FLAG_HIDDEN);
@@ -479,8 +451,15 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_text_font(activeSsidLabel, &lv_font_montserrat_18, 0); // Larger font if available
 
     activeStatusLabel = lv_label_create(activeConnPanel);
-    activeRssiLabel = lv_label_create(activeConnPanel);
-    activeIpLabel = lv_label_create(activeConnPanel);
+    lv_obj_t* activeDetailsRow = lv_obj_create(activeConnPanel);
+    lv_obj_remove_style_all(activeDetailsRow);
+    lv_obj_set_size(activeDetailsRow, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(activeDetailsRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(activeDetailsRow, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    activeIpLabel = lv_label_create(activeDetailsRow);
+    activeRssiLabel = lv_label_create(activeDetailsRow);
+    lv_obj_set_style_text_align(activeRssiLabel, LV_TEXT_ALIGN_RIGHT, 0);
 
     // 2. Scan status
     scanLabel = lv_label_create(clientPanel);
@@ -489,9 +468,13 @@ lv_obj_t* create(lv_obj_t* parent) {
 
     // 3. Network List
     networkList = lv_list_create(clientPanel);
-    lv_obj_set_width(networkList, lv_pct(100));
-    lv_obj_set_height(networkList, 50);
     ui_theme::styleCard(networkList, 2);
+    lv_obj_set_width(networkList, lv_pct(100));
+    lv_obj_set_height(networkList, 0);
+    lv_obj_set_flex_grow(networkList, 1);
+    // styleCard intentionally removes inherited widget styling, so restore
+    // the list layout explicitly and let each row span the available width.
+    lv_obj_set_flex_flow(networkList, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(networkList, 0, 0);
     lv_list_add_text(networkList, "No networks yet");
 
@@ -506,13 +489,15 @@ lv_obj_t* create(lv_obj_t* parent) {
 
 
     // ---- Access point panel ----
-    apPanel = lv_obj_create(scr);
-    lv_obj_remove_style_all(apPanel);
-    lv_obj_set_size(apPanel, lv_pct(100), LV_SIZE_CONTENT);
-    lv_obj_set_flex_grow(apPanel, 1);
+    apPanel = lv_tabview_add_tab(modeTabview, "Access Point");
+    lv_obj_set_style_bg_color(apPanel, ui_theme::background(), 0);
+    lv_obj_set_style_bg_opa(apPanel, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(apPanel, 0, 0);
+    lv_obj_set_style_radius(apPanel, 0, 0);
+    lv_obj_set_style_shadow_width(apPanel, 0, 0);
+    lv_obj_set_style_pad_all(apPanel, 0, 0);
     lv_obj_set_flex_flow(apPanel, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(apPanel, 4, 0);
-    lv_obj_add_flag(apPanel, LV_OBJ_FLAG_HIDDEN);
 
     apSsidInput = lv_textarea_create(apPanel);
     lv_textarea_set_one_line(apSsidInput, true);
@@ -561,9 +546,11 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_label_set_text(apCountLabel, "0 devices connected");
 
     apClientList = lv_list_create(apPanel);
-    lv_obj_set_width(apClientList, lv_pct(100));
-    lv_obj_set_flex_grow(apClientList, 1);
     ui_theme::styleCard(apClientList, 2);
+    lv_obj_set_width(apClientList, lv_pct(100));
+    lv_obj_set_height(apClientList, 0);
+    lv_obj_set_flex_grow(apClientList, 1);
+    lv_obj_set_flex_flow(apClientList, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(apClientList, 0, 0);
 
     apKeyboard = lv_keyboard_create(scr);
@@ -580,7 +567,16 @@ lv_obj_t* create(lv_obj_t* parent) {
     if (savedPass[0] != '\0') lv_textarea_set_text(apPasswordInput, savedPass);
 
     apSecureSwitchEventCb(nullptr);
-    setMode(false);
+    if (network_manager::isApEnabled()) {
+        lv_obj_add_state(apToggle, LV_STATE_CHECKED);
+        lv_obj_add_state(apSsidInput, LV_STATE_DISABLED);
+        lv_obj_add_state(apSecureSwitch, LV_STATE_DISABLED);
+        lv_obj_add_state(apPasswordInput, LV_STATE_DISABLED);
+        lv_label_set_text_fmt(apInfoLabel, "IP: %s", network_manager::getApIpAddress());
+        lastApStationCount = -1;
+        apRefreshClientList();
+    }
+    lv_tabview_set_act(modeTabview, 0, LV_ANIM_OFF);
     updateTabLabels();
 
     pollTimer = lv_timer_create(pollCb, kPollIntervalMs, nullptr);

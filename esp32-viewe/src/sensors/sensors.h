@@ -33,6 +33,8 @@ struct Reading {
     // calibration preview; Demo mode mirrors its simulated values here.
     float voltageInputV;
     float currentInputV;
+    // Direct duty reported by the source, or -1 when it must be inferred.
+    float dutyCycle;
 };
 
 void start();

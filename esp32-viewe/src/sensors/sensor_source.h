@@ -7,6 +7,9 @@
 struct SensorSample {
     float voltage;
     float current;
+    // Sources that can observe sub-sample PWM may report its averaged duty
+    // directly. A negative value asks sensors.cpp to derive duty from history.
+    float dutyCycle = -1.0f;
 };
 
 // Implement this once per physical sensor part (e.g. INA219, INA226,

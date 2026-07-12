@@ -6,7 +6,7 @@
 namespace power_screen {
 namespace {
 constexpr size_t kPoints = 240; // two minutes at the 500 ms sensor cadence
-constexpr uint32_t kRefreshMs = 2000;
+constexpr uint32_t kRefreshMs = 500; // match the Sensors screen and acquisition cadence
 lv_obj_t* plot = nullptr;
 lv_obj_t* kpiValues[4] = {};
 float values[4][kPoints] = {};

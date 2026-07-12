@@ -7,7 +7,8 @@
 // so they don't all move in lockstep on screen.
 class SimulatedSensorSource : public SensorSource {
 public:
-    SimulatedSensorSource(float voltageBaseline, float currentBaseline, uint32_t seedOffset);
+    SimulatedSensorSource(float voltageBaseline, float currentBaseline, uint32_t seedOffset,
+                          float minimumDuty = 1.0f, float maximumDuty = 1.0f);
 
     bool init() override;
     SensorSample read() override;
@@ -17,4 +18,8 @@ private:
     float currentBaseline_;
     uint32_t seedOffset_;
     uint32_t startMs_ = 0;
+    float minimumDuty_;
+    float maximumDuty_;
+    float currentDuty_ = 1.0f;
+    uint32_t lastDutyChangeMs_ = 0;
 };

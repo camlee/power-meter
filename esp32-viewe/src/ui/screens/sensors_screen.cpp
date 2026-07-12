@@ -569,27 +569,31 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color
     if (title && title[0]) {
         lv_obj_t* titleRow = lv_obj_create(block);
         lv_obj_remove_style_all(titleRow);
-        lv_obj_set_size(titleRow, lv_pct(100), 32);
+        lv_obj_set_size(titleRow, lv_pct(100), 28);
         lv_obj_set_flex_flow(titleRow, LV_FLEX_FLOW_ROW);
         lv_obj_set_flex_align(titleRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-        if (tab) {
-            // The whole heading is deliberately a touch target. The cog is a
-            // visual affordance, not a tiny control a finger must hit exactly.
-            lv_obj_add_flag(titleRow, LV_OBJ_FLAG_CLICKABLE);
-            lv_obj_add_event_cb(titleRow,
-                measurement == sensors::calibration::Measurement::Voltage ? openVoltageCalibrationCb : openCurrentCalibrationCb,
-                LV_EVENT_CLICKED, tab);
-        }
         lv_obj_t* titleLabel = lv_label_create(titleRow);
         lv_label_set_text(titleLabel, title);
         lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(titleLabel, ui_theme::mutedText(), 0);
         if (tab) {
-            lv_obj_t* calibrate = lv_label_create(titleRow);
-            lv_obj_set_size(calibrate, 32, 32);
+            // Keep a finger-friendly target over the right quarter of the
+            // heading while leaving the title itself non-interactive. The
+            // glyph sits on the bottom edge, immediately above the plot.
+            lv_obj_t* editTarget = lv_obj_create(titleRow);
+            lv_obj_remove_style_all(editTarget);
+            lv_obj_set_size(editTarget, lv_pct(25), lv_pct(100));
+            lv_obj_add_flag(editTarget, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(editTarget,
+                measurement == sensors::calibration::Measurement::Voltage ? openVoltageCalibrationCb : openCurrentCalibrationCb,
+                LV_EVENT_CLICKED, tab);
+
+            lv_obj_t* calibrate = lv_label_create(editTarget);
+            lv_obj_set_size(calibrate, 28, 22);
             lv_obj_set_style_text_align(calibrate, LV_TEXT_ALIGN_CENTER, 0);
             lv_obj_set_style_text_color(calibrate, ui_theme::mutedText(), 0);
             lv_label_set_text(calibrate, LV_SYMBOL_EDIT);
+            lv_obj_align(calibrate, LV_ALIGN_BOTTOM_RIGHT, 0, 2);
             if (editIconOut) *editIconOut = calibrate;
         }
     }
@@ -887,7 +891,7 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     createKpiItem(t.kpiRow, "A", 54, &t.iValueLabel);
     createKpiItem(t.kpiRow, "W", 48, &t.pValueLabel);
     lv_label_set_text(t.pValueLabel, "--");
-    t.dutyRow = createKpiItem(t.kpiRow, "% duty", 40, &t.dutyValueLabel);
+    t.dutyRow = createKpiItem(t.kpiRow, "%", 32, &t.dutyValueLabel);
     lv_obj_add_flag(t.dutyRow, LV_OBJ_FLAG_HIDDEN); // hidden until it's seen below threshold
 
     t.calibrationHeader = lv_obj_create(tab);

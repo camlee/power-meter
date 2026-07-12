@@ -173,6 +173,7 @@ lv_obj_t* create(lv_obj_t* parent)
     lv_dropdown_set_symbol(rangeDropdown, LV_SYMBOL_DOWN);
     lv_dropdown_set_dir(rangeDropdown, LV_DIR_BOTTOM);
     lv_obj_set_style_text_font(rangeDropdown, &lv_font_montserrat_20, LV_PART_MAIN);
+    lv_obj_set_style_border_width(rangeDropdown, 0, LV_PART_MAIN);
     lv_obj_add_event_cb(rangeDropdown, rangeChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
 
     lv_obj_t* legend = lv_obj_create(screen);
