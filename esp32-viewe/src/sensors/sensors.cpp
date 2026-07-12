@@ -4,6 +4,7 @@
 #include "sensor_source_adc.h"
 #include "sensor_source_sim.h"
 #include "sensor_mode.h"
+#include "sensor_calibration.h"
 #include <algorithm>
 #include <cmath>
 #include <Arduino.h>
@@ -46,7 +47,13 @@ void taskFn(void*) {
         xSemaphoreTake(mutex, portMAX_DELAY);
         for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
             SensorSample s = sources[i]->read();
-            Reading r{now, s.voltage, s.current, s.voltage * s.current};
+            float voltage = s.voltage;
+            float current = s.current;
+            if (sensor_mode::get() == sensor_mode::Mode::Real) {
+                voltage = calibration::apply(s.voltage, calibration::get(i, calibration::Measurement::Voltage));
+                current = calibration::apply(s.current, calibration::get(i, calibration::Measurement::Current));
+            }
+            Reading r{now, voltage, current, voltage * current, s.voltage, s.current};
             buffer[i][writeIndex[i]] = r;
             writeIndex[i] = (writeIndex[i] + 1) % kHistorySize;
             if (count[i] < kHistorySize) count[i]++;
@@ -59,6 +66,7 @@ void taskFn(void*) {
 } // namespace
 
 void start() {
+    calibration::init();
     mutex = xSemaphoreCreateMutex();
     if (!mutex) {
         Serial.println("sensors: failed to create mutex");

@@ -20,8 +20,10 @@ lv_obj_t* demoModeButton = nullptr;
 lv_obj_t* lightModeButton = nullptr;
 lv_obj_t* darkModeButton = nullptr;
 lv_obj_t* autoModeButton = nullptr;
-lv_obj_t* resetDefaultsCheckbox = nullptr;
+lv_obj_t* resetSetupCheckbox = nullptr;
 lv_obj_t* resetWifiCheckbox = nullptr;
+lv_obj_t* resetCalibrationCheckbox = nullptr;
+lv_obj_t* resetUsageCheckbox = nullptr;
 lv_obj_t* saveButton = nullptr;
 lv_obj_t* saveButtonLabel = nullptr;
 lv_obj_t* resetButton = nullptr;
@@ -75,8 +77,8 @@ void keyboardEventCb(lv_event_t* event) {
 bool hasChanges() {
     return std::strcmp(lv_textarea_get_text(deviceIdInput), device_identity::getDeviceId()) != 0 ||
            pendingSensorMode != sensor_mode::get() || pendingAppearance != ui_theme::mode() ||
-           checkboxChecked(resetDefaultsCheckbox) ||
-           checkboxChecked(resetWifiCheckbox);
+           checkboxChecked(resetSetupCheckbox) || checkboxChecked(resetWifiCheckbox) ||
+           checkboxChecked(resetCalibrationCheckbox);
 }
 
 void updateActionState() {
@@ -105,14 +107,15 @@ void saveChangesCb(lv_event_t*) {
     const bool hostnameChanged = std::strcmp(requestedId, device_identity::getDeviceId()) != 0;
     const bool sensorModeChanged = pendingSensorMode != sensor_mode::get();
     const bool appearanceChanged = pendingAppearance != ui_theme::mode();
-    const bool resetDefaults = checkboxChecked(resetDefaultsCheckbox);
+    const bool resetSetup = checkboxChecked(resetSetupCheckbox);
     const bool resetWifi = checkboxChecked(resetWifiCheckbox);
-    if (!hostnameChanged && !sensorModeChanged && !appearanceChanged && !resetDefaults && !resetWifi) return;
+    const bool resetCalibration = checkboxChecked(resetCalibrationCheckbox);
+    if (!hostnameChanged && !sensorModeChanged && !appearanceChanged && !resetSetup && !resetWifi && !resetCalibration) return;
 
-    if (resetDefaults) {
+    if (resetSetup) {
         if (!clearPreferences("device") || !clearPreferences("sensors") ||
             !clearPreferences("appearance")) {
-            lv_label_set_text(statusLabel, "Could not reset preferences.");
+            lv_label_set_text(statusLabel, "Could not reset setup preferences.");
             return;
         }
     } else {
@@ -127,13 +130,18 @@ void saveChangesCb(lv_event_t*) {
         if (appearanceChanged) ui_theme::setMode(pendingAppearance);
     }
 
+    if (resetCalibration && !clearPreferences("sensor_cal")) {
+        lv_label_set_text(statusLabel, "Could not reset sensor calibration.");
+        return;
+    }
+
     if (resetWifi && !network_manager::clearSavedCredentials()) {
         lv_label_set_text(statusLabel, "Could not reset Wi-Fi credentials.");
         return;
     }
 
-    // Hostname/mDNS, sensor sources, and the LVGL theme are all initialised
-    // at boot. Save the page as one transaction, then restart once.
+    // Hostname/mDNS, sensor mode, calibration, and the LVGL theme are all
+    // initialized at boot. Save the page as one transaction, then restart.
     restartWithFeedback("Applying changes...");
 }
 
@@ -162,8 +170,9 @@ void resetChangesCb(lv_event_t*) {
     selectSegment(pendingSensorMode == sensor_mode::Mode::Real ? realModeButton : demoModeButton, realModeButton, demoModeButton);
     lv_obj_t* selected = pendingAppearance == ui_theme::Mode::Light ? lightModeButton : pendingAppearance == ui_theme::Mode::Dark ? darkModeButton : autoModeButton;
     selectSegment(selected, lightModeButton, darkModeButton, autoModeButton);
-    lv_obj_clear_state(resetDefaultsCheckbox, LV_STATE_CHECKED);
+    lv_obj_clear_state(resetSetupCheckbox, LV_STATE_CHECKED);
     lv_obj_clear_state(resetWifiCheckbox, LV_STATE_CHECKED);
+    lv_obj_clear_state(resetCalibrationCheckbox, LV_STATE_CHECKED);
     lv_label_set_text(statusLabel, "");
     updateActionState();
 }
@@ -247,12 +256,21 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_width(statusLabel, lv_pct(100));
     lv_label_set_text(statusLabel, "");
 
-    resetDefaultsCheckbox = lv_checkbox_create(screen);
-    lv_checkbox_set_text(resetDefaultsCheckbox, "Reset to Defaults");
-    lv_obj_add_event_cb(resetDefaultsCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_t* resetLabel = lv_label_create(screen);
+    lv_label_set_text(resetLabel, "RESET");
+    ui_theme::styleSectionLabel(resetLabel);
+    resetSetupCheckbox = lv_checkbox_create(screen);
+    lv_checkbox_set_text(resetSetupCheckbox, "Setup");
+    lv_obj_add_event_cb(resetSetupCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
     resetWifiCheckbox = lv_checkbox_create(screen);
-    lv_checkbox_set_text(resetWifiCheckbox, "Reset Wi-Fi");
+    lv_checkbox_set_text(resetWifiCheckbox, "Wi-Fi");
     lv_obj_add_event_cb(resetWifiCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
+    resetCalibrationCheckbox = lv_checkbox_create(screen);
+    lv_checkbox_set_text(resetCalibrationCheckbox, "Sensor Calibration");
+    lv_obj_add_event_cb(resetCalibrationCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
+    resetUsageCheckbox = lv_checkbox_create(screen);
+    lv_checkbox_set_text(resetUsageCheckbox, "Usage (coming soon)");
+    lv_obj_add_state(resetUsageCheckbox, LV_STATE_DISABLED);
 
     lv_obj_t* actionRow = lv_obj_create(screen);
     lv_obj_remove_style_all(actionRow);

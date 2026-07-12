@@ -1,6 +1,4 @@
 #include "sensor_source_adc.h"
-#include "sensor_config.h"
-
 #include <Arduino.h>
 
 Esp32AnalogSource::Esp32AnalogSource(uint8_t voltagePin, uint8_t currentPin)
@@ -20,10 +18,5 @@ SensorSample Esp32AnalogSource::read()
     const float voltageInputV = analogReadMilliVolts(voltagePin_) / 1000.0f;
     const float currentInputV = analogReadMilliVolts(currentPin_) / 1000.0f;
 
-    return {
-        .voltage = (voltageInputV - sensors::config::kVoltageOffsetV)
-            * sensors::config::kVoltageVoltsPerInputVolt,
-        .current = (currentInputV - sensors::config::kCurrentOffsetV)
-            * sensors::config::kCurrentAmpsPerInputVolt,
-    };
+    return {.voltage = voltageInputV, .current = currentInputV};
 }

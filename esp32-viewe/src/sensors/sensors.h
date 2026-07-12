@@ -29,6 +29,10 @@ struct Reading {
     float voltage;
     float current;
     float power;
+    // Raw ADC input voltages in Real mode. They are retained for the local
+    // calibration preview; Demo mode mirrors its simulated values here.
+    float voltageInputV;
+    float currentInputV;
 };
 
 void start();

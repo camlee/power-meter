@@ -1,9 +1,12 @@
 #include "sensors_screen.h"
 #include "../../sensors/sensors.h"
+#include "../../sensors/sensor_calibration.h"
+#include "../../sensors/sensor_mode.h"
 #include "../theme/ui_theme.h"
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
+#include <cstdlib>
 
 // Assumptions / lv_conf.h requirements (please confirm on your build):
 //  - LVGL 8.3.x API (lv_chart_set_axis_tick, LV_EVENT_DRAW_PART_BEGIN, LV_PART_TICKS)
@@ -32,6 +35,7 @@ constexpr float kDutyShowThreshold = 0.80f;           // duty reveal trips below
 // when drawing tick labels (see axisTickLabelCb).
 static const float kVoltageAxisScale = 10.0f;
 static const float kCurrentAxisScale = 10.0f;
+static const float kCalibrationAxisScale = 1.0f;
 
 // Sane default axis windows; these expand automatically if real data falls
 // outside them (see computeDynamicRange), and use a bit of margin so the
@@ -125,11 +129,144 @@ struct SensorTab {
 
     AxisRangeState vRange;
     AxisRangeState iRange;
+    lv_obj_t* calibrationParent = nullptr;
+
+    struct CalibrationEditor {
+        lv_obj_t* root = nullptr;
+        lv_obj_t* beforeLabel = nullptr;
+        lv_obj_t* afterLabel = nullptr;
+        lv_obj_t* offsetInput = nullptr;
+        lv_obj_t* gainInput = nullptr;
+        lv_obj_t* measurementInput = nullptr;
+        lv_obj_t* keyboard = nullptr;
+        lv_obj_t* chart = nullptr;
+        lv_chart_series_t* before = nullptr;
+        lv_chart_series_t* after = nullptr;
+        sensors::calibration::Measurement measurement = sensors::calibration::Measurement::Voltage;
+        sensors::calibration::Value saved{};
+        sensors::calibration::Value staged{};
+        uint8_t sensor = 0;
+        bool visible = false;
+    } calibration;
 };
 
 SensorTab sensorTabs[sensors::SENSOR_COUNT];
 
 lv_timer_t* updateTimer = nullptr;
+
+enum class CalibrationAction : uint8_t { Back, OffsetDown, OffsetUp, GainDown, GainUp, ApplyReference, Reset, Save };
+struct CalibrationControl { SensorTab* tab; uint8_t sensor; CalibrationAction action; };
+CalibrationControl calibrationControls[sensors::SENSOR_COUNT][8];
+
+const char* measurementUnit(sensors::calibration::Measurement measurement) {
+    return measurement == sensors::calibration::Measurement::Voltage ? "V" : "A";
+}
+
+void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Reading* readings = nullptr, size_t n = 0);
+void openVoltageCalibrationCb(lv_event_t* event);
+void openCurrentCalibrationCb(lv_event_t* event);
+
+void hideCalibrationKeyboard(lv_event_t* event) {
+    auto* editor = static_cast<SensorTab::CalibrationEditor*>(lv_event_get_user_data(event));
+    if (editor && editor->keyboard) {
+        lv_obj_del(editor->keyboard);
+        editor->keyboard = nullptr;
+    }
+}
+
+void calibrationInputFocusCb(lv_event_t* event) {
+    auto* editor = static_cast<SensorTab::CalibrationEditor*>(lv_event_get_user_data(event));
+    if (!editor) return;
+    if (!editor->keyboard) {
+        editor->keyboard = lv_keyboard_create(editor->root);
+        lv_obj_set_width(editor->keyboard, lv_pct(100));
+        lv_obj_add_event_cb(editor->keyboard, hideCalibrationKeyboard, LV_EVENT_READY, editor);
+        lv_obj_add_event_cb(editor->keyboard, hideCalibrationKeyboard, LV_EVENT_CANCEL, editor);
+    }
+    lv_keyboard_set_textarea(editor->keyboard, static_cast<lv_obj_t*>(lv_event_get_target(event)));
+}
+
+void refreshCalibrationInputs(SensorTab::CalibrationEditor& editor) {
+    char text[20];
+    snprintf(text, sizeof(text), "%.3f", editor.staged.offsetInputV);
+    lv_textarea_set_text(editor.offsetInput, text);
+    // The UI uses the inverse sensitivity: ADC millivolts per displayed
+    // volt/amp. It keeps values close to the divider/sensor data sheet.
+    snprintf(text, sizeof(text), "%.3f", 1000.0f / editor.staged.gain);
+    lv_textarea_set_text(editor.gainInput, text);
+}
+
+void calibrationInputChangedCb(lv_event_t* event) {
+    auto* editor = static_cast<SensorTab::CalibrationEditor*>(lv_event_get_user_data(event));
+    if (!editor) return;
+    char* end = nullptr;
+    const float value = strtof(lv_textarea_get_text(static_cast<lv_obj_t*>(lv_event_get_target(event))), &end);
+    if (!end || end == lv_textarea_get_text(static_cast<lv_obj_t*>(lv_event_get_target(event))) || *end != '\0') return;
+    if (lv_event_get_target(event) == editor->offsetInput) editor->staged.offsetInputV = value;
+    else if (lv_event_get_target(event) == editor->gainInput && value > 0.0f) editor->staged.gain = 1000.0f / value;
+    updateCalibrationEditor(sensorTabs[editor->sensor], editor->sensor);
+}
+
+void calibrationControlCb(lv_event_t* event) {
+    auto* control = static_cast<CalibrationControl*>(lv_event_get_user_data(event));
+    if (!control) return;
+    SensorTab& tab = *control->tab;
+    auto& editor = tab.calibration;
+    const uint8_t sensor = control->sensor;
+
+    if (control->action == CalibrationAction::Back) {
+        editor.visible = false;
+        // The keyboard/editor widgets use internal RAM. Keep only the active
+        // editor alive, then release it fully on return to the live charts.
+        lv_obj_del(editor.root);
+        editor.root = nullptr;
+        editor.keyboard = nullptr;
+        return;
+    }
+    if (control->action == CalibrationAction::OffsetDown) editor.staged.offsetInputV -= 0.001f;
+    if (control->action == CalibrationAction::OffsetUp) editor.staged.offsetInputV += 0.001f;
+    // Match the Arduino UI's 0.001-per-press adjustment. Gain is presented
+    // here as inverse sensitivity (mV per engineering unit), so adjust that
+    // displayed value and convert it back to the stored multiplier.
+    if (control->action == CalibrationAction::GainDown) {
+        editor.staged.gain = 1000.0f / std::max(0.001f, 1000.0f / editor.staged.gain - 0.001f);
+    }
+    if (control->action == CalibrationAction::GainUp) {
+        editor.staged.gain = 1000.0f / (1000.0f / editor.staged.gain + 0.001f);
+    }
+    if (control->action == CalibrationAction::ApplyReference) {
+        const float reference = strtof(lv_textarea_get_text(editor.measurementInput), nullptr);
+        const float max = editor.measurement == sensors::calibration::Measurement::Voltage
+            ? sensors::calibration::kVoltageMaxV : sensors::calibration::kCurrentMaxA;
+        sensors::Reading latest{};
+        float input = NAN;
+        if (sensors::getLatest(static_cast<sensors::SensorId>(sensor), latest)) {
+            if (sensor_mode::get() == sensor_mode::Mode::Real) {
+                input = editor.measurement == sensors::calibration::Measurement::Voltage ? latest.voltageInputV : latest.currentInputV;
+            } else {
+                const float displayed = editor.measurement == sensors::calibration::Measurement::Voltage ? latest.voltage : latest.current;
+                input = displayed / editor.saved.gain + editor.saved.offsetInputV;
+            }
+        }
+        const float denominator = input - editor.staged.offsetInputV;
+        if (!std::isfinite(reference) || reference < 0.0f || reference > max || !std::isfinite(input) || fabsf(denominator) < 0.005f) {
+            return;
+        }
+        editor.staged.gain = reference / denominator;
+        if (!sensors::calibration::isValid(editor.measurement, editor.staged)) {
+            return;
+        }
+    }
+    if (control->action == CalibrationAction::Reset) {
+        editor.staged = sensors::calibration::defaults(editor.measurement);
+    }
+    if (control->action == CalibrationAction::Save) {
+        if (sensor_mode::get() != sensor_mode::Mode::Real ||
+            sensors::calibration::set(sensor, editor.measurement, editor.staged)) editor.saved = editor.staged;
+    }
+    refreshCalibrationInputs(editor);
+    updateCalibrationEditor(tab, sensor);
+}
 
 // Given a batch of readings and where we left off last time, returns the
 // index of the first reading that's actually new (or n if there's nothing
@@ -235,7 +372,8 @@ void addTimeAxisLabels(lv_obj_t* parent) {
 // wires up dynamic Y-axis ticks. Returns the chart object; writes the
 // created series into *seriesOut.
 lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color,
-                            const float* axisScale, lv_chart_series_t** seriesOut) {
+                            const float* axisScale, lv_chart_series_t** seriesOut,
+                            SensorTab* tab = nullptr, sensors::calibration::Measurement measurement = sensors::calibration::Measurement::Voltage) {
     lv_obj_t* block = lv_obj_create(parent);
     styleFlatContainer(block);
     // A zero base height lets the two blocks share all remaining tab height
@@ -247,10 +385,33 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color
     lv_obj_set_flex_grow(block, 1);
 
     if (title && title[0]) {
-        lv_obj_t* titleLabel = lv_label_create(block);
+        lv_obj_t* titleRow = lv_obj_create(block);
+        lv_obj_remove_style_all(titleRow);
+        lv_obj_set_size(titleRow, lv_pct(100), 24);
+        lv_obj_set_flex_flow(titleRow, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(titleRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+        if (tab) {
+            // The whole heading is deliberately a touch target. The cog is a
+            // visual affordance, not a tiny control a finger must hit exactly.
+            lv_obj_add_flag(titleRow, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(titleRow,
+                measurement == sensors::calibration::Measurement::Voltage ? openVoltageCalibrationCb : openCurrentCalibrationCb,
+                LV_EVENT_CLICKED, tab);
+        }
+        lv_obj_t* titleLabel = lv_label_create(titleRow);
         lv_label_set_text(titleLabel, title);
         lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(titleLabel, ui_theme::mutedText(), 0);
+        if (tab) {
+            lv_obj_t* calibrate = lv_label_create(titleRow);
+            lv_obj_set_size(calibrate, 42, 28);
+            lv_obj_set_style_text_color(calibrate, ui_theme::mutedText(), 0);
+            lv_label_set_text(calibrate, LV_SYMBOL_EDIT);
+            lv_obj_add_flag(calibrate, LV_OBJ_FLAG_CLICKABLE);
+            lv_obj_add_event_cb(calibrate,
+                measurement == sensors::calibration::Measurement::Voltage ? openVoltageCalibrationCb : openCurrentCalibrationCb,
+                LV_EVENT_CLICKED, tab);
+        }
     }
 
     lv_obj_t* chart = lv_chart_create(block);
@@ -304,6 +465,181 @@ lv_obj_t* createKpiItem(lv_obj_t* parent, const char* unit, lv_coord_t valueWidt
     return item;
 }
 
+lv_obj_t* createCalibrationButton(lv_obj_t* parent, const char* text, CalibrationControl& control,
+                                  SensorTab& tab, uint8_t sensor, CalibrationAction action, bool primary = false) {
+    control = {&tab, sensor, action};
+    lv_obj_t* button = lv_btn_create(parent);
+    lv_obj_set_height(button, 32);
+    lv_obj_set_flex_grow(button, 1);
+    if (primary) ui_theme::stylePrimaryButton(button);
+    else {
+        lv_obj_set_style_bg_color(button, ui_theme::surfaceAlt(), 0);
+        lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
+        lv_obj_set_style_border_color(button, ui_theme::accent(), 0);
+        lv_obj_set_style_border_width(button, 1, 0);
+        lv_obj_set_style_radius(button, 6, 0);
+        lv_obj_set_style_text_color(button, ui_theme::accent(), 0);
+        lv_obj_set_style_bg_color(button, ui_theme::accent(), LV_STATE_PRESSED);
+        lv_obj_set_style_text_color(button, lv_color_white(), LV_STATE_PRESSED);
+    }
+    lv_obj_t* label = lv_label_create(button);
+    lv_label_set_text(label, text);
+    lv_obj_set_style_text_font(label, &lv_font_montserrat_16, 0);
+    lv_obj_add_event_cb(button, calibrationControlCb, LV_EVENT_CLICKED, &control);
+    return button;
+}
+
+void createCalibrationEditor(lv_obj_t* parent, SensorTab& tab, uint8_t sensor) {
+    auto& editor = tab.calibration;
+    editor.sensor = sensor;
+    editor.keyboard = nullptr;
+    editor.root = lv_obj_create(parent);
+    ui_theme::styleScreen(editor.root, 4);
+    lv_obj_set_flex_flow(editor.root, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(editor.root, 4, 0);
+    lv_obj_add_flag(editor.root, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t* header = lv_obj_create(editor.root);
+    lv_obj_remove_style_all(header);
+    lv_obj_set_size(header, lv_pct(100), 30);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(header, 6, 0);
+    CalibrationControl& backControl = calibrationControls[sensor][0];
+    backControl = {&tab, sensor, CalibrationAction::Back};
+    lv_obj_t* back = lv_label_create(header);
+    lv_label_set_text(back, LV_SYMBOL_LEFT);
+    lv_obj_set_size(back, 36, 28);
+    lv_obj_set_style_text_color(back, ui_theme::text(), 0);
+    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(back, calibrationControlCb, LV_EVENT_CLICKED, &backControl);
+    lv_obj_t* title = lv_label_create(header);
+    lv_obj_set_flex_grow(title, 1);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_14, 0);
+    lv_label_set_text(title, "Calibration");
+
+    lv_obj_t* kpis = lv_obj_create(editor.root);
+    lv_obj_remove_style_all(kpis);
+    lv_obj_set_size(kpis, lv_pct(100), 30);
+    lv_obj_set_flex_flow(kpis, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(kpis, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    editor.beforeLabel = lv_label_create(kpis);
+    editor.afterLabel = lv_label_create(kpis);
+    lv_obj_set_style_text_font(editor.beforeLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_font(editor.afterLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(editor.beforeLabel, lv_palette_main(LV_PALETTE_BLUE), 0);
+    lv_obj_set_style_text_color(editor.afterLabel, lv_palette_main(LV_PALETTE_ORANGE), 0);
+
+    editor.chart = lv_chart_create(editor.root);
+    lv_obj_set_size(editor.chart, lv_pct(100), 112);
+    lv_chart_set_type(editor.chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_point_count(editor.chart, kChartPoints);
+    lv_chart_set_update_mode(editor.chart, LV_CHART_UPDATE_MODE_CIRCULAR);
+    lv_chart_set_div_line_count(editor.chart, 4, 3);
+    lv_chart_set_axis_tick(editor.chart, LV_CHART_AXIS_PRIMARY_Y, 3, 1, 4, 1, true, 42);
+    lv_obj_set_style_clip_corner(editor.chart, false, 0);
+    styleChartMinimal(editor.chart);
+    lv_obj_set_style_pad_left(editor.chart, 48, 0);
+    lv_obj_add_event_cb(editor.chart, axisTickLabelCb, LV_EVENT_DRAW_PART_BEGIN, (void*)&kCalibrationAxisScale);
+    editor.before = lv_chart_add_series(editor.chart, lv_palette_main(LV_PALETTE_BLUE), LV_CHART_AXIS_PRIMARY_Y);
+    editor.after = lv_chart_add_series(editor.chart, lv_palette_main(LV_PALETTE_ORANGE), LV_CHART_AXIS_PRIMARY_Y);
+    lv_obj_t* offsetTitle = lv_label_create(editor.root);
+    lv_label_set_text(offsetTitle, "Offset");
+    ui_theme::styleSectionLabel(offsetTitle);
+    lv_obj_t* offsetRow = lv_obj_create(editor.root);
+    lv_obj_remove_style_all(offsetRow);
+    lv_obj_set_size(offsetRow, lv_pct(100), 32);
+    lv_obj_set_flex_flow(offsetRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(offsetRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(offsetRow, 4, 0);
+    createCalibrationButton(offsetRow, "-", calibrationControls[sensor][1], tab, sensor, CalibrationAction::OffsetDown);
+    lv_obj_set_flex_grow(lv_obj_get_child(offsetRow, 0), 0); lv_obj_set_width(lv_obj_get_child(offsetRow, 0), 36);
+    editor.offsetInput = lv_textarea_create(offsetRow);
+    lv_obj_set_width(editor.offsetInput, 108); lv_textarea_set_one_line(editor.offsetInput, true);
+    lv_obj_set_style_text_align(editor.offsetInput, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_add_event_cb(editor.offsetInput, calibrationInputFocusCb, LV_EVENT_FOCUSED, &editor);
+    lv_obj_add_event_cb(editor.offsetInput, calibrationInputChangedCb, LV_EVENT_VALUE_CHANGED, &editor);
+    lv_obj_t* offsetUnit = lv_label_create(offsetRow); lv_label_set_text(offsetUnit, "V"); lv_obj_set_width(offsetUnit, 18);
+    lv_obj_set_style_text_align(offsetUnit, LV_TEXT_ALIGN_CENTER, 0);
+    createCalibrationButton(offsetRow, "+", calibrationControls[sensor][2], tab, sensor, CalibrationAction::OffsetUp);
+    lv_obj_set_flex_grow(lv_obj_get_child(offsetRow, 3), 0); lv_obj_set_width(lv_obj_get_child(offsetRow, 3), 36);
+
+    lv_obj_t* gainTitle = lv_label_create(editor.root);
+    lv_label_set_text(gainTitle, "Gain");
+    ui_theme::styleSectionLabel(gainTitle);
+    lv_obj_t* gainRow = lv_obj_create(editor.root);
+    lv_obj_remove_style_all(gainRow);
+    lv_obj_set_size(gainRow, lv_pct(100), 32);
+    lv_obj_set_flex_flow(gainRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(gainRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(gainRow, 4, 0);
+    createCalibrationButton(gainRow, "-", calibrationControls[sensor][3], tab, sensor, CalibrationAction::GainDown);
+    lv_obj_set_flex_grow(lv_obj_get_child(gainRow, 0), 0); lv_obj_set_width(lv_obj_get_child(gainRow, 0), 36);
+    editor.gainInput = lv_textarea_create(gainRow);
+    lv_obj_set_width(editor.gainInput, 108); lv_textarea_set_one_line(editor.gainInput, true);
+    lv_obj_set_style_text_align(editor.gainInput, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_add_event_cb(editor.gainInput, calibrationInputFocusCb, LV_EVENT_FOCUSED, &editor);
+    lv_obj_add_event_cb(editor.gainInput, calibrationInputChangedCb, LV_EVENT_VALUE_CHANGED, &editor);
+    lv_obj_t* gainUnit = lv_label_create(gainRow); lv_obj_set_width(gainUnit, 54);
+    lv_label_set_text(gainUnit, "mV/V");
+    lv_obj_set_style_text_align(gainUnit, LV_TEXT_ALIGN_CENTER, 0);
+    createCalibrationButton(gainRow, "+", calibrationControls[sensor][4], tab, sensor, CalibrationAction::GainUp);
+    lv_obj_set_flex_grow(lv_obj_get_child(gainRow, 3), 0); lv_obj_set_width(lv_obj_get_child(gainRow, 3), 36);
+
+    lv_obj_t* referenceRow = lv_obj_create(editor.root);
+    lv_obj_remove_style_all(referenceRow);
+    lv_obj_set_size(referenceRow, lv_pct(100), 32);
+    lv_obj_set_flex_flow(referenceRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(referenceRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(referenceRow, 4, 0);
+    lv_obj_t* measurementTitle = lv_label_create(referenceRow); lv_label_set_text(measurementTitle, "Measurement");
+    editor.measurementInput = lv_textarea_create(referenceRow);
+    lv_obj_set_width(editor.measurementInput, 78); lv_textarea_set_one_line(editor.measurementInput, true); lv_textarea_set_text(editor.measurementInput, "0");
+    lv_obj_set_style_text_align(editor.measurementInput, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_add_event_cb(editor.measurementInput, calibrationInputFocusCb, LV_EVENT_FOCUSED, &editor);
+    lv_obj_t* measurementUnit = lv_label_create(referenceRow); lv_obj_set_width(measurementUnit, 14);
+    createCalibrationButton(referenceRow, "Match", calibrationControls[sensor][5], tab, sensor, CalibrationAction::ApplyReference);
+
+    lv_obj_t* actionRow = lv_obj_create(editor.root);
+    lv_obj_remove_style_all(actionRow);
+    lv_obj_set_size(actionRow, lv_pct(100), 32);
+    lv_obj_set_flex_flow(actionRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(actionRow, 4, 0);
+    createCalibrationButton(actionRow, "Defaults", calibrationControls[sensor][6], tab, sensor, CalibrationAction::Reset);
+    createCalibrationButton(actionRow, "Save", calibrationControls[sensor][7], tab, sensor, CalibrationAction::Save, true);
+
+}
+
+void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measurement measurement) {
+    auto& editor = tab.calibration;
+    if (!editor.root) createCalibrationEditor(tab.calibrationParent, tab, sensor);
+    editor.measurement = measurement;
+    editor.saved = sensors::calibration::get(sensor, measurement);
+    editor.staged = editor.saved;
+    editor.visible = true;
+    refreshCalibrationInputs(editor);
+    // Units are tied to the selected engineering measurement, while gain is
+    // shown as ADC millivolts per engineering unit.
+    lv_label_set_text(lv_obj_get_child(lv_obj_get_parent(editor.gainInput), 2),
+                      measurement == sensors::calibration::Measurement::Voltage ? "mV/V" : "mV/A");
+    lv_label_set_text(lv_obj_get_child(lv_obj_get_parent(editor.measurementInput), 2), measurementUnit(measurement));
+    lv_obj_clear_flag(editor.root, LV_OBJ_FLAG_HIDDEN);
+    updateCalibrationEditor(tab, sensor);
+}
+
+void openVoltageCalibrationCb(lv_event_t* event) {
+    auto* tab = static_cast<SensorTab*>(lv_event_get_user_data(event));
+    if (!tab) return;
+    const uint8_t sensor = static_cast<uint8_t>(tab - sensorTabs);
+    openCalibration(*tab, sensor, sensors::calibration::Measurement::Voltage);
+}
+
+void openCurrentCalibrationCb(lv_event_t* event) {
+    auto* tab = static_cast<SensorTab*>(lv_event_get_user_data(event));
+    if (!tab) return;
+    const uint8_t sensor = static_cast<uint8_t>(tab - sensorTabs);
+    openCalibration(*tab, sensor, sensors::calibration::Measurement::Current);
+}
+
 lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     lv_obj_set_style_bg_color(tabParent, ui_theme::background(), 0);
     lv_obj_set_style_bg_opa(tabParent, LV_OPA_COVER, 0);
@@ -322,6 +658,7 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     lv_obj_set_flex_flow(tab, LV_FLEX_FLOW_COLUMN);
 
     SensorTab& t = sensorTabs[sensorIndex];
+    t.calibrationParent = tabParent;
 
     // --- KPI row -----------------------------------------------------------
     lv_obj_t* kpiRow = lv_obj_create(tab);
@@ -351,9 +688,9 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     lv_obj_set_flex_grow(chartsCol, 1);
 
     t.vChart = createChartBlock(chartsCol, "Voltage (V)", lv_palette_main(LV_PALETTE_BLUE),
-                                 &kVoltageAxisScale, &t.vSeries);
+                                 &kVoltageAxisScale, &t.vSeries, &t, sensors::calibration::Measurement::Voltage);
     t.iChart = createChartBlock(chartsCol, "Current (A)", lv_palette_main(LV_PALETTE_ORANGE),
-                                 &kCurrentAxisScale, &t.iSeries);
+                                 &kCurrentAxisScale, &t.iSeries, &t, sensors::calibration::Measurement::Current);
 
     lv_chart_set_range(t.vChart, LV_CHART_AXIS_PRIMARY_Y,
                         (lv_coord_t)(kVoltageDefaultMin * kVoltageAxisScale),
@@ -363,6 +700,63 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
                         (lv_coord_t)(kCurrentDefaultMax * kCurrentAxisScale));
 
     return tab;
+}
+
+void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Reading* suppliedReadings, size_t suppliedCount) {
+    auto& editor = tab.calibration;
+    if (!editor.visible) return;
+
+    sensors::Reading local[kChartPoints];
+    const sensors::Reading* readings = suppliedReadings;
+    size_t n = suppliedCount;
+    if (!readings) {
+        n = sensors::getRecent(static_cast<sensors::SensorId>(sensor), local, kChartPoints);
+        readings = local;
+    }
+    if (n == 0) return;
+
+    const bool voltage = editor.measurement == sensors::calibration::Measurement::Voltage;
+    const auto inputFor = [&](const sensors::Reading& reading) {
+        if (sensor_mode::get() == sensor_mode::Mode::Real) return voltage ? reading.voltageInputV : reading.currentInputV;
+        // Simulation supplies engineering units, not ADC volts. Reconstruct a
+        // compatible input so the preview graph remains meaningful for UI
+        // walkthroughs without ever applying/saving demo calibration.
+        const float value = voltage ? reading.voltage : reading.current;
+        return value / editor.saved.gain + editor.saved.offsetInputV;
+    };
+    const sensors::Reading& latest = readings[n - 1];
+    const float input = inputFor(latest);
+    const float savedReading = voltage ? latest.voltage : latest.current;
+    const float preview = sensors::calibration::apply(input, editor.staged);
+    const char* unit = measurementUnit(editor.measurement);
+    char text[72];
+    snprintf(text, sizeof(text), "Before %.1f %s", savedReading, unit);
+    lv_label_set_text(editor.beforeLabel, text);
+    snprintf(text, sizeof(text), "After %.1f %s", preview, unit);
+    lv_label_set_text(editor.afterLabel, text);
+
+    float low = savedReading;
+    float high = savedReading;
+    for (size_t i = 0; i < kChartPoints; ++i) {
+        if (i < n) {
+            const float before = voltage ? readings[i].voltage : readings[i].current;
+            const float raw = inputFor(readings[i]);
+            const float after = sensors::calibration::apply(raw, editor.staged);
+            lv_chart_set_value_by_id(editor.chart, editor.before, i, lroundf(before));
+            lv_chart_set_value_by_id(editor.chart, editor.after, i, lroundf(after));
+            low = std::min(low, std::min(before, after));
+            high = std::max(high, std::max(before, after));
+        } else {
+            lv_chart_set_value_by_id(editor.chart, editor.before, i, LV_CHART_POINT_NONE);
+            lv_chart_set_value_by_id(editor.chart, editor.after, i, LV_CHART_POINT_NONE);
+        }
+    }
+    const float maxAllowed = voltage ? sensors::calibration::kVoltageMaxV : sensors::calibration::kCurrentMaxA;
+    low = std::max(-maxAllowed, low - 1.0f);
+    high = std::min(maxAllowed, high + 1.0f);
+    if (high <= low) high = low + 1.0f;
+    lv_chart_set_range(editor.chart, LV_CHART_AXIS_PRIMARY_Y, lroundf(low), lroundf(high));
+    lv_chart_refresh(editor.chart);
 }
 
 // ---------------------------------------------------------------------------
@@ -446,6 +840,8 @@ void updateCb(lv_timer_t*) {
             snprintf(buf, sizeof(buf), "%.0f", duty * 100.0f);
             lv_label_set_text(tab.dutyValueLabel, buf);
         }
+
+        updateCalibrationEditor(tab, i, readings, n);
     }
 
 }

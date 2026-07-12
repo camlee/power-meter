@@ -1,10 +1,9 @@
 #pragma once
 #include <cstdint>
 
-// One electrical sample: raw voltage (V) and current (A) at read time.
-// Power is NOT computed here on purpose -- it's derived once, centrally,
-// in sensors.cpp, so every SensorSource (real or simulated) only has to
-// report the two raw quantities it actually measures.
+// One electrical sample at read time. In real mode these are raw ADC input
+// volts; sensors.cpp applies the persisted calibration. Simulated sources
+// return already-engineering-unit values and bypass calibration.
 struct SensorSample {
     float voltage;
     float current;

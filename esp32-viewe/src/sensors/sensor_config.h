@@ -25,6 +25,8 @@ constexpr Pins kPins[] = {
     {.voltage = 9, .current = 10},  // Aux
 };
 
+// Factory calibration defaults. Runtime per-channel values are persisted in
+// NVS by sensor_calibration and begin with these values on a fresh meter.
 constexpr float kVoltageOffsetV = 0.0f;
 constexpr float kVoltageVoltsPerInputVolt = 1.0f / 0.027027f;
 constexpr float kCurrentOffsetV = 1.667f;
