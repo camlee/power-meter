@@ -23,6 +23,10 @@ struct Data {
     uint32_t durationMinutes;
     uint32_t tickMinutes;
     const char* yAxisTitle;
+    // Zero keeps the existing relative labels. A Unix start time selects
+    // fixed-offset local clock/date labels for calendar-aligned queries.
+    int64_t axisStartUnixMs = 0;
+    int16_t utcOffsetMinutes = 0;
 };
 
 lv_obj_t* create(lv_obj_t* parent);

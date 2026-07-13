@@ -8,6 +8,7 @@
 
 #include "sensors/sensors.h"
 #include "data/historical_storage.h"
+#include "data/history_query_service.h"
 #include "network/network_manager.h"
 #include "network/ota_service.h"
 
@@ -32,6 +33,7 @@ void setup()
 
     sensors::start();
     historical_storage::init();
+    history_query_service::init();
     network_manager::init();
     // The server binds before an interface is available and becomes reachable
     // as soon as station or AP networking comes up.

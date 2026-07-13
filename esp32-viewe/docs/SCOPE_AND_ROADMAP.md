@@ -79,39 +79,74 @@ history retention.
 Each priority should end with a buildable firmware, a short manual verification
 procedure, and a documented data/configuration migration impact.
 
-## Immediate cleanup backlog
+## Current status (July 2026)
 
-1. Define the single `sensors` pipeline and remove or isolate unused sensor
-   scaffolding.
-2. Replace hard-coded simulated construction with an explicit selectable
-   simulation/ADC configuration path.
-3. Establish the ADC pin/channel map and electrical validation plan.
-4. Define a history record format that carries session/order and time-anchor
-   metadata; correct retention rotation before treating existing data as durable.
-5. Rewrite the Usage chart from agreed energy/bucket semantics rather than
-   provisional channel indexes and formulas.
-6. Make network initialization/update ownership explicit; document its
-   optional/offline behavior.
-7. Reconcile partition/filesystem terminology and remove unreferenced UI/API
-   fragments.
+- Priorities 0 and 1 are substantially implemented: startup ownership is
+  explicit, simulation and ADC sources share one sensor pipeline, networking is
+  optional, and the project builds from PlatformIO. Physical ADC accuracy still
+  requires validation on the installed electrical hardware.
+- Priority 2 is substantially implemented. History V3 has boot/session
+  segments, fixed 32-byte minute rows, five-minute buffered writes, a bounded
+  anchor ledger, rolling/calendar queries, explicit gaps, a file-oriented
+  diagnostic screen/API, and Usage reset. Basic build, boot, API pagination,
+  and UI rendering are verified; interruption, rotation, and multi-week
+  retention testing remain.
+- Priority 3 is substantially implemented, including NVS-backed per-channel
+  calibration, touchscreen adjustment/preview, reset, and readback.
+- Parts of later priorities arrived early: authenticated OTA and remote display
+  control work. The full data API/web application and peer synchronization are
+  still deferred.
 
-## Acceptance criteria for the next implementation phase
+## Implemented milestone: session-aware calendar history
 
-Before declaring Priority 0 and moving into hardware integration:
+This phase replaced the development history files; backward compatibility was
+not required. It includes:
 
-- The project builds with PlatformIO from a clean checkout.
-- Simulation mode visibly drives all intended live views and historical sample
-  capture without crashes.
-- The active sensor, storage, network, and screen ownership are each
-  unambiguous in code and documentation.
-- Stored history has a verified retention calculation and a documented
-  power-loss/recovery behavior.
+1. a dedicated time service with a persistent boot-session ID, 64-bit monotonic
+   time, persisted NTP/browser anchors and their provenance;
+2. a fresh segmented history format with session/minute metadata in filenames,
+   fixed 32-byte rows, 240-row rotation, and a five-minute PSRAM write buffer;
+3. reconciliation of an unanchored block when surrounding anchors bound its
+   total uncertainty within the selected graph bucket;
+4. an incomplete-data indication only when missing or uncertain coverage exceeds
+   one minute, represented primarily by gaps and a small warning symbol;
+5. real-time and calendar queries: Last 1/6/24 Hours, Today, Yesterday,
+   Last 2 Days (Today + Yesterday), Last Week, Last Two Weeks, and All;
+6. a persisted fixed UTC offset for local-day boundaries. Full timezone/DST rule
+   support is deliberately deferred;
+7. an authenticated browser-time endpoint and paginated file-catalog endpoint.
+   Building the complete browser app is a separate milestone;
+8. separate internal/PSRAM diagnostics with usage and largest-free-block values,
+   plus PSRAM-first LVGL allocation to preserve scarce internal-capability RAM.
+
+Records without a defensible wall-clock mapping remain absent from time-labeled
+Usage views rather than being moved to now. Bounded estimates carry an explicit
+small inference warning; unresolved intervals remain gaps. Short restart
+fragments and sub-minute gaps do not create a user warning.
+
+## Remaining near-term backlog
+
+1. Validate the current sequential ADC map and calibrated readings against the
+   installed electrical hardware.
+2. Exercise History V3 through repeated real power interruptions, partial flash
+   writes, file rotation, and multi-week retention.
+3. Revisit whether the five-minute write buffer should eventually become one
+   minute for production durability.
+4. Build the local data API and Svelte web application, including automatic
+   browser time contribution, realtime/history queries and export.
+5. Add user-facing fixed UTC-offset configuration if browser contribution is
+   not sufficient for deployments outside the default Mountain offset.
+
+## Production-hardening acceptance criteria
+
+- The project builds with PlatformIO from a clean checkout and passes a written
+  on-device verification procedure.
+- Simulation and ADC modes visibly drive live and historical views without
+  sampling or rendering failures.
+- Power interruption loses no more data than the selected write-buffer policy,
+  and incomplete writes recover without corrupting older records.
+- Time-labeled history shows honest gaps, inferred coverage is disclosed, and
+  the display raises only the agreed minimal warning.
+- Retention and storage usage are measured from actual rotation behavior.
 - No UI or history value implies a physical/system meaning that has not been
-  specified.
-
-## Open question required before ADC implementation
-
-Please specify the exact pairing/order for GPIO 5, 6, 7, 8, 9, and 10—for
-example, `In voltage=5, In current=6, Out voltage=7, ...`. The architecture
-does not assume an ordering so that an incorrect mapping cannot be silently
-encoded.
+  specified and hardware-validated.

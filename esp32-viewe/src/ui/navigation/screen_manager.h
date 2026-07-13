@@ -31,7 +31,11 @@ private:
         const char* name;
         ScreenCreateFunc createFunc;
         lv_obj_t* tab = nullptr;
+        lv_obj_t* content = nullptr;
     };
 
     std::vector<ScreenDef> screens;
+
+    static void tabChangedCb(lv_event_t* event);
+    void notifyActiveScreen();
 };

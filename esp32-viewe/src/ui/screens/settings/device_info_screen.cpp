@@ -53,7 +53,8 @@ void formatUptime(char* buf, size_t len) {
               (unsigned long)(s / 3600), (unsigned long)((s % 3600) / 60), (unsigned long)(s % 60));
 }
 
-void updateCb(lv_timer_t*) {
+void updateCb(lv_timer_t* timer) {
+    if (timer && timer->user_data && !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
     char buf[64];
 
     // Frequently changing status values.
@@ -120,9 +121,9 @@ lv_obj_t* create(lv_obj_t* parent) {
     apIpLabel = addRow(list, "AP IP", "--");
 
     if(!updateTimer) {
-        updateTimer = lv_timer_create(updateCb, 1000, nullptr);
+        updateTimer = lv_timer_create(updateCb, 1000, scr);
     }
-    updateCb(nullptr);
+    if (lv_obj_is_visible(scr)) updateCb(nullptr);
 
     return scr;
 }

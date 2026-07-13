@@ -1,19 +1,16 @@
 #pragma once
+
 #include <cstddef>
 #include <cstdint>
 
-// Long-term storage: one aggregated record per minute per sensor, written
-// to internal flash via LittleFS. Deliberately decoupled from sensors.h --
-// it doesn't call sensors::getRecent() itself. Instead the app feeds it
-// samples via addSample(), which keeps this module reusable if the sample
-// source ever changes, and makes it easy to unit-test with fake data.
-//
-// The UI and a future API should derive chart power from energy, rather than
-// averaging already-averaged power samples.  PowerBucket is that query result:
-// each value is sum(energyWh) / the fixed bucket duration.
 namespace historical_storage {
 
 constexpr uint8_t kSensorCount = 3;
+constexpr uint8_t kFlushIntervalMinutes = 5;
+constexpr uint16_t kRecordsPerSegment = 240;
+constexpr uint16_t kMaxHistoryFiles = 200;
+constexpr uint32_t kMaterialGapMs = 60000;
+constexpr uint32_t kInferenceBoundaryMs = 300000;
 
 enum Component : uint8_t {
     BATTERY_CHARGING = 0,
@@ -24,60 +21,98 @@ enum Component : uint8_t {
     COMPONENT_COUNT,
 };
 
-// Packed so the on-disk layout is stable and doesn't depend on compiler
-// padding choices -- this struct is written to flash byte-for-byte.
-struct __attribute__((packed)) MinuteRecord {
-    uint32_t uptime_m;              // Minutes since boot (always valid)
-    uint32_t epoch_s;               // 0 if NTP is not yet synced, valid epoch otherwise
+// Filename metadata supplies the session and monotonic minute. Keeping rows at
+// exactly 32 bytes makes seeks cheap and five-minute flash writes exactly 160 B.
+struct __attribute__((packed)) MinuteEnergyRecord {
     float energyWh[kSensorCount];
     float componentEnergyWh[COMPONENT_COUNT];
 };
+static_assert(sizeof(MinuteEnergyRecord) == 32, "history V3 rows must remain 32 bytes");
+
+enum TimeFlags : uint8_t {
+    TIME_NONE = 0,
+    TIME_ANCHORED = 1 << 0,
+    TIME_INFERRED = 1 << 1,
+    TIME_INCOMPLETE = 1 << 2,
+};
 
 struct PowerBucket {
-    uint32_t startUptime_m;         // First minute in this fixed bucket
-    uint16_t durationMinutes;       // May be shorter for the in-progress bucket
+    uint32_t startUptime_m;
+    uint16_t durationMinutes;
+    uint8_t timeFlags;
+    uint8_t reserved;
+    uint64_t startSequence;
+    int64_t startUnixMs;
+    uint32_t coveredMs;
     float energyWh[kSensorCount];
     float componentEnergyWh[COMPONENT_COUNT];
     float componentAveragePowerW[COMPONENT_COUNT];
 };
 
-// Mounts LittleFS and opens/creates the ring buffer file. Call once from
-// setup(), any time after LittleFS.begin() would normally be called
-// elsewhere in the project (this function calls it internally if needed).
-// Returns false if the filesystem couldn't be mounted.
+enum class CalendarRange : uint8_t {
+    Today,
+    Yesterday,
+    Last2Days,
+    LastWeek,
+    LastTwoWeeks,
+    All,
+};
+
+struct QueryStatus {
+    int64_t startUnixMs;
+    int64_t endUnixMs;
+    uint32_t coveredMinutes;
+    uint32_t missingMinutes;
+    uint32_t inferredMinutes;
+    uint32_t recordsRead;
+    uint16_t filesRead;
+    bool incomplete;
+    bool hasInferredTime;
+};
+
+enum class FileState : uint8_t { Closed, Interrupted, Active };
+
+struct HistoryFileInfo {
+    char name[52];
+    uint32_t sessionId;
+    uint32_t firstMinute;
+    uint16_t committedRecords;
+    uint8_t bufferedRecords; // Non-zero only for the active segment.
+    FileState state;
+    uint32_t bytes;
+    int64_t startUnixMs;
+    int64_t endUnixMs;
+    uint8_t timeFlags;
+};
+
+struct StorageStats {
+    uint16_t fileCount;
+    uint32_t committedRecords;
+    uint8_t bufferedRecords;
+    uint32_t committedBytes;
+    uint32_t bufferedBytes;
+    uint16_t maxFiles;
+};
+
 bool init();
-
-// Feeds one coherent measurement frame into the in-progress minute record.
-// The battery/panel split is calculated at this cadence before any minute or
-// chart aggregation can hide alternating charge/discharge periods.
 void addSampleFrame(float inPowerW, float outPowerW, float auxPowerW,
-                    float availableInPowerW, uint32_t timestamp_ms);
-
-// Call at least once per second from loop(). Checks whether a minute
-// boundary has passed since the last call and, if so, finalizes the
-// pending MinuteRecord and appends it to flash.
+                    float availableInPowerW, uint32_t timestampMs);
 void tick();
 
-// Copies up to maxCount most-recent minute records into `out`, oldest
-// first. Returns the number actually copied.
-size_t getRecent(MinuteRecord* out, size_t maxCount);
-
-// Fetches a decimated time series for UI rendering.
-// maxPoints: The size of the allocated 'out' buffer (e.g., chart width).
-// lookbackMinutes: The time domain to query (e.g., 60 for 1h, 1440 for 1d, 10080 for 1w).
-// Returns the actual number of populated records in 'out'.
-size_t getTimeSeries(MinuteRecord* out, size_t maxPoints, uint32_t lookbackMinutes);
-
-// Returns complete, fixed-duration buckets in chronological order.  A bucket
-// is returned only when all of its minute records are present and consecutive;
-// this prevents a boot/outage from being displayed as fabricated zero energy.
-// endOffsetMinutes selects an older relative window: for example, a 1440
-// minute lookback with a 1440 minute offset is the prior 24-hour window.
 size_t getPowerBuckets(PowerBucket* out, size_t maxBuckets,
                        uint32_t lookbackMinutes, uint16_t bucketMinutes,
-                       uint32_t endOffsetMinutes = 0, bool includePartial = true);
+                       uint32_t endOffsetMinutes = 0, bool includePartial = true,
+                       QueryStatus* status = nullptr);
+size_t getCalendarPowerBuckets(PowerBucket* out, size_t maxBuckets,
+                               CalendarRange range, uint16_t bucketMinutes,
+                               QueryStatus* status = nullptr);
 
-// Total minute records currently stored.
+// Newest first. offset/limit make the same operation suitable for the device
+// debug screen and the future browser app. No history row bodies are read.
+size_t listFiles(HistoryFileInfo* out, size_t limit, size_t offset = 0,
+                 size_t* total = nullptr, StorageStats* stats = nullptr);
+void getStorageStats(StorageStats& out);
+bool clearAll();
 size_t recordCount();
 
 } // namespace historical_storage

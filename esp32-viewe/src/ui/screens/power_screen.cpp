@@ -42,5 +42,9 @@ void update(lv_timer_t*) {
  step=nice((hi-lo)/6);maximum=ceilf(hi/step)*step;minimum=floorf(lo/step)*step;if(maximum<=minimum){maximum=step;minimum=-step;}for(int s=0;s<4;s++){char b[12];lv_snprintf(b,sizeof(b),"%d",(int)lroundf(n?values[s][n-1]:0));lv_label_set_text(kpiValues[s],b);}lv_obj_invalidate(plot);
 }
 }
-lv_obj_t* create(lv_obj_t* parent){lv_obj_t* screen=lv_obj_create(parent);ui_theme::styleScreen(screen,6);lv_obj_set_flex_flow(screen,LV_FLEX_FLOW_COLUMN);lv_obj_set_style_pad_row(screen,4,0);lv_obj_t* row=lv_obj_create(screen);lv_obj_remove_style_all(row);lv_obj_set_size(row,lv_pct(100),LV_SIZE_CONTENT);lv_obj_set_style_pad_all(row,0,0);lv_obj_set_flex_flow(row,LV_FLEX_FLOW_ROW);kpi(row,0,lv_color_hex(0x0000FF),"In");kpi(row,1,lv_color_hex(0xFFA500),"Out");kpi(row,2,lv_color_hex(0x00BFFF),"Aux");kpi(row,3,lv_color_hex(0x7CFC00),"Net");plot=lv_obj_create(screen);lv_obj_remove_style_all(plot);lv_obj_set_width(plot,lv_pct(100));lv_obj_set_flex_grow(plot,1);lv_obj_add_event_cb(plot,drawCb,LV_EVENT_DRAW_MAIN,nullptr);lv_timer_create(update,kRefreshMs,nullptr);update(nullptr);return screen;}
+void visibleUpdate(lv_timer_t* timer) {
+ if (!timer || !timer->user_data || !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
+ update(timer);
+}
+lv_obj_t* create(lv_obj_t* parent){lv_obj_t* screen=lv_obj_create(parent);ui_theme::styleScreen(screen,6);lv_obj_set_flex_flow(screen,LV_FLEX_FLOW_COLUMN);lv_obj_set_style_pad_row(screen,4,0);lv_obj_t* row=lv_obj_create(screen);lv_obj_remove_style_all(row);lv_obj_set_size(row,lv_pct(100),LV_SIZE_CONTENT);lv_obj_set_style_pad_all(row,0,0);lv_obj_set_flex_flow(row,LV_FLEX_FLOW_ROW);kpi(row,0,lv_color_hex(0x0000FF),"In");kpi(row,1,lv_color_hex(0xFFA500),"Out");kpi(row,2,lv_color_hex(0x00BFFF),"Aux");kpi(row,3,lv_color_hex(0x7CFC00),"Net");plot=lv_obj_create(screen);lv_obj_remove_style_all(plot);lv_obj_set_width(plot,lv_pct(100));lv_obj_set_flex_grow(plot,1);lv_obj_add_event_cb(plot,drawCb,LV_EVENT_DRAW_MAIN,nullptr);lv_timer_create(visibleUpdate,kRefreshMs,screen);return screen;}
 }

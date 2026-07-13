@@ -18,6 +18,8 @@
 // never committed credentials.  An empty value disables firmware updates.
 #include "ota_public_key.h" // generated locally from keys/ota_signing_public.pem
 #include "lvgl_v8_port.h"
+#include "data/historical_storage.h"
+#include "time/time_service.h"
 #include "ui/input/remote_input.h"
 
 #ifndef OTA_SHARED_TOKEN
@@ -37,6 +39,8 @@ namespace ota_service {
 namespace {
 
 WebServer server(80);
+constexpr uint32_t kScreenshotMinIntervalMs = 1000;
+uint32_t lastScreenshotMs = 0;
 bool running = false;
 bool uploadAccepted = false;
 String uploadError;
@@ -172,6 +176,46 @@ bool jsonUnsigned(const String& json, const char* name, uint32_t& value) {
     return true;
 }
 
+// Parses a JSON integer without routing it through floating point. Browser
+// epoch milliseconds already exceed 32-bit range, and accepting a decimal or
+// exponent here would make the time contribution ambiguous.
+bool jsonInteger64(const String& json, const char* name, int64_t& value) {
+    const String key = String("\"") + name + "\"";
+    const int keyAt = json.indexOf(key);
+    if (keyAt < 0) return false;
+    const int colon = json.indexOf(':', keyAt + key.length());
+    if (colon < 0) return false;
+
+    int cursor = colon + 1;
+    while (cursor < static_cast<int>(json.length()) &&
+           isspace(static_cast<unsigned char>(json[cursor]))) ++cursor;
+    bool negative = false;
+    if (cursor < static_cast<int>(json.length()) && json[cursor] == '-') {
+        negative = true;
+        ++cursor;
+    }
+    const int firstDigit = cursor;
+    uint64_t magnitude = 0;
+    const uint64_t limit = negative ? (uint64_t{1} << 63) : INT64_MAX;
+    while (cursor < static_cast<int>(json.length()) &&
+           isdigit(static_cast<unsigned char>(json[cursor]))) {
+        const uint8_t digit = json[cursor++] - '0';
+        if (magnitude > (limit - digit) / 10) return false;
+        magnitude = magnitude * 10 + digit;
+    }
+    if (cursor == firstDigit) return false;
+    while (cursor < static_cast<int>(json.length()) &&
+           isspace(static_cast<unsigned char>(json[cursor]))) ++cursor;
+    if (cursor < static_cast<int>(json.length()) && json[cursor] != ',' && json[cursor] != '}') return false;
+
+    if (negative) {
+        value = magnitude == (uint64_t{1} << 63) ? INT64_MIN : -static_cast<int64_t>(magnitude);
+    } else {
+        value = static_cast<int64_t>(magnitude);
+    }
+    return true;
+}
+
 bool jsonBool(const String& json, const char* name, bool& value) {
     String key = String("\"") + name + "\"";
     int keyAt = json.indexOf(key);
@@ -223,6 +267,13 @@ bool writeScreenshot(WiFiClient& client, const uint8_t* data, size_t length) {
 // faithful capture of the physical display rather than a second UI renderer.
 void screenshot() {
     if (!authorised()) { server.send(401, "application/json", "{\"error\":\"unauthorised\"}"); return; }
+    const uint32_t now = millis();
+    if (now - lastScreenshotMs < kScreenshotMinIntervalMs) {
+        server.sendHeader("Retry-After", "1");
+        server.send(429, "application/json", "{\"error\":\"screenshot rate limited\"}");
+        return;
+    }
+    lastScreenshotMs = now;
     uint16_t width = 0, height = 0;
     const uint8_t* frameBuffer = lvgl_port_get_remote_framebuffer(&width, &height);
     if (!frameBuffer) {
@@ -350,6 +401,114 @@ void remotePointer() {
     if (!parseRemotePoint(x, y, &pressed)) return;
     remote_input::setPointer(x, y, pressed);
     server.send(200, "application/json", "{\"ok\":true}");
+}
+
+void browserTimeAnchor() {
+    if (!authorised()) {
+        server.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorised\"}");
+        return;
+    }
+
+    const String body = server.arg("plain");
+    int64_t unixMs = 0;
+    // Keep obviously bad browser clocks out of persisted history. This is a
+    // sanity bound rather than a promise about the product's supported life.
+    constexpr int64_t kEarliestPlausibleUnixMs = 1577836800000LL; // 2020-01-01 UTC
+    constexpr int64_t kLatestPlausibleUnixMs = 4102444800000LL;   // 2100-01-01 UTC
+    if (!jsonInteger64(body, "unix_ms", unixMs) ||
+        unixMs < kEarliestPlausibleUnixMs || unixMs >= kLatestPlausibleUnixMs) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"error\":\"unix_ms must be an integer browser epoch in milliseconds between 2020 and 2100\"}");
+        return;
+    }
+
+    int64_t parsedOffset = time_service::utcOffsetMinutes();
+    const bool offsetProvided = body.indexOf("\"utc_offset_minutes\"") >= 0;
+    if (offsetProvided &&
+        (!jsonInteger64(body, "utc_offset_minutes", parsedOffset) || parsedOffset < -840 || parsedOffset > 840)) {
+        server.send(400, "application/json",
+                    "{\"ok\":false,\"error\":\"utc_offset_minutes must be an integer from -840 to 840\"}");
+        return;
+    }
+
+    const int16_t offsetMinutes = static_cast<int16_t>(parsedOffset);
+    // A browser Date.now() sample received over the LAN is useful but not a
+    // precision clock measurement. Preserve that distinction in the anchor.
+    constexpr uint32_t kBrowserUncertaintyMs = 1000;
+    if (!time_service::submitAnchor(unixMs, time_service::AnchorSource::Browser,
+                                    offsetMinutes, kBrowserUncertaintyMs)) {
+        server.send(503, "application/json",
+                    "{\"ok\":false,\"error\":\"time anchor could not be persisted\"}");
+        return;
+    }
+
+    server.send(200, "application/json",
+                String("{\"ok\":true,\"source\":\"browser\",\"unix_ms\":") + unixMs +
+                ",\"utc_offset_minutes\":" + offsetMinutes +
+                ",\"offset_updated\":" + (offsetProvided ? "true" : "false") + "}");
+}
+
+void historyFiles() {
+    if (!authorised()) {
+        server.send(401, "application/json", "{\"error\":\"unauthorised\"}");
+        return;
+    }
+    size_t offset = 0;
+    size_t limit = 25;
+    if (server.hasArg("offset")) offset = static_cast<size_t>(server.arg("offset").toInt());
+    if (server.hasArg("limit")) limit = static_cast<size_t>(server.arg("limit").toInt());
+    if (limit == 0 || limit > 50) limit = 25;
+    auto* files = static_cast<historical_storage::HistoryFileInfo*>(heap_caps_calloc(
+        limit, sizeof(historical_storage::HistoryFileInfo), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!files) {
+        server.send(503, "application/json", "{\"error\":\"history response buffer unavailable\"}");
+        return;
+    }
+    size_t total = 0;
+    historical_storage::StorageStats stats{};
+    const size_t count = historical_storage::listFiles(files, limit, offset, &total, &stats);
+
+    String json;
+    json.reserve(3072);
+    char value[512];
+    snprintf(value, sizeof(value),
+             "{\"version\":3,\"flush_interval_minutes\":%u,\"record_size_bytes\":%u,"
+             "\"records_per_segment\":%u,\"max_files\":%u,\"file_count\":%u,"
+             "\"committed_records\":%lu,\"buffered_records\":%u,"
+             "\"committed_bytes\":%lu,\"buffered_bytes\":%lu,"
+             "\"offset\":%u,\"limit\":%u,\"total\":%u,\"files\":[",
+             historical_storage::kFlushIntervalMinutes,
+             static_cast<unsigned>(sizeof(historical_storage::MinuteEnergyRecord)),
+             historical_storage::kRecordsPerSegment,
+             stats.maxFiles,
+             stats.fileCount,
+             static_cast<unsigned long>(stats.committedRecords),
+             stats.bufferedRecords,
+             static_cast<unsigned long>(stats.committedBytes),
+             static_cast<unsigned long>(stats.bufferedBytes),
+             static_cast<unsigned>(offset), static_cast<unsigned>(limit), static_cast<unsigned>(total));
+    json += value;
+    for (size_t i = 0; i < count; ++i) {
+        const auto& file = files[i];
+        const char* state = file.state == historical_storage::FileState::Active ? "active" :
+                            file.state == historical_storage::FileState::Closed ? "closed" : "interrupted";
+        snprintf(value, sizeof(value),
+                 "%s{\"name\":\"%s\",\"session_id\":%lu,\"first_minute\":%lu,"
+                 "\"committed_records\":%u,\"buffered_records\":%u,\"bytes\":%lu,"
+                 "\"state\":\"%s\",\"anchored\":%s,\"inferred\":%s,"
+                 "\"start_unix_ms\":%lld,\"end_unix_ms\":%lld}",
+                 i ? "," : "",
+                 file.name, static_cast<unsigned long>(file.sessionId),
+                 static_cast<unsigned long>(file.firstMinute), file.committedRecords,
+                 file.bufferedRecords, static_cast<unsigned long>(file.bytes), state,
+                 file.timeFlags & historical_storage::TIME_ANCHORED ? "true" : "false",
+                 file.timeFlags & historical_storage::TIME_INFERRED ? "true" : "false",
+                 static_cast<long long>(file.startUnixMs), static_cast<long long>(file.endUnixMs));
+        json += value;
+    }
+    json += "]}";
+    server.send(200, "application/json", json);
+    heap_caps_free(files);
 }
 
 const char kRemoteViewer[] PROGMEM = R"HTML(<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>power-meter remote</title><style>body{font:16px system-ui;margin:1rem;background:#111;color:#eee}input,button{font:inherit;padding:.45rem}img{display:block;width:min(100%,480px);height:auto;margin-top:1rem;touch-action:none;background:#222}</style><h1>power-meter remote</h1><p>Connect for one full-resolution snapshot. Refresh manually, or tap the display and it will refresh one second later.</p><input id=t type=password placeholder="API token" autocomplete=off><button id=c>Connect</button><button id=r disabled>Snapshot</button><button id=f>Forget token</button><span id=s></span><p id=e>Connect to view and control the display.</p><img id=i alt="Device display" hidden><script>const t=document.querySelector('#t'),i=document.querySelector('#i'),s=document.querySelector('#s'),e=document.querySelector('#e'),r=document.querySelector('#r'),key='power-meter.remote.token';let active=false,last='',lastMove=0,refreshTimer=0;t.value=localStorage.getItem(key)||'';const h=()=>({Authorization:'Bearer '+t.value}),pos=x=>{let b=i.getBoundingClientRect();return{x:Math.max(0,Math.min(319,Math.round((x.clientX-b.left)*320/b.width))),y:Math.max(0,Math.min(479,Math.round((x.clientY-b.top)*480/b.height)))}};async function shot(){if(!active)return;s.textContent=' snapshotting';r.disabled=true;try{let x=await fetch('/api/v1/display/screenshot.bmp',{headers:h()});if(!x.ok)throw Error(x.status);let u=URL.createObjectURL(await x.blob());URL.revokeObjectURL(last);last=u;i.src=u;i.hidden=false;e.hidden=true;s.textContent=' connected'}catch(x){s.textContent=' '+x}finally{r.disabled=!active}}async function pointer(x,pressed){if(!active)return;await fetch('/api/v1/display/pointer',{method:'POST',headers:{...h(),'Content-Type':'application/json'},body:JSON.stringify({...pos(x),pressed})})}function later(){clearTimeout(refreshTimer);refreshTimer=setTimeout(shot,1000)}document.querySelector('#c').onclick=()=>{if(!t.value)return;s.textContent=' connecting';localStorage.setItem(key,t.value);active=true;r.disabled=false;shot()};r.onclick=shot;document.querySelector('#f').onclick=()=>{clearTimeout(refreshTimer);localStorage.removeItem(key);t.value='';active=false;r.disabled=true;i.hidden=true;e.hidden=false;s.textContent=' token forgotten'};i.addEventListener('pointerdown',x=>{i.setPointerCapture(x.pointerId);pointer(x,true)});i.addEventListener('pointermove',x=>{if(x.buttons&&Date.now()-lastMove>80){lastMove=Date.now();pointer(x,true)}});i.addEventListener('pointerup',async x=>{await pointer(x,false);later()});i.addEventListener('pointercancel',x=>pointer(x,false));</script>)HTML";
@@ -535,6 +694,8 @@ void begin() {
     server.on("/api/v1/display/screenshot.bmp", HTTP_GET, screenshot);
     server.on("/api/v1/display/tap", HTTP_POST, remoteTap);
     server.on("/api/v1/display/pointer", HTTP_POST, remotePointer);
+    server.on("/api/v1/time/anchor", HTTP_POST, browserTimeAnchor);
+    server.on("/api/v1/history/files", HTTP_GET, historyFiles);
     server.on("/remote", HTTP_GET, remoteViewer);
     server.begin();
     runningPartition = esp_ota_get_running_partition();

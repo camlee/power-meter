@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "device/device_identity.h"
+#include "data/historical_storage.h"
 #include "network/network_manager.h"
 #include "sensors/sensor_mode.h"
 #include "../../theme/ui_theme.h"
@@ -78,7 +79,7 @@ bool hasChanges() {
     return std::strcmp(lv_textarea_get_text(deviceIdInput), device_identity::getDeviceId()) != 0 ||
            pendingSensorMode != sensor_mode::get() || pendingAppearance != ui_theme::mode() ||
            checkboxChecked(resetSetupCheckbox) || checkboxChecked(resetWifiCheckbox) ||
-           checkboxChecked(resetCalibrationCheckbox);
+           checkboxChecked(resetCalibrationCheckbox) || checkboxChecked(resetUsageCheckbox);
 }
 
 void updateActionState() {
@@ -110,7 +111,9 @@ void saveChangesCb(lv_event_t*) {
     const bool resetSetup = checkboxChecked(resetSetupCheckbox);
     const bool resetWifi = checkboxChecked(resetWifiCheckbox);
     const bool resetCalibration = checkboxChecked(resetCalibrationCheckbox);
-    if (!hostnameChanged && !sensorModeChanged && !appearanceChanged && !resetSetup && !resetWifi && !resetCalibration) return;
+    const bool resetUsage = checkboxChecked(resetUsageCheckbox);
+    if (!hostnameChanged && !sensorModeChanged && !appearanceChanged && !resetSetup && !resetWifi &&
+        !resetCalibration && !resetUsage) return;
 
     if (resetSetup) {
         if (!clearPreferences("device") || !clearPreferences("sensors") ||
@@ -137,6 +140,11 @@ void saveChangesCb(lv_event_t*) {
 
     if (resetWifi && !network_manager::clearSavedCredentials()) {
         lv_label_set_text(statusLabel, "Could not reset Wi-Fi credentials.");
+        return;
+    }
+
+    if (resetUsage && !historical_storage::clearAll()) {
+        lv_label_set_text(statusLabel, "Could not reset usage history.");
         return;
     }
 
@@ -173,6 +181,7 @@ void resetChangesCb(lv_event_t*) {
     lv_obj_clear_state(resetSetupCheckbox, LV_STATE_CHECKED);
     lv_obj_clear_state(resetWifiCheckbox, LV_STATE_CHECKED);
     lv_obj_clear_state(resetCalibrationCheckbox, LV_STATE_CHECKED);
+    lv_obj_clear_state(resetUsageCheckbox, LV_STATE_CHECKED);
     lv_label_set_text(statusLabel, "");
     updateActionState();
 }
@@ -269,8 +278,8 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_checkbox_set_text(resetCalibrationCheckbox, "Sensor Calibration");
     lv_obj_add_event_cb(resetCalibrationCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
     resetUsageCheckbox = lv_checkbox_create(screen);
-    lv_checkbox_set_text(resetUsageCheckbox, "Usage (coming soon)");
-    lv_obj_add_state(resetUsageCheckbox, LV_STATE_DISABLED);
+    lv_checkbox_set_text(resetUsageCheckbox, "Usage Data");
+    lv_obj_add_event_cb(resetUsageCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
 
     lv_obj_t* actionRow = lv_obj_create(screen);
     lv_obj_remove_style_all(actionRow);

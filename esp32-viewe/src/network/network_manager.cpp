@@ -10,6 +10,7 @@
 #include <freertos/task.h>
 #include <time.h>
 #include "device/device_identity.h"
+#include "time/time_service.h"
 
 namespace network_manager {
 namespace {
@@ -30,7 +31,6 @@ NetworkState stateBeforeScan = NetworkState::Disconnected;
 // SNTP configuration
 constexpr char kNtpServer1[] = "pool.ntp.org";
 constexpr char kNtpServer2[] = "time.nist.gov";
-constexpr char kTimezonePosix[] = "MST7MDT,M3.2.0,M11.1.0";
 bool ntpConfigured = false;
 volatile bool ntpSyncObserved = false;
 
@@ -218,6 +218,14 @@ void applyInternetEvidence() {
                                          currentState == NetworkState::ConnectedStaInternet;
     if (ntpSyncObserved) {
         ntpSyncObserved = false;
+        // The SNTP callback runs on the networking stack's task. Persisting
+        // to LittleFS there could race storage queries and stall that task, so
+        // capture the already-synchronised system clock from the main loop.
+        timeval now{};
+        gettimeofday(&now, nullptr);
+        const int64_t unixTimeMs = static_cast<int64_t>(now.tv_sec) * 1000LL + now.tv_usec / 1000;
+        time_service::submitAnchor(unixTimeMs, time_service::AnchorSource::Ntp,
+                                   time_service::utcOffsetMinutes(), 250);
         if (canUpdateConnectedState && WiFi.status() == WL_CONNECTED) {
             currentState = NetworkState::ConnectedStaInternet;
             consecutiveInternetProbeFailures = 0;
@@ -242,6 +250,7 @@ void applyInternetEvidence() {
 
 void init() {
     device_identity::init();
+    time_service::init();
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(device_identity::getHostname());
     WiFi.disconnect(false);
@@ -282,7 +291,8 @@ void update() {
 
                 if (!ntpConfigured) {
                     sntp_set_time_sync_notification_cb(ntpSyncCb);
-                    configTzTime(kTimezonePosix, kNtpServer1, kNtpServer2);
+                    configTime(static_cast<long>(time_service::utcOffsetMinutes()) * 60L,
+                               0, kNtpServer1, kNtpServer2);
                     ntpConfigured = true;
                 }
                 reconnectDelayMs = 1000;

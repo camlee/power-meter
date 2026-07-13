@@ -99,17 +99,19 @@ Current top-level screens are:
     and its gateway IP;
   - **Setup:** persisted device ID/hostname (`meter-...`) and hardware ID;
   - **Info:** build, current date/time, uptime, and current station/AP IPs;
-  - **Debug:** SDK/chip/reset details, free memory, and storage diagnostics.
+  - **History:** bounded, filename-driven segment diagnostics and live RAM state;
+  - **Debug:** SDK/chip/reset details, disjoint internal/PSRAM heap usage and
+    largest free blocks, storage, and OTA diagnostics.
 
 The display is a first-class offline interface. Network operations must be
 asynchronous and must not stall sampling or rendering.
 
 ### 3. Energy and durable history
 
-Energy is integrated from sample power over elapsed monotonic time. The system
-stores minute buckets containing average power and energy per channel. It must
-also maintain durable cumulative counters, checkpointed frequently enough that
-a power interruption loses only a bounded, documented amount of energy.
+Energy is integrated from sample power over elapsed monotonic time. History V3
+stores one fixed 32-byte energy row per complete monotonic minute. Session and
+minute identity live in the segment filename, avoiding repeated metadata in
+every row.
 
 The persistent format must distinguish two concepts:
 
@@ -122,16 +124,25 @@ This permits continuous ordered history when wall time is absent, represents
 outages as gaps, and later maps unsynchronized records into an honest time
 window without inventing a precise timestamp.
 
-The history storage API should therefore remain independent of the clock and
-support buckets by minute/hour/day. Flash writes should be batched and made
-crash-tolerant (versioned record/header, checksums or commit markers, recovery
-of an incomplete final batch). Retention must be calculated from actual file
-rotation behavior and available space, then exposed in Info.
+The clock-independent API supports rolling and calendar buckets. Five rows are
+buffered in PSRAM and appended as one 160-byte write. Each boot begins a new
+`.open` session segment; a segment closes to `.bin` after 240 records (about
+four hours). Stale `.open` files remain readable after an abrupt reboot, with
+only incomplete trailing bytes ignored. A 200-measurement-file cap bounds
+directory and retention work; under normal six-file/day operation it holds
+about 33 days, while frequent reboots intentionally shorten that window.
+
+The small `/history/v3/time-anchors.bin` ledger retains at most one useful
+anchor per session and is loaded as a bounded in-memory table. The filename
+catalog is built once at boot and maintained incrementally as storage changes.
+Calendar queries resolve only candidate intervals and seek directly to
+overlapping 32-byte rows. See `HISTORY_STORAGE_V3.md` for the exact
+format, recovery, inference, and query rules.
 
 ### 4. Time service
 
-Introduce a dedicated time service rather than placing time logic in Wi-Fi or
-history code. It maintains an estimate and provenance for wall time:
+A dedicated time service, separate from Wi-Fi and history, maintains wall-time
+estimates and provenance:
 
 1. boot with no wall time, but a fresh monotonic session;
 2. accept a time anchor from NTP when available;
@@ -142,6 +153,20 @@ history code. It maintains an estimate and provenance for wall time:
 NTP is preferred when reachable, but is not required for measuring or storing
 energy. Browser and peer time are redundant sources, not replacements for the
 offline timeline.
+
+The initial calendar implementation uses a persisted fixed UTC offset. This is
+enough for the meter's short (up to two week), predominantly seasonal views and
+avoids pretending that a browser's current offset contains complete timezone
+rules. Full IANA timezone and DST-transition support can be added later without
+changing the UTC anchors or raw measurement records.
+
+An unanchored boot block may be reconciled when anchors bound both sides. Its
+total unexplained downtime is explicit timestamp uncertainty and the block is
+shown only where that uncertainty fits the selected Usage bucket, retaining
+otherwise valid energy without placing it falsely at now.
+Missing or uncertain coverage is considered user-significant only when it exceeds
+one minute; smaller restart gaps remain in the data model but do not raise the UI
+warning symbol.
 
 ### 5. Network and future services
 
@@ -177,23 +202,28 @@ starting point; it is not a sufficient design for exposed remote services.
   sections for shared buffers.
 - UI updates use LVGL's locking/port conventions; background tasks do not
   manipulate LVGL objects directly.
+- Persistent screens make recurring timers visibility-aware. Hidden tabs do not
+  query storage, rebuild widgets, or invalidate charts.
+- LVGL callbacks remain bounded and non-blocking. Filesystem metadata is cached
+  or prepared outside recurring UI refreshes so storage/network latency cannot
+  determine touch-processing latency.
 - Flash operations are buffered and scheduled so they cannot starve sampling.
-- Every persisted format is versioned and recoverable after abrupt power loss.
+- Persisted formats have explicit format identity and bounded recovery behavior.
 - A sensor failure, clock loss, Wi-Fi loss, or peer loss degrades a feature but
   never prevents local measurement/UI operation.
 
-## Current implementation gaps
+## Remaining implementation gaps
 
 These are documented design gaps, not accepted final behavior:
 
 - simulation is the default until physical hardware is available; the ADC
   source and provisional pin/channel configuration are available but untested;
-- no persisted calibration exists;
-- historical records write `epoch_s = 0` and are not tied to a time service;
-- the current two-file history rotation does not meet its stated 30-day goal;
-- the Usage chart has provisional channel/math semantics;
-- Wi-Fi startup ownership is unclear: `main.cpp` does not explicitly initialize
-  or service the network manager;
+- physical ADC conversion and calibration still require validation against the
+  installed electrical hardware;
+- session-aware history/time needs longer-running recovery and retention testing
+  before its data is treated as production-durable;
+- the full meter data API and browser application are not yet implemented;
+- role configuration and peer time/data synchronization remain future work.
 
 ## Development and verification
 

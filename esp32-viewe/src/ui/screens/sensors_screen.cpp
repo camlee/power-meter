@@ -1043,7 +1043,8 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Read
 // Update loop
 // ---------------------------------------------------------------------------
 
-void updateCb(lv_timer_t*) {
+void updateCb(lv_timer_t* timer) {
+    if (timer && timer->user_data && !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
     sensors::Reading readings[kChartPoints];
 
     for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
@@ -1149,7 +1150,7 @@ lv_obj_t* create(lv_obj_t* parent) {
         createSensorTab(tabBtn, i);
     }
 
-    updateTimer = lv_timer_create(updateCb, kUpdateIntervalMs, nullptr);
+    updateTimer = lv_timer_create(updateCb, kUpdateIntervalMs, tabview);
 
     return tabview;
 }

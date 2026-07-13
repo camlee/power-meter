@@ -3,18 +3,22 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <cstring>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
+#include "data/history_query_service.h"
 #include "network/ota_service.h"
 #include "../../theme/ui_theme.h"
 
 namespace diagnostics_screen {
 namespace {
 
-lv_obj_t* memoryLabel = nullptr;
+lv_obj_t* internalMemoryLabel = nullptr;
+lv_obj_t* psramMemoryLabel = nullptr;
 lv_obj_t* storageLabel = nullptr;
 lv_obj_t* otaHealthLabel = nullptr;
 lv_obj_t* otaSlotLabel = nullptr;
 lv_obj_t* otaStateLabel = nullptr;
+lv_obj_t* historyQueryLabel = nullptr;
 lv_timer_t* updateTimer = nullptr;
 uint8_t rowIndex = 0;
 
@@ -55,11 +59,31 @@ const char* resetReasonStr(esp_reset_reason_t reason) {
     }
 }
 
-void updateCb(lv_timer_t*) {
+void updateCb(lv_timer_t* timer) {
+    if (timer && timer->user_data && !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
     char buffer[64];
-    snprintf(buffer, sizeof(buffer), "Heap %.0f KB  PSRAM %.0f KB",
-             ESP.getFreeHeap() / 1024.0, ESP.getFreePsram() / 1024.0);
-    lv_label_set_text(memoryLabel, buffer);
+    // INTERNAL and SPIRAM select disjoint dynamic heaps. Do not add DEFAULT or
+    // DMA figures here: those capabilities overlap these regions and would
+    // make a combined percentage misleading. Static data is not part of these
+    // heap totals.
+    constexpr uint32_t kInternalCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    constexpr uint32_t kPsramCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    const size_t internalTotal = heap_caps_get_total_size(kInternalCaps);
+    const size_t internalFree = heap_caps_get_free_size(kInternalCaps);
+    const size_t internalLargest = heap_caps_get_largest_free_block(kInternalCaps);
+    const size_t psramTotal = heap_caps_get_total_size(kPsramCaps);
+    const size_t psramFree = heap_caps_get_free_size(kPsramCaps);
+    const size_t psramLargest = heap_caps_get_largest_free_block(kPsramCaps);
+    const unsigned internalUsedPercent = internalTotal
+        ? static_cast<unsigned>(((internalTotal - internalFree) * 100 + internalTotal / 2) / internalTotal) : 0;
+    const unsigned psramUsedPercent = psramTotal
+        ? static_cast<unsigned>(((psramTotal - psramFree) * 100 + psramTotal / 2) / psramTotal) : 0;
+    snprintf(buffer, sizeof(buffer), "%u%% used; max %uK", internalUsedPercent,
+             static_cast<unsigned>(internalLargest / 1024));
+    lv_label_set_text(internalMemoryLabel, buffer);
+    snprintf(buffer, sizeof(buffer), "%u%% used; max %uK", psramUsedPercent,
+             static_cast<unsigned>(psramLargest / 1024));
+    lv_label_set_text(psramMemoryLabel, buffer);
 
     const size_t total = LittleFS.totalBytes();
     if (total == 0) {
@@ -83,6 +107,19 @@ void updateCb(lv_timer_t*) {
     snprintf(buffer, sizeof(buffer), "%s%s", ota_service::runningImageState(),
              ota_service::rollbackDetected() ? "; rollback detected" : "");
     lv_label_set_text(otaStateLabel, buffer);
+
+    history_query_service::Timing queryTiming{};
+    history_query_service::getTiming(queryTiming);
+    if (!queryTiming.lastDurationMs) {
+        lv_label_set_text(historyQueryLabel, "No query yet");
+    } else {
+        snprintf(buffer, sizeof(buffer), "%s %lums; %u files, %lu rows (max %lums)",
+                 queryTiming.lastWasUsage ? "Usage" : "Files",
+                 static_cast<unsigned long>(queryTiming.lastDurationMs), queryTiming.lastFilesRead,
+                 static_cast<unsigned long>(queryTiming.lastRecordsRead),
+                 static_cast<unsigned long>(queryTiming.maxDurationMs));
+        lv_label_set_text(historyQueryLabel, buffer);
+    }
 }
 
 } // namespace
@@ -110,14 +147,16 @@ lv_obj_t* create(lv_obj_t* parent) {
              (unsigned)(ESP.getFlashChipSize() / (1024 * 1024)));
     addRow(list, "CPU / flash", buffer);
     addRow(list, "Last reset", resetReasonStr(esp_reset_reason()));
-    memoryLabel = addRow(list, "Memory", "--");
+    internalMemoryLabel = addRow(list, "Internal heap", "--");
+    psramMemoryLabel = addRow(list, "PSRAM heap", "--");
     storageLabel = addRow(list, "Data storage", "--");
     otaHealthLabel = addRow(list, "OTA", "--");
     otaSlotLabel = addRow(list, "OTA slots", "--");
     otaStateLabel = addRow(list, "OTA image", "--");
+    historyQueryLabel = addRow(list, "History query", "--");
 
-    updateTimer = lv_timer_create(updateCb, 1000, nullptr);
-    updateCb(nullptr);
+    updateTimer = lv_timer_create(updateCb, 1000, screen);
+    if (lv_obj_is_visible(screen)) updateCb(nullptr);
     return screen;
 }
 

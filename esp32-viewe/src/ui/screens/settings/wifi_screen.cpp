@@ -281,7 +281,8 @@ void scanEventCb(lv_event_t*) {
     network_manager::scanNetworks();
 }
 
-void pollCb(lv_timer_t*) {
+void pollCb(lv_timer_t* timer) {
+    if (timer && timer->user_data && !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
     NetworkState currentState = network_manager::getState();
 
     if (currentState != lastState) {
@@ -325,7 +326,8 @@ void apRefreshClientList() {
     }
 }
 
-void apPollCb(lv_timer_t*) {
+void apPollCb(lv_timer_t* timer) {
+    if (timer && timer->user_data && !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
     if (!network_manager::isApEnabled()) return;
     apRefreshClientList();
 }
@@ -579,8 +581,8 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_tabview_set_act(modeTabview, 0, LV_ANIM_OFF);
     updateTabLabels();
 
-    pollTimer = lv_timer_create(pollCb, kPollIntervalMs, nullptr);
-    apPollTimer = lv_timer_create(apPollCb, kApPollIntervalMs, nullptr);
+    pollTimer = lv_timer_create(pollCb, kPollIntervalMs, scr);
+    apPollTimer = lv_timer_create(apPollCb, kApPollIntervalMs, scr);
 
     return scr;
 }

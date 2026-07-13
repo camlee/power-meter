@@ -120,6 +120,7 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 - `src/sensors/`: sensor acquisition, simulated source, and ESP32 ADC source
 - `src/sensors/sensor_config.h`: source selection and provisional pin mapping
 - `src/data/`: minute-level historical storage
+- `docs/HISTORY_STORAGE_V3.md`: agreed segmented history/anchor format and query plan
 - `include/esp/`: ESP Display Panel, ESP utility, and LVGL configuration headers
 
 ## Remote display and control
@@ -147,6 +148,32 @@ viewer. It remembers the bearer token in that browser for that device, refreshes
 the true 320×480 display about once per second, and maps a click/tap back to
 the display.
 
+## Browser time contribution
+
+A local browser application can give the meter a time anchor without internet
+access. The endpoint uses the same bearer token as OTA and remote display:
+
+```sh
+curl -X POST -H "Authorization: Bearer $VIEWE_OTA_TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{"unix_ms":1783890123456,"utc_offset_minutes":-360}' \
+  http://device1.local/api/v1/time/anchor
+```
+
+`unix_ms` is UTC milliseconds since the Unix epoch. `utc_offset_minutes` is
+local time minus UTC (Denver daylight time is `-360`); it is optional and, when
+present, becomes the meter's persisted fixed offset. The future web app should
+send `Date.now()` and negate JavaScript's `Date#getTimezoneOffset()` result.
+
+History-file diagnostics are exposed without scanning measurement rows:
+
+```sh
+curl -H "Authorization: Bearer $VIEWE_OTA_TOKEN" \
+  'http://device1.local/api/v1/history/files?offset=0&limit=25'
+```
+
+The endpoint is paginated and caps a page at 50 files.
+
 ## Sensor source
 
 Simulation is enabled by default so UI and storage work without sensor
@@ -154,3 +181,38 @@ hardware. `src/sensors/sensor_config.h` contains the provisional sequential
 mapping: In voltage/current = GPIO 5/6, Out = 7/8, and Aux = 9/10. Set
 `POWER_METER_USE_SIMULATED_SENSORS` to `0` when the physical hardware is ready
 for validation.
+
+## Firmware constraints and development gotchas
+
+This is a microcontroller firmware, not a database server. New features should
+prefer bounded work, small sequential writes, fixed-size data, and information
+that can be obtained from filenames/file sizes or current RAM state. In
+particular:
+
+- never scan all historical measurement records during boot or normal UI
+  refresh;
+- keep directory listings bounded (the planned history cap is 200 segment
+  files);
+- avoid large derived indexes when the filesystem can be the index;
+- make expensive per-file inspection an explicit user/API operation;
+- preserve sensor sampling and UI responsiveness while filesystem or network
+  work is underway.
+
+All top-level and Settings screens are persistent LVGL objects. Recurring screen
+timers must check `lv_obj_is_visible()` and do no substantive work for hidden
+tabs. Filesystem catalogs should be built once and updated when storage mutates,
+not re-enumerated on each UI/API read. Treat an LVGL callback above roughly
+50 ms as a performance bug requiring measurement and redesign.
+
+Internal capability RAM is considerably scarcer than the module's 8 MB PSRAM.
+CPU-only LVGL metadata/strings and bounded history/API scratch buffers therefore
+prefer PSRAM; DMA/display buffers use their explicit allocator. Avoid large
+automatic arrays in the Arduino `loopTask` or network handlers. Settings ->
+Debug reports internal and PSRAM heap usage separately and includes each heap's
+largest free block, which is often more useful than total free bytes when
+diagnosing fragmentation.
+
+LVGL's `lv_snprintf()` build does not support floating-point `%f` formats
+(including forms such as `%.2f`); it emits the literal `f` instead of a number.
+Use standard `snprintf()` where float formatting is required, or convert/round
+the value to an integer representation before calling `lv_snprintf()`.
