@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
+#include <esp_log.h>
 #include <Preferences.h>
 #include <ESPmDNS.h>
 #include <NetworkClient.h>
@@ -10,6 +11,7 @@
 #include <freertos/task.h>
 #include <time.h>
 #include "device/device_identity.h"
+#include "device/device_state.h"
 #include "time/time_service.h"
 
 namespace network_manager {
@@ -23,6 +25,42 @@ bool apRunning = false; // Add this discrete AP state flag
 bool mdnsRunning = false;
 uint32_t nextReconnectAt = 0;
 uint32_t reconnectDelayMs = 1000;
+
+// A concise, machine-readable serial line is the reliable recovery path when
+// mDNS is unavailable. Only emit it when an address or state changes: this is
+// useful in a monitor log without turning normal operation into log spam.
+uint32_t reportedStaIp = UINT32_MAX;
+uint32_t reportedApIp = UINT32_MAX;
+NetworkState reportedState = NetworkState::Scanning;
+
+void reportWebAddressesIfChanged() {
+    const IPAddress staIp = WiFi.localIP();
+    const IPAddress apIp = WiFi.softAPIP();
+    const uint32_t staRaw = static_cast<uint32_t>(staIp);
+    const uint32_t apRaw = static_cast<uint32_t>(apIp);
+    if (reportedStaIp == staRaw && reportedApIp == apRaw && reportedState == currentState) return;
+    reportedStaIp = staRaw;
+    reportedApIp = apRaw;
+    reportedState = currentState;
+
+    const String staText = staIp.toString();
+    const String apText = apIp.toString();
+    const char* host = device_identity::getHostname();
+    // ESP_LOG is visible through this board's USB JTAG serial device; Serial
+    // keeps the same information available on a conventional Arduino UART.
+    ESP_LOGI("network", "VIEWE_NETWORK state=%u station=%s ap=%s host=%s.local",
+             static_cast<unsigned>(currentState), staText.c_str(), apText.c_str(), host);
+    Serial.printf("VIEWE_NETWORK state=%u station=%s ap=%s host=%s.local\\n",
+                  static_cast<unsigned>(currentState), staText.c_str(), apText.c_str(), host);
+    if (staRaw) {
+        ESP_LOGI("network", "VIEWE_WEB url=http://%s/ host=%s.local", staText.c_str(), host);
+        Serial.printf("VIEWE_WEB url=http://%s/ host=%s.local\\n", staText.c_str(), host);
+    }
+    if (apRunning && apRaw) {
+        ESP_LOGI("network", "VIEWE_WEB_AP url=http://%s/", apText.c_str());
+        Serial.printf("VIEWE_WEB_AP url=http://%s/\\n", apText.c_str());
+    }
+}
 
 // Scan state
 int scanCount = 0;
@@ -267,6 +305,7 @@ void init() {
     if (loadLastNetwork(ssid, sizeof(ssid), password, sizeof(password))) {
         connectTo(ssid, password);
     }
+    reportWebAddressesIfChanged();
 }
 
 void update() {
@@ -335,6 +374,7 @@ void update() {
         default:
             break;
     }
+    reportWebAddressesIfChanged();
 }
 
 void connectTo(const char* ssid, const char* password) {
@@ -362,6 +402,7 @@ void connectTo(const char* ssid, const char* password) {
     connectStartTime = millis();
     nextReconnectAt = 0;
     currentState = NetworkState::ConnectingSta;
+    device_state::changed(device_state::Domain::Network);
 }
 
 void startAp(const char* ssid, const char* password, bool secure) {
@@ -370,6 +411,7 @@ void startAp(const char* ssid, const char* password, bool secure) {
         apRunning = true;
         saveApSettings(ssid, secure, password, true);
         ensureMdns();
+        device_state::changed(device_state::Domain::Network);
     }
 }
 
@@ -379,6 +421,7 @@ void stopAp() {
     apRunning = false;
     saveApEnabled(false);
     if (WiFi.status() != WL_CONNECTED) stopMdns();
+    device_state::changed(device_state::Domain::Network);
 }
 
 bool isApEnabled() {

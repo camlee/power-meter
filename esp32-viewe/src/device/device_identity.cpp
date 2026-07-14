@@ -7,6 +7,8 @@
 #include <ctype.h>
 #include <string.h>
 
+#include "device_state.h"
+
 namespace device_identity {
 namespace {
 
@@ -75,6 +77,7 @@ bool setDeviceId(const char* newDeviceId) {
     if (!saved) return false;
     strncpy(deviceId, newDeviceId, sizeof(deviceId) - 1);
     deviceId[sizeof(deviceId) - 1] = '\0';
+    device_state::changed(device_state::Domain::DeviceIdentity);
     return true;
 }
 

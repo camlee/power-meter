@@ -38,6 +38,17 @@ To watch logs:
 screen /dev/ttyACM0 -s 115200
 ```
 
+At boot and whenever networking changes, the meter prints a machine-readable
+address line such as `VIEWE_WEB url=http://192.168.1.217/ host=meter1.local`.
+That is the quickest physical-device recovery path. On a machine with mDNS,
+the project helper can discover the advertised meter without a subnet scan:
+
+```sh
+python3 tools/discover_device.py
+# Or use an address copied from serial:
+python3 tools/discover_device.py --host 192.168.1.217
+```
+
 ### OTA setup
 
 Do this before the first USB flash that should enable OTA updates:
@@ -125,37 +136,41 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 
 ## Remote display and control
 
-Once the meter is on Wi-Fi or its local AP, the authenticated HTTP service
-also exposes the actual LCD framebuffer and a virtual touch input:
+Once the meter is on Wi-Fi or its local AP, its local web interface exposes
+the actual LCD framebuffer and a virtual touch input without a browser token:
 
 ```sh
-# Use the same bearer token configured for signed OTA updates.
-curl -H "Authorization: Bearer $VIEWE_OTA_TOKEN" \
-  http://device1.local/api/v1/display/screenshot.bmp -o display.bmp
+curl http://device1.local/api/v1/display/screenshot.bmp -o display.bmp
 
 # A raw PPM variant is convenient for CLI image tools.
-curl -H "Authorization: Bearer $VIEWE_OTA_TOKEN" \
-  'http://device1.local/api/v1/display/screenshot.bmp?format=ppm' -o display.ppm
+curl 'http://device1.local/api/v1/display/screenshot.bmp?format=ppm' -o display.ppm
 
-curl -X POST -H "Authorization: Bearer $VIEWE_OTA_TOKEN" \
-  -H 'Content-Type: application/json' \
+curl -X POST -H 'Content-Type: application/json' \
   -d '{"x":160,"y":240}' \
   http://device1.local/api/v1/display/tap
 ```
 
-Open `http://device1.local/remote` for **power-meter remote**, a small browser
-viewer. It remembers the bearer token in that browser for that device, refreshes
-the true 320×480 display about once per second, and maps a click/tap back to
-the display.
+Open `http://device1.local/remote` for the embedded remote page. It loads a
+full-resolution snapshot immediately and maps clicks, drags, and taps back to
+the display. These controls are intended only for a trusted local network.
+
+## Embedded web application
+
+The normal firmware image now contains a small Svelte web application at
+`http://device1.local/`. It displays live readings, contributes browser time,
+and includes the remote-display view without requiring a browser token. Its frontend
+assets ship with normal USB and signed OTA application updates; they do not use
+the history LittleFS partition. See [docs/WEB_APP.md](docs/WEB_APP.md) for the
+local Node/PlatformIO build workflow, caching policy, realtime protocol, and
+cross-surface settings synchronization model.
 
 ## Browser time contribution
 
 A local browser application can give the meter a time anchor without internet
-access. The endpoint uses the same bearer token as OTA and remote display:
+access. The endpoint is available to the trusted local network:
 
 ```sh
-curl -X POST -H "Authorization: Bearer $VIEWE_OTA_TOKEN" \
-  -H 'Content-Type: application/json' \
+curl -X POST -H 'Content-Type: application/json' \
   -d '{"unix_ms":1783890123456,"utc_offset_minutes":-360}' \
   http://device1.local/api/v1/time/anchor
 ```

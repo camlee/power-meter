@@ -1,6 +1,7 @@
 #include "ota_service.h"
 
 #include <Arduino.h>
+#include <LittleFS.h>
 #include <WiFi.h>
 #include <Preferences.h>
 #include <WebServer.h>
@@ -13,12 +14,22 @@
 #include <mbedtls/pk.h>
 #include <mbedtls/rsa.h>
 #include <mbedtls/sha256.h>
+#include <math.h>
+#include <time.h>
 
 // These definitions are deliberately supplied by the local build environment,
 // never committed credentials.  An empty value disables firmware updates.
 #include "ota_public_key.h" // generated locally from keys/ota_signing_public.pem
+#include "build_time.h"
 #include "lvgl_v8_port.h"
 #include "data/historical_storage.h"
+#include "data/history_query_service.h"
+#include "device/device_identity.h"
+#include "device/device_state.h"
+#include "network/network_manager.h"
+#include "network/live_websocket_service.h"
+#include "network/web_assets.generated.h"
+#include "sensors/sensors.h"
 #include "time/time_service.h"
 #include "ui/input/remote_input.h"
 
@@ -39,7 +50,7 @@ namespace ota_service {
 namespace {
 
 WebServer server(80);
-constexpr uint32_t kScreenshotMinIntervalMs = 1000;
+constexpr uint32_t kScreenshotMinIntervalMs = 250;
 uint32_t lastScreenshotMs = 0;
 bool running = false;
 bool uploadAccepted = false;
@@ -137,6 +148,204 @@ bool authorised() {
     constexpr char prefix[] = "Bearer ";
     return token[0] != '\0' && header.startsWith(prefix) &&
            constantTimeEqual(header.substring(sizeof(prefix) - 1), token);
+}
+
+void putLe16(uint8_t* dest, uint16_t value);
+void putLe32(uint8_t* dest, uint32_t value);
+bool writeScreenshot(WiFiClient& client, const uint8_t* data, size_t length);
+
+void serveWebAsset() {
+    const String requestPath = server.uri();
+    const web_assets::Asset* selected = nullptr;
+    for (size_t i = 0; i < web_assets::kAssetCount; ++i) {
+        const auto& asset = web_assets::kAssets[i];
+        if (requestPath == asset.path || (requestPath == "/" && strcmp(asset.path, "/index.html") == 0)) {
+            selected = &asset;
+            break;
+        }
+    }
+    // Hash routes are intentionally served by the SPA shell. API requests
+    // never reach this fallback, which keeps a miss cheap and unambiguous.
+    if (!selected && !requestPath.startsWith("/api/")) {
+        for (size_t i = 0; i < web_assets::kAssetCount; ++i) {
+            if (strcmp(web_assets::kAssets[i].path, "/index.html") == 0) {
+                selected = &web_assets::kAssets[i];
+                break;
+            }
+        }
+    }
+    if (!selected) { server.send(404, "application/json", "{\"error\":\"not found\"}"); return; }
+
+    const String etag = String("\"") + selected->etag + "\"";
+    server.sendHeader("ETag", etag);
+    server.sendHeader("Content-Encoding", "gzip");
+    server.sendHeader("Cache-Control", selected->immutable
+        ? "public, max-age=31536000, immutable"
+        : "no-cache, max-age=0, must-revalidate");
+    if (server.header("If-None-Match") == etag) {
+        server.send(304, selected->contentType, "");
+        return;
+    }
+    server.send_P(200, selected->contentType,
+                  reinterpret_cast<PGM_P>(const_cast<uint8_t*>(selected->data)), selected->size);
+}
+
+void webStatus() {
+    sensors::Reading in{}, out{}, aux{};
+    const bool hasIn = sensors::getLatest(sensors::SENSOR_IN, in);
+    const bool hasOut = sensors::getLatest(sensors::SENSOR_OUT, out);
+    sensors::getLatest(sensors::SENSOR_AUX, aux);
+    float net = NAN;
+    sensors::getNetBatteryPower(net);
+    time_service::Anchor anchor{};
+    const char* timeSource = time_service::getCurrentAnchor(anchor)
+        ? time_service::sourceName(anchor.source) : "unanchored";
+    auto jsonFloat = [](char* dest, size_t size, float value) {
+        if (!isfinite(value)) snprintf(dest, size, "null");
+        else snprintf(dest, size, "%.4g", value);
+    };
+    char inVoltage[16], inCurrent[16], inPower[16], outVoltage[16], outCurrent[16], outPower[16], auxPower[16], netPower[16];
+    jsonFloat(inVoltage, sizeof(inVoltage), hasIn ? in.voltage : NAN);
+    jsonFloat(inCurrent, sizeof(inCurrent), hasIn ? in.current : NAN);
+    jsonFloat(inPower, sizeof(inPower), hasIn ? in.power : NAN);
+    jsonFloat(outVoltage, sizeof(outVoltage), hasOut ? out.voltage : NAN);
+    jsonFloat(outCurrent, sizeof(outCurrent), hasOut ? out.current : NAN);
+    jsonFloat(outPower, sizeof(outPower), hasOut ? out.power : NAN);
+    jsonFloat(auxPower, sizeof(auxPower), aux.power);
+    jsonFloat(netPower, sizeof(netPower), net);
+    char date[24] = "-", clock[24] = "-";
+    time_t now;
+    struct tm timeinfo;
+    time(&now);
+    localtime_r(&now, &timeinfo);
+    if (timeinfo.tm_year > 70) {
+        strftime(date, sizeof(date), "%b %e %Y", &timeinfo);
+        strftime(clock, sizeof(clock), "%I:%M:%S %p", &timeinfo);
+    }
+    const size_t storageTotal = LittleFS.totalBytes();
+    const unsigned storagePercent = storageTotal
+        ? static_cast<unsigned>((LittleFS.usedBytes() * 100U) / storageTotal) : 0;
+    char response[1152];
+    snprintf(response, sizeof(response),
+             "{\"api_version\":1,\"web_build\":\"%s\",\"state_revision\":%lu,"
+             "\"device_id\":\"%s\",\"hostname\":\"%s\",\"uptime_ms\":%lu,"
+             "\"time_source\":\"%s\",\"date\":\"%s\",\"time\":\"%s\","
+             "\"build_version\":\"%s\",\"build_date\":\"%s\",\"build_time\":\"%s\","
+             "\"data_storage_percent\":%u,\"ws_connections\":%u,\"ws_connection_limit\":%u,"
+             "\"in\":{\"voltage\":%s,\"current\":%s,\"power\":%s},"
+             "\"out\":{\"voltage\":%s,\"current\":%s,\"power\":%s},"
+             "\"aux\":{\"power\":%s},\"net_battery_power\":%s,"
+             "\"network\":{\"state\":%u,\"station_ip\":\"%s\",\"ap_ip\":\"%s\"}}",
+             web_assets::kBuildId, static_cast<unsigned long>(device_state::revision()),
+             device_identity::getDeviceId(), network_manager::getHostname(), static_cast<unsigned long>(millis()),
+             timeSource, date, clock, BUILD_VERSION, BUILD_DATE, BUILD_TIME, storagePercent,
+             static_cast<unsigned>(live_websocket_service::clientCount()),
+             static_cast<unsigned>(live_websocket_service::clientLimit()),
+             inVoltage, inCurrent, inPower, outVoltage, outCurrent, outPower,
+             auxPower, netPower, static_cast<unsigned>(network_manager::getState()),
+             network_manager::getStaIpAddress(),
+             network_manager::isApEnabled() ? network_manager::getApIpAddress() : "Off");
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", response);
+}
+
+void putLeFloat(uint8_t* dest, float value) {
+    uint32_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    putLe32(dest, bits);
+}
+
+void putLeDouble(uint8_t* dest, double value) {
+    uint64_t bits = 0;
+    memcpy(&bits, &value, sizeof(bits));
+    for (uint8_t i = 0; i < 8; ++i) dest[i] = static_cast<uint8_t>(bits >> (i * 8));
+}
+
+// Browser history is an explicitly requested, bounded background job. The
+// query service owns LittleFS work; this handler only consumes its completed
+// PSRAM result and serializes a compact public record format.
+void webHistoryQuery() {
+    if (!server.hasArg("job")) {
+        bool calendar = true;
+        historical_storage::CalendarRange range = historical_storage::CalendarRange::Today;
+        uint32_t lookbackMinutes = 0;
+        uint16_t defaultBucketMinutes = 30;
+        const String rangeArg = server.arg("range");
+        if (rangeArg == "last1hour") { calendar = false; lookbackMinutes = 60; defaultBucketMinutes = 2; }
+        else if (rangeArg == "last6hours") { calendar = false; lookbackMinutes = 360; defaultBucketMinutes = 15; }
+        else if (rangeArg == "last24hours") { calendar = false; lookbackMinutes = 1440; defaultBucketMinutes = 30; }
+        else if (rangeArg == "yesterday") range = historical_storage::CalendarRange::Yesterday;
+        else if (rangeArg == "last2days") range = historical_storage::CalendarRange::Last2Days;
+        else if (rangeArg == "lastweek") range = historical_storage::CalendarRange::LastWeek;
+        else if (rangeArg == "lasttwoweeks") range = historical_storage::CalendarRange::LastTwoWeeks;
+        else if (rangeArg == "all") { range = historical_storage::CalendarRange::All; defaultBucketMinutes = 0; }
+        else if (!rangeArg.isEmpty() && rangeArg != "today") {
+            server.send(400, "application/json", "{\"error\":\"invalid history range\"}");
+            return;
+        }
+        uint16_t bucketMinutes = defaultBucketMinutes;
+        if (server.hasArg("bucket_minutes")) {
+            const int requested = server.arg("bucket_minutes").toInt();
+            bucketMinutes = range == historical_storage::CalendarRange::All && requested == 0
+                ? 0 : constrain(requested, 1, 1440);
+        }
+        const uint32_t job = history_query_service::requestUsage({calendar,
+            range, lookbackMinutes, bucketMinutes});
+        if (!job) { server.send(503, "application/json", "{\"error\":\"history worker unavailable\"}"); return; }
+        server.sendHeader("Cache-Control", "no-store");
+        server.send(202, "application/json", String("{\"job\":") + job + "}");
+        return;
+    }
+
+    const uint32_t job = static_cast<uint32_t>(server.arg("job").toInt());
+    auto* buckets = static_cast<historical_storage::PowerBucket*>(heap_caps_calloc(
+        history_query_service::kMaxUsageBuckets, sizeof(historical_storage::PowerBucket),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!buckets) { server.send(503, "application/json", "{\"error\":\"history response buffer unavailable\"}"); return; }
+    size_t count = 0;
+    historical_storage::QueryStatus status{};
+    if (!history_query_service::takeUsage(job, buckets, history_query_service::kMaxUsageBuckets, count, status)) {
+        heap_caps_free(buckets);
+        server.sendHeader("Cache-Control", "no-store");
+        server.send(202, "application/json", "{\"state\":\"pending\"}");
+        return;
+    }
+
+    constexpr size_t kHeaderBytes = 32;
+    constexpr size_t kRecordBytes = 48;
+    const size_t responseBytes = kHeaderBytes + count * kRecordBytes;
+    auto* response = static_cast<uint8_t*>(heap_caps_calloc(1, responseBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!response) { heap_caps_free(buckets); server.send(503, "application/json", "{\"error\":\"history serialization unavailable\"}"); return; }
+    putLe32(response, 0x31485056); // "VPH1"
+    response[4] = 1; response[5] = 2;
+    uint16_t flags = (status.incomplete ? 1 : 0) | (status.hasInferredTime ? 2 : 0);
+    putLe16(response + 6, flags);
+    putLe16(response + 8, static_cast<uint16_t>(count));
+    putLe16(response + 10, kRecordBytes);
+    putLe32(response + 12, job);
+    putLeDouble(response + 16, static_cast<double>(status.startUnixMs));
+    putLeDouble(response + 24, static_cast<double>(status.endUnixMs));
+    for (size_t i = 0; i < count; ++i) {
+        uint8_t* record = response + kHeaderBytes + i * kRecordBytes;
+        const auto& bucket = buckets[i];
+        putLeDouble(record, static_cast<double>(bucket.startUnixMs));
+        putLe32(record + 8, bucket.coveredMs);
+        record[12] = bucket.timeFlags;
+        for (size_t value = 0; value < historical_storage::kSensorCount; ++value) {
+            putLeFloat(record + 16 + value * 4, bucket.energyWh[value]);
+        }
+        for (size_t value = 0; value < historical_storage::COMPONENT_COUNT; ++value) {
+            putLeFloat(record + 28 + value * 4, bucket.componentEnergyWh[value]);
+        }
+    }
+    heap_caps_free(buckets);
+    server.sendHeader("Cache-Control", "no-store");
+    server.setContentLength(responseBytes);
+    server.send(200, "application/vnd.viewe.history-v1", "");
+    WiFiClient client = server.client();
+    client.setConnectionTimeout(1500);
+    writeScreenshot(client, response, responseBytes);
+    heap_caps_free(response);
 }
 
 bool jsonString(const String& json, const char* name, String& value) {
@@ -266,7 +475,6 @@ bool writeScreenshot(WiFiClient& client, const uint8_t* data, size_t length) {
 // The RGB panel retains the rendered image in its framebuffer, making this a
 // faithful capture of the physical display rather than a second UI renderer.
 void screenshot() {
-    if (!authorised()) { server.send(401, "application/json", "{\"error\":\"unauthorised\"}"); return; }
     const uint32_t now = millis();
     if (now - lastScreenshotMs < kScreenshotMinIntervalMs) {
         server.sendHeader("Retry-After", "1");
@@ -372,7 +580,6 @@ void screenshot() {
 }
 
 bool parseRemotePoint(uint16_t& x, uint16_t& y, bool* pressed = nullptr) {
-    if (!authorised()) { server.send(401, "application/json", "{\"error\":\"unauthorised\"}"); return false; }
     uint32_t parsedX = 0, parsedY = 0;
     const String body = server.arg("plain");
     if (!jsonUnsigned(body, "x", parsedX) || !jsonUnsigned(body, "y", parsedY) || parsedX > 319 || parsedY > 479) {
@@ -404,11 +611,6 @@ void remotePointer() {
 }
 
 void browserTimeAnchor() {
-    if (!authorised()) {
-        server.send(401, "application/json", "{\"ok\":false,\"error\":\"unauthorised\"}");
-        return;
-    }
-
     const String body = server.arg("plain");
     int64_t unixMs = 0;
     // Keep obviously bad browser clocks out of persisted history. This is a
@@ -441,6 +643,7 @@ void browserTimeAnchor() {
                     "{\"ok\":false,\"error\":\"time anchor could not be persisted\"}");
         return;
     }
+    device_state::changed(device_state::Domain::Time);
 
     server.send(200, "application/json",
                 String("{\"ok\":true,\"source\":\"browser\",\"unix_ms\":") + unixMs +
@@ -509,12 +712,6 @@ void historyFiles() {
     json += "]}";
     server.send(200, "application/json", json);
     heap_caps_free(files);
-}
-
-const char kRemoteViewer[] PROGMEM = R"HTML(<!doctype html><meta name=viewport content="width=device-width,initial-scale=1"><title>power-meter remote</title><style>body{font:16px system-ui;margin:1rem;background:#111;color:#eee}input,button{font:inherit;padding:.45rem}img{display:block;width:min(100%,480px);height:auto;margin-top:1rem;touch-action:none;background:#222}</style><h1>power-meter remote</h1><p>Connect for one full-resolution snapshot. Refresh manually, or tap the display and it will refresh one second later.</p><input id=t type=password placeholder="API token" autocomplete=off><button id=c>Connect</button><button id=r disabled>Snapshot</button><button id=f>Forget token</button><span id=s></span><p id=e>Connect to view and control the display.</p><img id=i alt="Device display" hidden><script>const t=document.querySelector('#t'),i=document.querySelector('#i'),s=document.querySelector('#s'),e=document.querySelector('#e'),r=document.querySelector('#r'),key='power-meter.remote.token';let active=false,last='',lastMove=0,refreshTimer=0;t.value=localStorage.getItem(key)||'';const h=()=>({Authorization:'Bearer '+t.value}),pos=x=>{let b=i.getBoundingClientRect();return{x:Math.max(0,Math.min(319,Math.round((x.clientX-b.left)*320/b.width))),y:Math.max(0,Math.min(479,Math.round((x.clientY-b.top)*480/b.height)))}};async function shot(){if(!active)return;s.textContent=' snapshotting';r.disabled=true;try{let x=await fetch('/api/v1/display/screenshot.bmp',{headers:h()});if(!x.ok)throw Error(x.status);let u=URL.createObjectURL(await x.blob());URL.revokeObjectURL(last);last=u;i.src=u;i.hidden=false;e.hidden=true;s.textContent=' connected'}catch(x){s.textContent=' '+x}finally{r.disabled=!active}}async function pointer(x,pressed){if(!active)return;await fetch('/api/v1/display/pointer',{method:'POST',headers:{...h(),'Content-Type':'application/json'},body:JSON.stringify({...pos(x),pressed})})}function later(){clearTimeout(refreshTimer);refreshTimer=setTimeout(shot,1000)}document.querySelector('#c').onclick=()=>{if(!t.value)return;s.textContent=' connecting';localStorage.setItem(key,t.value);active=true;r.disabled=false;shot()};r.onclick=shot;document.querySelector('#f').onclick=()=>{clearTimeout(refreshTimer);localStorage.removeItem(key);t.value='';active=false;r.disabled=true;i.hidden=true;e.hidden=false;s.textContent=' token forgotten'};i.addEventListener('pointerdown',x=>{i.setPointerCapture(x.pointerId);pointer(x,true)});i.addEventListener('pointermove',x=>{if(x.buttons&&Date.now()-lastMove>80){lastMove=Date.now();pointer(x,true)}});i.addEventListener('pointerup',async x=>{await pointer(x,false);later()});i.addEventListener('pointercancel',x=>pointer(x,false));</script>)HTML";
-
-void remoteViewer() {
-    server.send_P(200, "text/html; charset=utf-8", kRemoteViewer);
 }
 
 // The canonical manifest bytes themselves are signed with RSA-PSS/SHA-256.
@@ -687,8 +884,8 @@ void info() {
 
 void begin() {
     if (running) return;
-    const char* headers[] = {"X-OTA-Token"};
-    server.collectHeaders(headers, 1);
+    const char* headers[] = {"X-OTA-Token", "If-None-Match"};
+    server.collectHeaders(headers, 2);
     server.on("/api/v1/info", HTTP_GET, info);
     server.on("/api/v1/update", HTTP_POST, completeUpload, handleUpload);
     server.on("/api/v1/display/screenshot.bmp", HTTP_GET, screenshot);
@@ -696,7 +893,10 @@ void begin() {
     server.on("/api/v1/display/pointer", HTTP_POST, remotePointer);
     server.on("/api/v1/time/anchor", HTTP_POST, browserTimeAnchor);
     server.on("/api/v1/history/files", HTTP_GET, historyFiles);
-    server.on("/remote", HTTP_GET, remoteViewer);
+    server.on("/api/v1/history/query", HTTP_GET, webHistoryQuery);
+    server.on("/api/v1/web/status", HTTP_GET, webStatus);
+    server.on("/", HTTP_GET, serveWebAsset);
+    server.onNotFound(serveWebAsset);
     server.begin();
     runningPartition = esp_ota_get_running_partition();
     bootPartition = esp_ota_get_boot_partition();

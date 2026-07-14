@@ -2,6 +2,7 @@
 
 #include "sensor_config.h"
 #include "sensors.h"
+#include "device/device_state.h"
 
 #include <Preferences.h>
 #include <cmath>
@@ -121,6 +122,7 @@ bool set(uint8_t sensor, Measurement measurement, Value value) {
     portENTER_CRITICAL(&profileMux);
     profile = candidate;
     portEXIT_CRITICAL(&profileMux);
+    device_state::changed(device_state::Domain::Calibration);
     return true;
 }
 

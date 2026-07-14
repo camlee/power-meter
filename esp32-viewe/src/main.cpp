@@ -11,6 +11,7 @@
 #include "data/history_query_service.h"
 #include "network/network_manager.h"
 #include "network/ota_service.h"
+#include "network/live_websocket_service.h"
 
 #include "ui/navigation/app_navigation.h"
 
@@ -38,6 +39,7 @@ void setup()
     // The server binds before an interface is available and becomes reachable
     // as soon as station or AP networking comes up.
     ota_service::begin();
+    live_websocket_service::begin();
 
     initDisplayAndLvgl();
 
@@ -57,6 +59,7 @@ void loop()
         network_manager::update();
     }
     ota_service::update();
+    live_websocket_service::update();
 
     if (now - lastStorageFeedMs >= sensors::kSampleIntervalMs) {
         lastStorageFeedMs = now;

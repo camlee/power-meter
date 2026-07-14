@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#101417" />
+    <title>power-meter</title>
+    <style>
+      :root { color-scheme: light dark; background: #fff; color: #202428; font-family: system-ui, sans-serif; }
+      @media (prefers-color-scheme: dark) { :root { background: #101417; color: #f1f5f7; } .boot p { color: #aab5bc; } }
+      body { margin: 0; } #app { min-height: 100vh; display: grid; place-items: center; }
+      .boot { width: min(18rem, calc(100vw - 3rem)); text-align: center; }
+      .boot h1 { font-size: 1.15rem; margin: 0 0 .7rem; font-weight: 600; }
+      .boot p { color: #68747c; margin: 0 0 1rem; }
+      .boot progress { width: 100%; height: .45rem; accent-color: #159947; }
+    </style>
+  </head>
+  <body>
+    <div id="app">
+      <div class="boot" role="status" aria-live="polite">
+        <h1>power-meter</h1><p>Loading the meter interface…</p><progress aria-label="Loading application"></progress>
+      </div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
