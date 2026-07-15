@@ -47,7 +47,7 @@ void reportWebAddressesIfChanged() {
     const String apText = apIp.toString();
     const char* host = device_identity::getHostname();
     // ESP_LOG is visible through this board's USB JTAG serial device; Serial
-    // keeps the same information available on a conventional Arduino UART.
+    // keeps the same information available on the conventional framework UART.
     ESP_LOGI("network", "VIEWE_NETWORK state=%u station=%s ap=%s host=%s.local",
              static_cast<unsigned>(currentState), staText.c_str(), apText.c_str(), host);
     Serial.printf("VIEWE_NETWORK state=%u station=%s ap=%s host=%s.local\\n",

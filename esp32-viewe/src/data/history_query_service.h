@@ -30,6 +30,8 @@ struct Timing {
 bool init();
 uint32_t requestUsage(const UsageRequest& request);
 uint32_t requestFiles(size_t limit = kMaxListedFiles);
+uint32_t requestFilesForDataset(historical_storage::Dataset dataset,
+                                size_t limit = kMaxListedFiles);
 
 bool takeUsage(uint32_t jobId, historical_storage::PowerBucket* out, size_t maxBuckets,
                size_t& count, historical_storage::QueryStatus& status, Timing* timing = nullptr);

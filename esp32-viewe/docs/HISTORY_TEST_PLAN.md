@@ -97,8 +97,8 @@ time is anchored, and record the exact interruption time externally.
 - Reboot repeatedly so several stale `.open` sessions accumulate.
 - Leave the device off for more than one minute and confirm a visible gap rather
   than carried-forward energy in the source-derived dataset only.
-- Interrupt/recover a sensor source without rebooting and confirm the same gap
-  semantics once null/stale sensor handling is implemented.
+- Interrupt/recover a sensor source without rebooting and confirm the
+  implemented null/stale handling creates the same gap semantics.
 
 For every case capture firmware version, source mode, session/file catalog
 before and after, expected loss window, observed graph/API result, and serial or

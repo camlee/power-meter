@@ -1,19 +1,21 @@
-# Arduino Uno UART sensor bridge
+# UART sensor interface
 
 ## Purpose and status
 
-The installed `arduino-lcd` meter can provide calibrated real-world readings to
-the VIEWE ESP32-S3 while the final ESP32 ADC sensor hardware is unavailable.
-The connection is one-way UART: the Uno remains responsible for its existing
-sensor sampling, LCD, calibration, EEPROM, and energy display, while the ESP32
-receives normalized readings and performs its own power and history processing.
+The UART source lets an external sensor producer provide calibrated real-world
+readings to the VIEWE ESP32-S3. The installed `arduino-lcd` meter is the first
+producer and provides an interim path while the final ESP32 ADC sensor hardware
+is unavailable. The connection is one-way: the producer remains responsible
+for its own sampling and calibration, while the ESP32 receives normalized
+readings and performs its own power and history processing.
 
-This document defines the intended V1 hardware and wire contract. It is not yet
-implemented or bench-verified. The Uno is not currently available, so changes
-to that project must be conservative and testable without altering its core
-meter behavior.
+This document defines the implemented V1 wire contract and its current Uno
+hardware integration. The Uno transmitter, ESP32 receiver, host protocol tests,
+and both firmware builds are complete; physical wiring and bench/on-site
+behavior are not yet verified. The Uno is not currently available, so its
+changes remain deliberately conservative and isolated from core meter behavior.
 
-## Hardware connection
+## Current Uno hardware connection
 
 | Arduino Uno | VIEWE UEDX32480035E-WB-A J4 |
 | --- | --- |
@@ -65,11 +67,11 @@ diagnostics and preserve a usable USB-JTAG debug/recovery path.
 
 ## V1 record
 
-The V1 format is bounded ASCII so it is easy to capture from the Uno USB serial
-interface, inspect by eye, and parse without dynamic allocation.
+The V1 format is bounded ASCII so it is easy to capture from a producer's
+serial interface, inspect by eye, and parse without dynamic allocation.
 
 ```text
-PM1,<sequence>,<uno_ms>,<mask>,<in_v>,<in_a>,<in_duty>,<out_v>,<out_a>,<out_duty>,<aux_v>,<aux_a>,<aux_duty>*<crc16>\n
+PM1,<sequence>,<source_ms>,<mask>,<in_v>,<in_a>,<in_duty>,<out_v>,<out_a>,<out_duty>,<aux_v>,<aux_a>,<aux_duty>*<crc16>\n
 ```
 
 Example for the expected Uno configuration, with `In` and `Out` present and
@@ -87,8 +89,8 @@ The example checksum is an authoritative V1 test vector for the algorithm below.
 | --- | --- |
 | `PM1` | Protocol magic and version. |
 | `sequence` | Unsigned 32-bit record counter, incremented once per transmitted record; wrap is allowed. |
-| `uno_ms` | Unsigned 32-bit Uno `millis()` at snapshot time; wrap is allowed. |
-| `mask` | Two uppercase hexadecimal digits. Bit 0 = `In`, bit 1 = `Out`, bit 2 = `Aux`; other bits must be zero. Expected Uno mask is `03`. |
+| `source_ms` | Unsigned 32-bit producer uptime at snapshot time; wrap is allowed. The current Uno producer uses `millis()`. |
+| `mask` | Two uppercase hexadecimal digits. Bit 0 = `In`, bit 1 = `Out`, bit 2 = `Aux`; other bits must be zero. The current Uno producer uses `03`. |
 | `*_v` | Calibrated voltage in volts. |
 | `*_a` | Calibrated current in amps. Signed values are allowed by the protocol. |
 | `*_duty` | Optional direct duty in the inclusive range 0–1. Empty asks the ESP32 to derive it when meaningful. |
@@ -99,7 +101,7 @@ its duty may be empty. All three fields for an absent channel are empty. `nan`,
 `inf`, scientific text that overflows the receiver, partial voltage/current
 data, extra fields, and trailing content are invalid.
 
-The expected Uno sends direct duty for `In`, where its faster samples can
+The current Uno producer sends direct duty for `In`, where its faster samples can
 observe charger behavior more meaningfully than the ESP32's 2 Hz receiver.
 Direct duty is optional for the other channels. Power and energy are deliberately
 not transmitted: the ESP32 calculates `voltage * current` and integrates its
@@ -117,7 +119,7 @@ Use CRC-16/CCITT-FALSE:
 
 The checksum protects framing and corrupted ASCII. It is not authentication.
 
-## Transmitter behavior
+## Current Uno producer behavior
 
 The Uno implementation must:
 
@@ -131,10 +133,10 @@ The Uno implementation must:
 - preserve LCD, buttons, calibration, EEPROM addresses, and existing local
   energy calculations.
 
-The current `LOG_READINGS` implementation is not the V1 protocol. It transmits
-too frequently, has no schema or presence metadata, and advances its ring index
-before printing. It should be replaced by a separately scheduled telemetry
-snapshot, not patched by depending on the current CSV field order.
+The former `LOG_READINGS` implementation was not the V1 protocol: it transmitted
+too frequently, had no schema or presence metadata, and advanced its ring index
+before printing. It has been replaced by the separately scheduled telemetry
+snapshot rather than retaining a dependency on the old CSV field order.
 
 ## Receiver behavior
 
@@ -148,17 +150,23 @@ The ESP32 implementation must:
    applying ESP32 ADC calibration; a finite out-of-range channel remains
    observable but ineligible for power/history;
 5. publish all channels from one accepted record as one coherent snapshot;
-6. use ESP32 receive time for live/history timing and Uno time/sequence only for
+6. use ESP32 receive time for live/history timing and source time/sequence only for
    source diagnostics;
-7. detect duplicates, sequence gaps, Uno resets, and timeout/recovery;
+7. detect duplicates, sequence gaps, source resets, and timeout/recovery;
 8. expose valid/invalid counts, last error, last-valid age, mask, sequence, and
-   Uno uptime through diagnostics;
+   source uptime through diagnostics;
 9. stop publishing valid samples when input is stale so history records a gap.
 
 The source begins in `Waiting`, becomes `Valid` after its first accepted record,
 and becomes `Stale` when no valid record arrives for two seconds. A malformed
 record increments diagnostics but does not immediately erase a still-fresh last
 sample. Recovery occurs on the next valid record.
+
+The touchscreen Setup page summarizes the active source's three channel states.
+The browser's read-only `GET /api/v1/sensors` model additionally exposes UART
+receiving/waiting/stale state, last-valid age, advertised mask, sequence,
+producer uptime, parser error, and frame/error counters. These diagnostics do
+not change the calculation or storage eligibility rules.
 
 The transport carries observations; calculation eligibility is defined in
 [SENSOR_DATA_POLICY.md](SENSOR_DATA_POLICY.md). A supplied out-of-range duty

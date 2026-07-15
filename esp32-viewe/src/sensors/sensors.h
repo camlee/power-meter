@@ -1,6 +1,8 @@
 #pragma once
+#include "sensor_limits.h"
 #include <cstdint>
 #include <cstddef>
+#include <limits>
 
 // Sensor roles in this simple solar system:
 //   SENSOR_IN  -- panel feeding the battery
@@ -24,18 +26,43 @@ constexpr size_t kHistorySize = 600;   // 5 min of history at 500 ms/sample
 // getDutyCycle() -- passing a larger `window` just gets clamped to this.
 constexpr size_t kDutyWindowSize = 60; // ~30 s at 500 ms/sample
 
-struct Reading {
-    uint32_t timestamp_ms;
-    float voltage;
-    float current;
-    float power;
-    // Raw ADC input voltages in Real mode. They are retained for the local
-    // calibration preview; Demo mode mirrors its simulated values here.
-    float voltageInputV;
-    float currentInputV;
-    // Direct duty reported by the source, or -1 when it must be inferred.
-    float dutyCycle;
+enum class ReadingState : uint8_t {
+    NotConfigured,
+    Waiting,
+    Valid,
+    OutOfRange,
+    Invalid,
+    Stale,
 };
+
+enum class DutyState : uint8_t {
+    NotReported,
+    Valid,
+    Invalid,
+};
+
+struct Reading {
+    uint32_t timestamp_ms = 0;
+    float voltage = std::numeric_limits<float>::quiet_NaN();
+    float current = std::numeric_limits<float>::quiet_NaN();
+    // The observed voltage/current product when finite, including for an
+    // OutOfRange reading. Consumers must check isCalculationEligible() before
+    // using it for operational KPIs, derived values, or history.
+    float power = std::numeric_limits<float>::quiet_NaN();
+    // Raw ADC input voltages in ADC mode. They are retained for the local
+    // calibration preview; Demo mirrors its simulated values here.
+    float voltageInputV = std::numeric_limits<float>::quiet_NaN();
+    float currentInputV = std::numeric_limits<float>::quiet_NaN();
+    bool configured = false;
+    ReadingState state = ReadingState::Waiting;
+    DutyState dutyState = DutyState::NotReported;
+    float dutyCycle = std::numeric_limits<float>::quiet_NaN();
+};
+
+bool isConfigured(const Reading& reading);
+bool isCalculationEligible(const Reading& reading);
+bool isDirectDutyEligible(const Reading& reading);
+uint8_t getConfiguredMask();
 
 void start();
 
@@ -48,7 +75,8 @@ bool getLatest(SensorId id, Reading& out);
 // power, clamped to [0, 1]. 1.0 means the sensor is running flat-out;
 // well below 1.0 means (for the panel) the charger has throttled into PWM
 // and is leaving power uncaptured. Returns 1.0 if there isn't enough power
-// flowing to measure meaningfully (avoids a noisy/undefined ratio near 0).
+// flowing to measure meaningfully (avoids a noisy/undefined ratio near 0),
+// and NaN when the source explicitly reported an invalid direct duty value.
 float getDutyCycle(SensorId id, size_t window = kDutyWindowSize);
 
 // Theoretical power available if duty cycle were 1.0: latest power / duty

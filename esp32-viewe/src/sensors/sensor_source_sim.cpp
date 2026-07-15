@@ -26,6 +26,8 @@ SensorSample SimulatedSensorSource::read() {
     float iNoise = ((float)random(-1000, 1001) / 1000.0f) * 0.03f * currentBaseline_;
 
     SensorSample s;
+    s.state = SensorSampleState::Observed;
+    s.configured = true;
     s.voltage = voltageBaseline_ + vDrift + vNoise;
     s.current = currentBaseline_ + iDrift + iNoise;
     if (s.current < 0) s.current = 0; // current shouldn't go negative in this sim
@@ -42,6 +44,7 @@ SensorSample SimulatedSensorSource::read() {
             lastDutyChangeMs_ = now;
         }
         s.current *= currentDuty_;
+        s.hasDutyCycle = true;
         s.dutyCycle = currentDuty_;
     }
     return s;

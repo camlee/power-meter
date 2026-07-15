@@ -49,6 +49,12 @@ void tabChangedCb(lv_event_t* event) {
                     static_cast<SettingsTabRuntime*>(lv_event_get_user_data(event)));
 }
 
+void screenRefreshCb(lv_event_t* event) {
+    if (lv_event_get_code(event) != LV_EVENT_REFRESH) return;
+    notifyActiveTab(lv_event_get_target(event),
+                    static_cast<SettingsTabRuntime*>(lv_event_get_user_data(event)));
+}
+
 } // namespace
 
 lv_obj_t* create(lv_obj_t* parent) {
@@ -68,6 +74,7 @@ lv_obj_t* create(lv_obj_t* parent) {
         tabs[i].content = tabDef.create(tab);
     }
     lv_obj_add_event_cb(tabview, tabChangedCb, LV_EVENT_VALUE_CHANGED, tabs);
+    lv_obj_add_event_cb(tabview, screenRefreshCb, LV_EVENT_REFRESH, tabs);
     notifyActiveTab(tabview, tabs);
 
     return tabview;

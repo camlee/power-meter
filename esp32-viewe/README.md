@@ -18,6 +18,20 @@ The active ESP Display Panel board is configured in `include/esp/esp_panel_board
 #define BOARD_VIEWE_UEDX32480035E_WB_A
 ```
 
+## Building and testing
+
+Build the firmware with PlatformIO:
+
+```sh
+pio run
+```
+
+Run the host-side PM1 UART parser tests locally, without an attached ESP32:
+
+```sh
+pio test -e native
+```
+
 ## Updating firmware
 
 Firmware versions are generated as
@@ -128,13 +142,14 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 - `src/ui/screens/`: top-level Sensors, Power, and Usage screens
 - `src/ui/screens/settings/`: Wi-Fi, Setup, Info, and Debug Settings sub-pages
 - `src/ui/components/`, `input/`, and `theme/`: shared UI building blocks
-- `src/sensors/`: sensor acquisition, simulated source, and ESP32 ADC source
+- `src/sensors/`: sensor acquisition plus Demo, ESP32 ADC, and UART sources
 - `src/sensors/sensor_config.h`: source selection and provisional pin mapping
 - `src/data/`: minute-level historical storage
 - `docs/HISTORY_STORAGE_V1.md`: candidate segmented history/tenant/coverage contract
 - `docs/HISTORY_TEST_PLAN.md`: deterministic, accelerated, interruption, and soak verification
 - `docs/SENSOR_DATA_POLICY.md`: raw observation, calculation limits, null/stale, and coverage policy
-- `docs/ARDUINO_UART_SENSOR.md`: interim Uno wiring and versioned UART protocol
+- `docs/UART_SENSOR.md`: versioned UART sensor protocol and current Uno wiring
+- `tools/build_demo_profile.py`: deterministic `demo-source` fixture generator/check
 - `include/esp/`: ESP Display Panel, ESP utility, and LVGL configuration headers
 
 ## Remote display and control

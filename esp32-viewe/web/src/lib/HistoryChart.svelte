@@ -64,9 +64,12 @@
   function computeYAxis(coveredBuckets) {
     let low = 0;
     let high = 0;
+    const sumFinite = (...values) => values.reduce(
+      (total, value) => total + (Number.isFinite(value) ? value : 0), 0,
+    );
     coveredBuckets.forEach((bucket) => {
-      high = Math.max(high, bucket.charging + bucket.panelIn + bucket.panelSurplus);
-      low = Math.min(low, -(bucket.batteryUsage + bucket.panelUsage));
+      high = Math.max(high, sumFinite(bucket.charging, bucket.panelIn, bucket.panelSurplus));
+      low = Math.min(low, -sumFinite(bucket.batteryUsage, bucket.panelUsage));
     });
 
     const step = niceStep((high - low || 1) / 4);
@@ -204,7 +207,7 @@
     // as zero-height bars (which would misleadingly read as "0 W").
     const coveredBuckets = buckets
       .map((bucket, index) => ({ bucket, index }))
-      .filter(({ bucket }) => bucket.coveredMs);
+      .filter(({ bucket }) => bucket.componentCoverageMs?.some((coverage) => coverage));
 
     const axis = computeYAxis(coveredBuckets.map(({ bucket }) => bucket));
     const valueToY = drawYAxis(ctx, plot, axis, colors);

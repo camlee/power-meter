@@ -3,10 +3,11 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <algorithm>
+#include <cmath>
 #include <cstring>
+#include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
-#include <esp_heap_caps.h>
 
 #include "demo_history_profile.h"
 #include "../sensors/sensor_mode.h"
@@ -16,21 +17,25 @@ namespace historical_storage {
 namespace {
 
 constexpr char kHistoryDir[] = "/history";
-constexpr char kV3Dir[] = "/history/v3";
+constexpr char kV1Dir[] = "/history/v1";
+constexpr char kRealDir[] = "/history/v1/real";
+constexpr char kDemoDir[] = "/history/v1/demo";
+constexpr char kFixtureMarkerPath[] = "/history/v1/demo/.fixture-version";
+constexpr char kFixtureAnchorPath[] = "/history/v1/demo/.fixture-anchor";
+constexpr char kFixtureAnchorTempPath[] = "/history/v1/demo/.fixture-anchor.tmp";
+constexpr uint32_t kFixtureVersion = 2;
+constexpr uint32_t kFixtureAnchorMagic = 0x31414846; // FHA1
 constexpr uint64_t kMinuteUs = 60000000ULL;
 constexpr int64_t kMinuteMs = 60000LL;
 constexpr int64_t kDayMs = 86400000LL;
+constexpr int64_t kFixtureAgeMs = 2 * kDayMs;
+constexpr uint32_t kMaxFrameIntervalMs = 10000;
+constexpr uint32_t kBoundaryGraceMs = kMaxFrameIntervalMs + 1000;
 constexpr size_t kRamCapacity = kRecordsPerSegment;
 constexpr size_t kCatalogCapacity = kMaxHistoryFiles + 1;
-constexpr uint32_t kDemoSpanMinutes = 3 * 24 * 60;
-constexpr uint32_t kDemoInferredSegmentFirstMinute = 1920;
 
-// Ten four-hour segments give the UI enough realistic history to exercise
-// every range while keeping the synthetic footprint small. Deliberate gaps
-// also make the incomplete-data treatment visible during demoing.
-constexpr uint32_t kDemoSegmentStarts[] = {
-    0, 240, 720, 960, 1440, 1920, 2400, 3120, 3840, 4080,
-};
+constexpr size_t kDemoSegmentCount = demo::kFixtureSegmentCount;
+constexpr uint32_t kDemoSpanMinutes = demo::kFixtureSpanMinutes;
 
 struct CatalogEntry {
     char name[52];
@@ -48,6 +53,15 @@ struct LocatedRecord {
     uint32_t minute;
 };
 
+struct __attribute__((packed)) FixtureAnchor {
+    uint32_t magic;
+    uint32_t version;
+    int64_t minuteZeroUnixMs;
+    int16_t utcOffsetMinutes;
+    uint16_t reserved;
+};
+static_assert(sizeof(FixtureAnchor) == 20, "fixture anchor layout changed");
+
 SemaphoreHandle_t mutex = nullptr;
 bool ready = false;
 MinuteEnergyRecord* ram = nullptr;
@@ -57,18 +71,29 @@ char activeName[52]{};
 uint32_t activeFirstMinute = 0;
 uint16_t activeCommitted = 0;
 bool activeExists = false;
+Dataset recordingDataset = Dataset::Real;
+bool haveRecordingDataset = false;
 
 bool boundaryInitialized = false;
 uint32_t nextBoundaryMinute = 0;
-double energyAccumWh[kSensorCount]{};
-double componentAccumWh[COMPONENT_COUNT]{};
-uint32_t lastFrameMs = 0;
+uint32_t nextBoundaryTimestampMs = 0;
+double channelEnergyAccumWh[kSensorCount]{};
+double componentEnergyAccumWh[COMPONENT_COUNT]{};
+uint32_t channelCoverageAccumMs[kSensorCount]{};
+uint32_t componentCoverageAccumMs[COMPONENT_COUNT]{};
+uint8_t minuteConfiguredMask = 0;
+uint8_t minuteQualityFlags = QUALITY_NONE;
+SampleFrame lastFrame{};
 bool haveLastFrame = false;
-// All public storage operations hold the recursive storage mutex, so one
-// bounded scratch catalog avoids putting ~14 KB on the small Arduino task stacks.
+bool runBreakPending = false;
+
 CatalogEntry* catalogScratch = nullptr;
 size_t catalogCount = 0;
 bool catalogValid = false;
+Dataset catalogDataset = Dataset::Real;
+
+FixtureAnchor fixtureAnchor{};
+bool fixtureAnchorLoaded = false;
 
 class Lock {
 public:
@@ -80,27 +105,60 @@ private:
     bool locked;
 };
 
-void makeOpenName(char* out, size_t size, uint32_t session, uint32_t firstMinute) {
-    snprintf(out, size, "h3-s%010lu-m%010lu.open",
+const char* datasetDir(Dataset dataset) {
+    return dataset == Dataset::Demo ? kDemoDir : kRealDir;
+}
+
+char datasetMarker(Dataset dataset) {
+    return dataset == Dataset::Demo ? 'd' : 'r';
+}
+
+bool isFixture(const CatalogEntry& entry) {
+    return entry.sessionId == 0;
+}
+
+void invalidateCatalog() {
+    catalogValid = false;
+    catalogCount = 0;
+}
+
+void makeOpenName(char* out, size_t size, Dataset dataset,
+                  uint32_t session, uint32_t firstMinute) {
+    snprintf(out, size, "h1-%c-s%010lu-m%010lu.open", datasetMarker(dataset),
              static_cast<unsigned long>(session), static_cast<unsigned long>(firstMinute));
 }
 
-void makeClosedName(char* out, size_t size, uint32_t session, uint32_t firstMinute, uint16_t count) {
-    snprintf(out, size, "h3-s%010lu-m%010lu-n%04u.bin",
+void makeClosedName(char* out, size_t size, Dataset dataset, uint32_t session,
+                    uint32_t firstMinute, uint16_t count) {
+    snprintf(out, size, "h1-%c-s%010lu-m%010lu-n%04u.bin", datasetMarker(dataset),
              static_cast<unsigned long>(session), static_cast<unsigned long>(firstMinute), count);
 }
 
-bool parseName(const char* name, CatalogEntry& entry) {
+bool parseName(const char* name, Dataset expectedDataset, CatalogEntry& entry) {
     unsigned long session = 0, minute = 0;
     unsigned count = 0;
+    char marker = '\0';
     int consumed = 0;
-    bool closed = sscanf(name, "h3-s%10lu-m%10lu-n%4u.bin%n", &session, &minute, &count, &consumed) == 3 &&
-                  name[consumed] == '\0' && count <= kRecordsPerSegment;
+    const bool closed = sscanf(name, "h1-%c-s%10lu-m%10lu-n%4u.bin%n",
+                               &marker, &session, &minute, &count, &consumed) == 4 &&
+                        name[consumed] == '\0' && count <= kRecordsPerSegment;
     if (!closed) {
         consumed = 0;
-        if (sscanf(name, "h3-s%10lu-m%10lu.open%n", &session, &minute, &consumed) != 2 ||
-            name[consumed] != '\0') return false;
+        if (sscanf(name, "h1-%c-s%10lu-m%10lu.open%n", &marker, &session, &minute,
+                   &consumed) != 3 || name[consumed] != '\0') return false;
     }
+    if (marker != datasetMarker(expectedDataset)) return false;
+    if (session == 0 && expectedDataset != Dataset::Demo) return false;
+    char canonical[52];
+    if (closed) {
+        makeClosedName(canonical, sizeof(canonical), expectedDataset,
+                       static_cast<uint32_t>(session), static_cast<uint32_t>(minute),
+                       static_cast<uint16_t>(count));
+    } else {
+        makeOpenName(canonical, sizeof(canonical), expectedDataset,
+                     static_cast<uint32_t>(session), static_cast<uint32_t>(minute));
+    }
+    if (strcmp(name, canonical) != 0) return false;
     memset(&entry, 0, sizeof(entry));
     strncpy(entry.name, name, sizeof(entry.name) - 1);
     entry.sessionId = static_cast<uint32_t>(session);
@@ -115,12 +173,14 @@ bool catalogLess(const CatalogEntry& a, const CatalogEntry& b) {
     return a.firstMinute < b.firstMinute;
 }
 
-bool isDemoEntry(const CatalogEntry& entry) { return entry.sessionId == 0; }
+void fullPath(char* out, size_t size, Dataset dataset, const char* name) {
+    snprintf(out, size, "%s/%s", datasetDir(dataset), name);
+}
 
-size_t buildCatalog(CatalogEntry* out, size_t capacity) {
-    if (out == catalogScratch && catalogValid) return catalogCount;
+size_t buildCatalog(Dataset dataset, CatalogEntry* out, size_t capacity) {
+    if (out == catalogScratch && catalogValid && catalogDataset == dataset) return catalogCount;
     size_t count = 0;
-    File directory = LittleFS.open(kV3Dir);
+    File directory = LittleFS.open(datasetDir(dataset));
     if (directory && directory.isDirectory()) {
         File file = directory.openNextFile();
         while (file) {
@@ -128,116 +188,115 @@ size_t buildCatalog(CatalogEntry* out, size_t capacity) {
             const char* full = file.name();
             const char* base = strrchr(full, '/');
             base = base ? base + 1 : full;
-            if (!file.isDirectory() && parseName(base, entry) && count < capacity) {
+            if (!file.isDirectory() && parseName(base, dataset, entry) && count < capacity) {
                 entry.bytes = file.size();
-                const uint16_t completeRows = static_cast<uint16_t>(entry.bytes / sizeof(MinuteEnergyRecord));
-                entry.records = entry.closed ? std::min(entry.records, completeRows) : completeRows;
-                entry.active = activeExists && strcmp(entry.name, activeName) == 0;
-                out[count++] = entry;
+                const uint32_t completeRows = entry.bytes / sizeof(MinuteEnergyRecord);
+                if ((!entry.closed || (completeRows == entry.records &&
+                                       entry.bytes % sizeof(MinuteEnergyRecord) == 0)) &&
+                    completeRows <= kRecordsPerSegment) {
+                    if (!entry.closed) entry.records = static_cast<uint16_t>(completeRows);
+                    entry.active = activeExists && haveRecordingDataset &&
+                                   recordingDataset == dataset && strcmp(entry.name, activeName) == 0;
+                    out[count++] = entry;
+                }
             }
             file = directory.openNextFile();
         }
         directory.close();
     }
 
-    if (activeExists) {
+    // A newly allocated active segment exists in RAM before its first flash
+    // append and therefore is not visible in LittleFS yet.
+    if (activeExists && haveRecordingDataset && recordingDataset == dataset) {
         bool found = false;
         for (size_t i = 0; i < count; ++i) {
-            if (strcmp(out[i].name, activeName) == 0) { out[i].active = true; found = true; break; }
+            if (strcmp(out[i].name, activeName) == 0) {
+                out[i].active = true;
+                found = true;
+                break;
+            }
         }
         if (!found && count < capacity) {
             CatalogEntry entry{};
-            parseName(activeName, entry);
-            entry.active = true;
-            out[count++] = entry;
+            if (parseName(activeName, dataset, entry)) {
+                entry.active = true;
+                out[count++] = entry;
+            }
         }
     }
+
     std::sort(out, out + count, catalogLess);
     if (out == catalogScratch) {
+        catalogDataset = dataset;
         catalogCount = count;
         catalogValid = true;
     }
     return count;
 }
 
-int catalogIndex(const char* name) {
-    if (!catalogValid) buildCatalog(catalogScratch, kCatalogCapacity);
+int catalogIndex(Dataset dataset, const char* name) {
+    if (!catalogValid || catalogDataset != dataset) buildCatalog(dataset, catalogScratch, kCatalogCapacity);
     for (size_t i = 0; i < catalogCount; ++i) {
         if (strcmp(catalogScratch[i].name, name) == 0) return static_cast<int>(i);
     }
     return -1;
 }
 
-void fullPath(char* out, size_t size, const char* name) {
-    snprintf(out, size, "%s/%s", kV3Dir, name);
-}
-
-bool enforceRetention() {
+bool enforceRetention(Dataset dataset) {
     CatalogEntry* catalog = catalogScratch;
-    size_t count = buildCatalog(catalog, kCatalogCapacity);
-    bool ok = true;
+    size_t count = buildCatalog(dataset, catalog, kCatalogCapacity);
     while (count >= kMaxHistoryFiles) {
         size_t victim = 0;
-        while (victim < count && catalog[victim].active) ++victim;
+        while (victim < count && (catalog[victim].active || isFixture(catalog[victim]))) ++victim;
         if (victim == count) return false;
-        char path[80];
-        fullPath(path, sizeof(path), catalog[victim].name);
+        char path[96];
+        fullPath(path, sizeof(path), dataset, catalog[victim].name);
         if (!LittleFS.remove(path)) return false;
-        memmove(catalog + victim, catalog + victim + 1, (count - victim - 1) * sizeof(CatalogEntry));
+        memmove(catalog + victim, catalog + victim + 1,
+                (count - victim - 1) * sizeof(CatalogEntry));
         --count;
     }
+    catalogDataset = dataset;
     catalogCount = count;
     catalogValid = true;
-    return ok;
+    return true;
 }
 
 bool ensureActive() {
     if (activeExists) return true;
-    if (!ramCount || !enforceRetention()) return false;
+    if (!haveRecordingDataset || !ramCount || !enforceRetention(recordingDataset)) return false;
+    const uint32_t sessionId = time_service::currentSessionId();
+    if (!sessionId) return false; // Session zero is reserved for Demo fixtures.
     activeFirstMinute = ramFirstMinute;
-    makeOpenName(activeName, sizeof(activeName), time_service::currentSessionId(), activeFirstMinute);
+    makeOpenName(activeName, sizeof(activeName), recordingDataset,
+                 sessionId, activeFirstMinute);
     activeCommitted = 0;
     activeExists = true;
-    if (!catalogValid) buildCatalog(catalogScratch, kCatalogCapacity);
-    if (catalogCount >= kCatalogCapacity) {
-        activeExists = false;
-        activeName[0] = '\0';
-        return false;
-    }
-    CatalogEntry entry{};
-    parseName(activeName, entry);
-    entry.active = true;
-    catalogScratch[catalogCount++] = entry;
-    std::sort(catalogScratch, catalogScratch + catalogCount, catalogLess);
+    invalidateCatalog();
+    buildCatalog(recordingDataset, catalogScratch, kCatalogCapacity);
     return true;
 }
 
 bool closeActive() {
     if (!activeExists || activeCommitted != kRecordsPerSegment || ramCount) return false;
-    char oldPath[80], newPath[80], closedName[52];
-    fullPath(oldPath, sizeof(oldPath), activeName);
-    makeClosedName(closedName, sizeof(closedName), time_service::currentSessionId(),
-                   activeFirstMinute, activeCommitted);
-    fullPath(newPath, sizeof(newPath), closedName);
+    char oldPath[96], newPath[96], closedName[52];
+    fullPath(oldPath, sizeof(oldPath), recordingDataset, activeName);
+    makeClosedName(closedName, sizeof(closedName), recordingDataset,
+                   time_service::currentSessionId(), activeFirstMinute, activeCommitted);
+    fullPath(newPath, sizeof(newPath), recordingDataset, closedName);
     if (!LittleFS.rename(oldPath, newPath)) return false;
-    const int index = catalogIndex(activeName);
-    if (index >= 0) {
-        strncpy(catalogScratch[index].name, closedName, sizeof(catalogScratch[index].name) - 1);
-        catalogScratch[index].closed = true;
-        catalogScratch[index].active = false;
-        catalogScratch[index].records = activeCommitted;
-    }
     activeExists = false;
     activeName[0] = '\0';
     activeCommitted = 0;
+    invalidateCatalog();
     return true;
 }
 
 bool flushRam() {
     if (!ramCount) return true;
     if (!ensureActive()) return false;
-    char path[80];
-    fullPath(path, sizeof(path), activeName);
+    char path[96];
+    fullPath(path, sizeof(path), recordingDataset, activeName);
     File file = LittleFS.open(path, "a");
     if (!file) return false;
     const size_t bytes = ramCount * sizeof(MinuteEnergyRecord);
@@ -246,49 +305,109 @@ bool flushRam() {
     file.close();
     if (!ok) return false;
     activeCommitted += ramCount;
-    const int index = catalogIndex(activeName);
-    if (index >= 0) {
-        catalogScratch[index].records = activeCommitted;
-        catalogScratch[index].bytes += bytes;
-    }
     ramCount = 0;
+    invalidateCatalog();
     if (activeCommitted == kRecordsPerSegment) return closeActive();
+    return activeCommitted < kRecordsPerSegment;
+}
+
+void resetMinuteAccumulators() {
+    memset(channelEnergyAccumWh, 0, sizeof(channelEnergyAccumWh));
+    memset(componentEnergyAccumWh, 0, sizeof(componentEnergyAccumWh));
+    memset(channelCoverageAccumMs, 0, sizeof(channelCoverageAccumMs));
+    memset(componentCoverageAccumMs, 0, sizeof(componentCoverageAccumMs));
+    minuteConfiguredMask = 0;
+    minuteQualityFlags = QUALITY_NONE;
+}
+
+bool stopActiveRun() {
+    if (ramCount && !flushRam()) {
+        Serial.println("historical_storage: could not commit pending V1 rows at run boundary");
+        return false;
+    }
+    // A partial .open file is intentionally left as interruption evidence.
+    activeExists = false;
+    activeName[0] = '\0';
+    activeCommitted = 0;
+    invalidateCatalog();
+    runBreakPending = false;
     return true;
 }
 
 void appendCompletedMinute(uint32_t minute) {
+    if (runBreakPending && !stopActiveRun()) {
+        // Do not append a non-contiguous row to the previous filename. The
+        // current minute is an honest gap while the older batch remains in RAM.
+        resetMinuteAccumulators();
+        return;
+    }
+    if (!minuteConfiguredMask) {
+        if (!stopActiveRun()) runBreakPending = true;
+        resetMinuteAccumulators();
+        return;
+    }
     if (ramCount == kRamCapacity) {
-        Serial.println("historical_storage: RAM segment full; flash append is failing");
+        Serial.println("historical_storage: V1 RAM segment full; flash append is failing");
+        resetMinuteAccumulators();
         return;
     }
     if (!ramCount) ramFirstMinute = minute;
     MinuteEnergyRecord& record = ram[ramCount++];
+    memset(&record, 0, sizeof(record));
     for (uint8_t i = 0; i < kSensorCount; ++i) {
-        record.energyWh[i] = static_cast<float>(energyAccumWh[i]);
-        energyAccumWh[i] = 0;
+        record.channelEnergyWh[i] = static_cast<float>(channelEnergyAccumWh[i]);
+        record.channelCoverageMs[i] = static_cast<uint16_t>(
+            std::min<uint32_t>(channelCoverageAccumMs[i], 60000));
     }
     for (uint8_t i = 0; i < COMPONENT_COUNT; ++i) {
-        record.componentEnergyWh[i] = static_cast<float>(componentAccumWh[i]);
-        componentAccumWh[i] = 0;
+        record.componentEnergyWh[i] = static_cast<float>(componentEnergyAccumWh[i]);
+        record.componentCoverageMs[i] = static_cast<uint16_t>(
+            std::min<uint32_t>(componentCoverageAccumMs[i], 60000));
     }
+    record.configuredChannelMask = minuteConfiguredMask;
+    record.qualityFlags = minuteQualityFlags;
+    resetMinuteAccumulators();
+
     if (ramCount == 1 && !ensureActive()) {
-        Serial.println("historical_storage: active segment metadata unavailable");
+        Serial.println("historical_storage: active V1 segment metadata unavailable");
     }
     if (ramCount >= kFlushIntervalMinutes || activeCommitted + ramCount == kRecordsPerSegment) {
-        if (!flushRam()) Serial.println("historical_storage: retaining unwritten rows in RAM");
+        if (!flushRam()) Serial.println("historical_storage: retaining unwritten V1 rows in RAM");
     }
 }
 
-bool readRecord(const CatalogEntry& entry, uint16_t index, File& file, LocatedRecord& out) {
-    if (index >= entry.records + (entry.active ? ramCount : 0)) return false;
+bool switchRecordingDataset(Dataset dataset) {
+    if (!haveRecordingDataset) {
+        recordingDataset = dataset;
+        haveRecordingDataset = true;
+        return true;
+    }
+    if (recordingDataset == dataset) return true;
+    if (!stopActiveRun()) {
+        runBreakPending = true;
+        return false;
+    }
+    recordingDataset = dataset;
+    boundaryInitialized = false;
+    haveLastFrame = false;
+    resetMinuteAccumulators();
+    return true;
+}
+
+bool readRecord(Dataset dataset, const CatalogEntry& entry, uint16_t index,
+                File& file, LocatedRecord& out) {
+    const bool runtimeActive = entry.active && haveRecordingDataset && recordingDataset == dataset;
+    if (index >= entry.records + (runtimeActive ? ramCount : 0)) return false;
     if (index < entry.records) {
         if (!file) {
-            char path[80];
-            fullPath(path, sizeof(path), entry.name);
+            char path[96];
+            fullPath(path, sizeof(path), dataset, entry.name);
             file = LittleFS.open(path, "r");
         }
         if (!file || !file.seek(static_cast<uint32_t>(index) * sizeof(MinuteEnergyRecord)) ||
-            file.read(reinterpret_cast<uint8_t*>(&out.energy), sizeof(out.energy)) != sizeof(out.energy)) return false;
+            file.read(reinterpret_cast<uint8_t*>(&out.energy), sizeof(out.energy)) != sizeof(out.energy)) {
+            return false;
+        }
     } else {
         out.energy = ram[index - entry.records];
     }
@@ -301,19 +420,39 @@ uint64_t sequenceOf(const LocatedRecord& record) {
     return (static_cast<uint64_t>(record.sessionId) << 32) | record.minute;
 }
 
-void clearBucket(PowerBucket& bucket) { memset(&bucket, 0, sizeof(bucket)); }
-
-void addEnergy(PowerBucket& bucket, const MinuteEnergyRecord& record, double fraction = 1.0) {
-    for (uint8_t i = 0; i < kSensorCount; ++i) bucket.energyWh[i] += record.energyWh[i] * fraction;
-    for (uint8_t i = 0; i < COMPONENT_COUNT; ++i) bucket.componentEnergyWh[i] += record.componentEnergyWh[i] * fraction;
+void clearBucket(PowerBucket& bucket) {
+    memset(&bucket, 0, sizeof(bucket));
 }
 
-void finishBucket(PowerBucket& bucket) {
+void addRecord(PowerBucket& bucket, const MinuteEnergyRecord& record, uint32_t overlapMs) {
+    const double fraction = static_cast<double>(overlapMs) / kMinuteMs;
+    for (uint8_t i = 0; i < kSensorCount; ++i) {
+        bucket.energyWh[i] += record.channelEnergyWh[i] * fraction;
+        bucket.channelCoverageMs[i] += static_cast<uint32_t>(record.channelCoverageMs[i] * fraction);
+    }
+    for (uint8_t i = 0; i < COMPONENT_COUNT; ++i) {
+        bucket.componentEnergyWh[i] += record.componentEnergyWh[i] * fraction;
+        bucket.componentCoverageMs[i] += static_cast<uint32_t>(record.componentCoverageMs[i] * fraction);
+    }
+    bucket.configuredChannelMask |= record.configuredChannelMask;
+    bucket.qualityFlags |= record.qualityFlags;
+}
+
+void finishBucket(PowerBucket& bucket, uint32_t elapsedMs) {
     if (!bucket.durationMinutes) return;
-    for (uint8_t i = 0; i < COMPONENT_COUNT; ++i)
-        bucket.componentAveragePowerW[i] = bucket.componentEnergyWh[i] * 60.0f / bucket.durationMinutes;
-    const uint32_t expected = static_cast<uint32_t>(bucket.durationMinutes) * 60000U;
+    for (uint8_t i = 0; i < COMPONENT_COUNT; ++i) {
+        bucket.componentAveragePowerW[i] = bucket.componentCoverageMs[i]
+            ? bucket.componentEnergyWh[i] * 3600000.0f / bucket.componentCoverageMs[i]
+            : NAN;
+    }
+    const uint32_t expected = elapsedMs;
     if (expected > bucket.coveredMs + kMaterialGapMs) bucket.timeFlags |= TIME_INCOMPLETE;
+    for (uint8_t i = 0; i < kSensorCount; ++i) {
+        if ((bucket.configuredChannelMask & (1U << i)) &&
+            expected > bucket.channelCoverageMs[i] + kMaterialGapMs) {
+            bucket.timeFlags |= TIME_INCOMPLETE;
+        }
+    }
 }
 
 bool directStart(const CatalogEntry& entry, int64_t& startMs) {
@@ -321,53 +460,126 @@ bool directStart(const CatalogEntry& entry, int64_t& startMs) {
         entry.sessionId, static_cast<uint64_t>(entry.firstMinute) * kMinuteUs, startMs);
 }
 
-int64_t localMidnightUtc(int64_t unixMs, int16_t offsetMinutes);
+int64_t localMidnightUtc(int64_t unixMs, int16_t offsetMinutes) {
+    const int64_t offsetMs = static_cast<int64_t>(offsetMinutes) * kMinuteMs;
+    return ((unixMs + offsetMs) / kDayMs) * kDayMs - offsetMs;
+}
 
 bool sessionBounds(const CatalogEntry* catalog, size_t count, uint32_t session,
                    uint32_t& firstMinute, uint32_t& endMinute) {
     bool found = false;
     firstMinute = UINT32_MAX;
     endMinute = 0;
-    for (size_t i = 0; i < count; ++i) if (catalog[i].sessionId == session) {
+    for (size_t i = 0; i < count; ++i) {
+        if (catalog[i].sessionId != session) continue;
         found = true;
         firstMinute = std::min(firstMinute, catalog[i].firstMinute);
-        endMinute = std::max(endMinute, catalog[i].firstMinute + catalog[i].records +
-                                      static_cast<uint32_t>(catalog[i].active ? ramCount : 0));
+        const uint32_t buffered = catalog[i].active ? ramCount : 0;
+        endMinute = std::max(endMinute, catalog[i].firstMinute + catalog[i].records + buffered);
     }
     return found;
 }
 
-bool resolveDemoEntry(const CatalogEntry* catalog, size_t count, const CatalogEntry& entry,
-                      int64_t& startMs, uint8_t& flags) {
-    if (sensor_mode::get() != sensor_mode::Mode::Demo || entry.sessionId != 0 ||
-        !time_service::hasCurrentTime()) return false;
-    uint32_t firstMinute = 0, endMinute = 0;
-    if (!sessionBounds(catalog, count, 0, firstMinute, endMinute)) return false;
-    int64_t nowMs = 0;
-    if (!time_service::resolveUnixTimeMs(time_service::currentSessionId(),
-            time_service::monotonicUs(), nowMs)) return false;
-    // The synthetic source deliberately spans complete local days, including
-    // today through its upcoming midnight. Queries still clip at "now", so it
-    // never displays future energy but can exercise full-day axes without a
-    // misleading leading partial-day gap.
-    const int64_t demoEnd = localMidnightUtc(nowMs, time_service::utcOffsetMinutes()) + kDayMs;
-    startMs = demoEnd - static_cast<int64_t>(endMinute - entry.firstMinute) * kMinuteMs;
-    // Keep one historical demo day marked as an estimated placement. This
-    // exercises the Usage disclosure without changing how real files resolve.
-    flags = entry.firstMinute == kDemoInferredSegmentFirstMinute
-        ? TIME_INFERRED : TIME_ANCHORED;
+bool loadFixtureAnchor() {
+    if (fixtureAnchorLoaded) return true;
+    File file = LittleFS.open(kFixtureAnchorPath, "r");
+    if (!file) return false;
+    FixtureAnchor loaded{};
+    const bool ok = file.read(reinterpret_cast<uint8_t*>(&loaded), sizeof(loaded)) == sizeof(loaded) &&
+                    loaded.magic == kFixtureAnchorMagic && loaded.version == kFixtureVersion;
+    file.close();
+    if (!ok) return false;
+    fixtureAnchor = loaded;
+    fixtureAnchorLoaded = true;
     return true;
 }
 
-bool resolveEntry(const CatalogEntry* catalog, size_t count, const CatalogEntry& entry,
-                  int64_t& startMs, uint8_t& flags,
-                  int64_t maxInferenceUncertaintyMs = 2LL * kInferenceBoundaryMs) {
-    if (resolveDemoEntry(catalog, count, entry, startMs, flags)) return true;
-    if (directStart(entry, startMs)) { flags = TIME_ANCHORED; return true; }
-    if (entry.sessionId == 0) return false;
-    uint32_t firstMinute, endMinute;
-    if (!sessionBounds(catalog, count, entry.sessionId, firstMinute, endMinute)) return false;
+bool saveFixtureAnchor(const FixtureAnchor& anchor) {
+    LittleFS.remove(kFixtureAnchorTempPath);
+    File file = LittleFS.open(kFixtureAnchorTempPath, "w");
+    if (!file) return false;
+    const bool wrote = file.write(reinterpret_cast<const uint8_t*>(&anchor), sizeof(anchor)) == sizeof(anchor);
+    file.flush();
+    file.close();
+    if (!wrote) {
+        LittleFS.remove(kFixtureAnchorTempPath);
+        return false;
+    }
+    LittleFS.remove(kFixtureAnchorPath);
+    if (!LittleFS.rename(kFixtureAnchorTempPath, kFixtureAnchorPath)) return false;
+    fixtureAnchor = anchor;
+    fixtureAnchorLoaded = true;
+    return true;
+}
 
+bool ensureFixtureAnchor(const CatalogEntry* catalog, size_t count) {
+    if (loadFixtureAnchor()) return true;
+    if (!time_service::hasCurrentTime()) return false;
+    int64_t nowMs = 0;
+    if (!time_service::resolveUnixTimeMs(time_service::currentSessionId(),
+            time_service::monotonicUs(), nowMs)) return false;
+
+    // First require every recorded Demo segment to be directly anchored. Do
+    // not allocate an interval list on the bounded history-worker stack.
+    for (size_t i = 0; i < count; ++i) {
+        if (isFixture(catalog[i])) continue;
+        int64_t start = 0;
+        // Do not guess fixture placement around recorded Demo data whose wall
+        // time is still unresolved. A later query can pin it once anchored.
+        if (!directStart(catalog[i], start)) return false;
+    }
+
+    const int64_t spanMs = static_cast<int64_t>(kDemoSpanMinutes) * kMinuteMs;
+    int64_t candidateStart = ((nowMs - kFixtureAgeMs) / kMinuteMs) * kMinuteMs;
+    int64_t candidateEnd = candidateStart + spanMs;
+    bool moved = true;
+    while (moved) {
+        moved = false;
+        for (size_t i = 0; i < count; ++i) {
+            if (isFixture(catalog[i])) continue;
+            int64_t recordedStart = 0;
+            if (!directStart(catalog[i], recordedStart)) return false;
+            const uint32_t rows = catalog[i].records + (catalog[i].active ? ramCount : 0);
+            const int64_t recordedEnd = recordedStart + static_cast<int64_t>(rows) * kMinuteMs;
+            if (recordedEnd <= candidateStart || recordedStart >= candidateEnd) continue;
+            candidateEnd = localMidnightUtc(recordedStart,
+                                             time_service::utcOffsetMinutes());
+            candidateStart = candidateEnd - spanMs;
+            moved = true;
+            break;
+        }
+    }
+
+    FixtureAnchor anchor{};
+    anchor.magic = kFixtureAnchorMagic;
+    anchor.version = kFixtureVersion;
+    anchor.minuteZeroUnixMs = candidateStart;
+    anchor.utcOffsetMinutes = time_service::utcOffsetMinutes();
+    return saveFixtureAnchor(anchor);
+}
+
+bool resolveFixtureEntry(const CatalogEntry* catalog, size_t count,
+                         const CatalogEntry& entry, int64_t& startMs, uint8_t& flags) {
+    if (!isFixture(entry) || !ensureFixtureAnchor(catalog, count)) return false;
+    startMs = fixtureAnchor.minuteZeroUnixMs + static_cast<int64_t>(entry.firstMinute) * kMinuteMs;
+    flags = TIME_ANCHORED;
+    return true;
+}
+
+bool resolveEntry(Dataset dataset, const CatalogEntry* catalog, size_t count,
+                  const CatalogEntry& entry, int64_t& startMs, uint8_t& flags,
+                  int64_t maxInferenceUncertaintyMs = 2LL * kInferenceBoundaryMs) {
+    if (dataset == Dataset::Demo && resolveFixtureEntry(catalog, count, entry, startMs, flags)) {
+        return true;
+    }
+    if (directStart(entry, startMs)) {
+        flags = TIME_ANCHORED;
+        return true;
+    }
+    if (entry.sessionId == 0) return false;
+
+    uint32_t firstMinute = 0, endMinute = 0;
+    if (!sessionBounds(catalog, count, entry.sessionId, firstMinute, endMinute)) return false;
     bool havePrevious = false, haveNext = false;
     int64_t previousEnd = 0, nextStart = 0;
     uint32_t previousSession = 0, nextSession = UINT32_MAX;
@@ -398,7 +610,8 @@ bool resolveEntry(const CatalogEntry* catalog, size_t count, const CatalogEntry&
     uint32_t lastSession = UINT32_MAX;
     for (size_t i = 0; i < count; ++i) {
         const uint32_t session = catalog[i].sessionId;
-        if (session <= previousSession || session >= nextSession || session == lastSession) continue;
+        if (session == 0 || session <= previousSession || session >= nextSession ||
+            session == lastSession) continue;
         lastSession = session;
         int64_t anchored = 0;
         if (directStart(catalog[i], anchored)) continue;
@@ -412,173 +625,145 @@ bool resolveEntry(const CatalogEntry* catalog, size_t count, const CatalogEntry&
     if (!blockSessions) return false;
     const int64_t slack = nextStart - previousEnd - static_cast<int64_t>(blockMinutes) * kMinuteMs;
     if (slack < 0 || slack > maxInferenceUncertaintyMs) return false;
-
-    // Use a stable estimate inside the defensible interval. Equal distribution
-    // keeps session order and makes every reboot boundary explicit without
-    // pretending we know which individual outage consumed the spare time.
     const int64_t boundaryGap = slack / (blockSessions + 1);
     const int64_t sessionStart = previousEnd + static_cast<int64_t>(minutesBefore) * kMinuteMs +
-        boundaryGap * (sessionIndex + 1);
+                                 boundaryGap * (sessionIndex + 1);
     startMs = sessionStart + static_cast<int64_t>(entry.firstMinute - firstMinute) * kMinuteMs;
     flags = TIME_INFERRED;
     return true;
 }
 
-int64_t localMidnightUtc(int64_t unixMs, int16_t offsetMinutes) {
-    const int64_t offsetMs = static_cast<int64_t>(offsetMinutes) * kMinuteMs;
-    return ((unixMs + offsetMs) / kDayMs) * kDayMs - offsetMs;
+bool overlapsRecordedDemo(const CatalogEntry* catalog, size_t count,
+                          int64_t startMs, int64_t endMs) {
+    for (size_t i = 0; i < count; ++i) {
+        if (isFixture(catalog[i])) continue;
+        int64_t recordedStart = 0;
+        if (!directStart(catalog[i], recordedStart)) continue;
+        const uint32_t rows = catalog[i].records + (catalog[i].active ? ramCount : 0);
+        const int64_t recordedEnd = recordedStart + static_cast<int64_t>(rows) * kMinuteMs;
+        if (recordedStart < endMs && recordedEnd > startMs) return true;
+    }
+    return false;
 }
 
 uint16_t automaticBucketMinutes(int64_t spanMs) {
-    constexpr uint16_t kChoices[] = {2, 5, 10, 15, 30, 60, 120, 240, 360, 720, 1440, 2880, 4320, 10080};
+    constexpr uint16_t kChoices[] = {2, 5, 10, 15, 30, 60, 120, 240, 360,
+                                     720, 1440, 2880, 4320, 10080};
     constexpr uint32_t kTargetBars = 48;
-    const uint64_t spanMinutes = static_cast<uint64_t>(std::max<int64_t>(spanMs, kMinuteMs)) / kMinuteMs;
+    const uint64_t spanMinutes = static_cast<uint64_t>(std::max<int64_t>(spanMs, kMinuteMs)) /
+                                 kMinuteMs;
     const uint64_t target = (spanMinutes + kTargetBars - 1) / kTargetBars;
     for (uint16_t choice : kChoices) if (choice >= target) return choice;
     return kChoices[sizeof(kChoices) / sizeof(kChoices[0]) - 1];
 }
 
-void seedDemoHistory() {
-    if (sensor_mode::get() != sensor_mode::Mode::Demo) return;
-    CatalogEntry* existing = catalogScratch;
-    const size_t existingCount = buildCatalog(existing, kCatalogCapacity);
-    size_t demoCount = 0;
-    bool expectedDemo = true;
-    for (size_t i = 0; i < existingCount; ++i) {
-        if (isDemoEntry(existing[i])) {
-            if (demoCount >= sizeof(kDemoSegmentStarts) / sizeof(kDemoSegmentStarts[0]) ||
-                existing[i].firstMinute != kDemoSegmentStarts[demoCount] ||
-                existing[i].records != kRecordsPerSegment || !existing[i].closed) {
-                expectedDemo = false;
-            }
-            ++demoCount;
-        }
-    }
-    const size_t expectedCount = sizeof(kDemoSegmentStarts) / sizeof(kDemoSegmentStarts[0]);
-    if (demoCount == expectedCount && expectedDemo) return;
+bool markerMatches() {
+    File file = LittleFS.open(kFixtureMarkerPath, "r");
+    if (!file) return false;
+    uint32_t version = 0;
+    const bool ok = file.read(reinterpret_cast<uint8_t*>(&version), sizeof(version)) == sizeof(version) &&
+                    version == kFixtureVersion;
+    file.close();
+    return ok;
+}
 
-    // Replace legacy/partial synthetic data as one set. Demo rows are marked
-    // by session zero, so real measurements and their anchors are untouched.
-    for (size_t i = 0; i < existingCount; ++i) {
-        if (!isDemoEntry(existing[i])) continue;
-        char path[80];
-        fullPath(path, sizeof(path), existing[i].name);
-        if (LittleFS.exists(path) && !LittleFS.remove(path)) {
-            Serial.printf("historical_storage: could not replace demo segment %s\n", existing[i].name);
-            return;
-        }
+bool writeMarker() {
+    File file = LittleFS.open(kFixtureMarkerPath, "w");
+    if (!file) return false;
+    const bool ok = file.write(reinterpret_cast<const uint8_t*>(&kFixtureVersion),
+                               sizeof(kFixtureVersion)) == sizeof(kFixtureVersion);
+    file.close();
+    return ok;
+}
+
+bool fixturesMatch(const CatalogEntry* catalog, size_t count) {
+    if (!markerMatches()) return false;
+    size_t fixtureIndex = 0;
+    for (size_t i = 0; i < count; ++i) {
+        if (!isFixture(catalog[i])) continue;
+        if (fixtureIndex >= kDemoSegmentCount ||
+            catalog[i].firstMinute != demo::kFixtureSegments[fixtureIndex].firstMinute ||
+            catalog[i].records != demo::kFixtureSegments[fixtureIndex].records ||
+            !catalog[i].closed) return false;
+        ++fixtureIndex;
     }
-    catalogValid = false;
-    Serial.printf("historical_storage: seeding %u demo segments across %lu days\n",
-                  static_cast<unsigned>(expectedCount),
-                  static_cast<unsigned long>(kDemoSpanMinutes / (24 * 60)));
-    for (uint32_t first : kDemoSegmentStarts) {
-        char name[52], path[80];
-        makeClosedName(name, sizeof(name), 0, first, kRecordsPerSegment);
-        fullPath(path, sizeof(path), name);
+    return fixtureIndex == kDemoSegmentCount;
+}
+
+bool seedDemoHistory(bool force = false) {
+    CatalogEntry* existing = catalogScratch;
+    const size_t existingCount = buildCatalog(Dataset::Demo, existing, kCatalogCapacity);
+    if (!force && fixturesMatch(existing, existingCount)) return true;
+
+    for (size_t i = 0; i < existingCount; ++i) {
+        if (!isFixture(existing[i])) continue;
+        char path[96];
+        fullPath(path, sizeof(path), Dataset::Demo, existing[i].name);
+        if (LittleFS.exists(path) && !LittleFS.remove(path)) return false;
+    }
+    // Fixture files count toward Demo's bounded directory cap but are never
+    // retention victims. Make their reserved space before recreating them.
+    size_t recordedCount = 0;
+    for (size_t i = 0; i < existingCount; ++i) {
+        if (!isFixture(existing[i])) ++recordedCount;
+    }
+    for (size_t i = 0; recordedCount + kDemoSegmentCount > kMaxHistoryFiles &&
+                       i < existingCount; ++i) {
+        if (isFixture(existing[i]) || existing[i].active) continue;
+        char path[96];
+        fullPath(path, sizeof(path), Dataset::Demo, existing[i].name);
+        if (LittleFS.exists(path) && !LittleFS.remove(path)) return false;
+        --recordedCount;
+    }
+    LittleFS.remove(kFixtureMarkerPath);
+    LittleFS.remove(kFixtureAnchorPath);
+    fixtureAnchorLoaded = false;
+    invalidateCatalog();
+
+    for (const auto& segment : demo::kFixtureSegments) {
+        const uint32_t first = segment.firstMinute;
+        const uint16_t records = segment.records;
+        char name[52], path[96];
+        makeClosedName(name, sizeof(name), Dataset::Demo, 0, first, records);
+        fullPath(path, sizeof(path), Dataset::Demo, name);
         File file = LittleFS.open(path, "w");
-        if (!file) break;
-        for (uint16_t i = 0; i < kRecordsPerSegment; ++i) {
-            const auto& point = demo::kDayProfile[((first + i) / 15) % 96];
+        if (!file) return false;
+        bool ok = true;
+        for (uint16_t i = 0; i < records; ++i) {
+            const auto& point = demo::kProfile[(first + i) / demo::kProfileStepMinutes];
             const float charge = point.chargeW10 / 10.0f;
             const float use = point.useW10 / 10.0f;
             const float panel = point.panelW10 / 10.0f;
             MinuteEnergyRecord record{};
-            record.energyWh[0] = (charge + panel) / 60.0f;
-            record.energyWh[1] = (use + panel) / 60.0f;
+            record.channelEnergyWh[0] = (charge + panel) / 60.0f;
+            record.channelEnergyWh[1] = (use + panel) / 60.0f;
             record.componentEnergyWh[BATTERY_CHARGING] = charge / 60.0f;
             record.componentEnergyWh[BATTERY_USAGE] = use / 60.0f;
             record.componentEnergyWh[PANEL_IN] = panel / 60.0f;
             record.componentEnergyWh[PANEL_USAGE] = panel / 60.0f;
             record.componentEnergyWh[PANEL_SURPLUS] = point.surplusW10 / 600.0f;
-            file.write(reinterpret_cast<const uint8_t*>(&record), sizeof(record));
+            record.configuredChannelMask = 0x03;
+            record.channelCoverageMs[0] = 60000;
+            record.channelCoverageMs[1] = 60000;
+            for (uint8_t component = 0; component < COMPONENT_COUNT; ++component) {
+                record.componentCoverageMs[component] = 60000;
+            }
+            if (file.write(reinterpret_cast<const uint8_t*>(&record), sizeof(record)) != sizeof(record)) {
+                ok = false;
+                break;
+            }
         }
         file.close();
+        if (!ok) return false;
     }
-    catalogValid = false;
-}
-
-} // namespace
-
-bool init() {
-    if (!mutex) mutex = xSemaphoreCreateRecursiveMutex();
-    Lock lock;
-    if (!lock) return false;
-    if (!LittleFS.begin(true)) { Serial.println("historical_storage: LittleFS mount failed"); return false; }
-    if (!LittleFS.exists(kHistoryDir)) LittleFS.mkdir(kHistoryDir);
-    if (!LittleFS.exists(kV3Dir)) LittleFS.mkdir(kV3Dir);
-    if (!ram) ram = static_cast<MinuteEnergyRecord*>(heap_caps_calloc(
-        kRamCapacity, sizeof(MinuteEnergyRecord), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!catalogScratch) catalogScratch = static_cast<CatalogEntry*>(heap_caps_calloc(
-        kCatalogCapacity, sizeof(CatalogEntry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!ram || !catalogScratch) {
-        Serial.println("historical_storage: PSRAM allocation failed");
-        return false;
-    }
-    time_service::init();
-    ready = true;
-    seedDemoHistory();
-    CatalogEntry* catalog = catalogScratch;
-    const size_t files = buildCatalog(catalog, kCatalogCapacity);
-    Serial.printf("historical_storage: V3 ready, %u measurement files\n", static_cast<unsigned>(files));
+    if (!writeMarker()) return false;
+    invalidateCatalog();
     return true;
 }
 
-void addSampleFrame(float inPowerW, float outPowerW, float auxPowerW,
-                    float availableInPowerW, uint32_t timestampMs) {
-    // A long, background history read must never stall the Arduino loop (or
-    // remote input). The next accepted frame integrates the elapsed interval,
-    // which preserves a bounded approximation without blocking control work.
-    Lock lock(0);
-    if (!lock || !ready || !boundaryInitialized) return;
-    if (haveLastFrame) {
-        const uint32_t dtMs = timestampMs - lastFrameMs;
-        // A stalled producer must not manufacture hours of energy on recovery.
-        if (dtMs <= 10000) {
-            const double hours = static_cast<double>(dtMs) / 3600000.0;
-            const float in = std::max(inPowerW, 0.0f);
-            const float out = std::max(outPowerW, 0.0f);
-            const float aux = std::max(auxPowerW, 0.0f);
-            const float netBattery = in - out;
-            const float panelToLoad = std::min(in, out);
-            energyAccumWh[0] += in * hours;
-            energyAccumWh[1] += out * hours;
-            energyAccumWh[2] += aux * hours;
-            componentAccumWh[BATTERY_CHARGING] += std::max(netBattery, 0.0f) * hours;
-            componentAccumWh[BATTERY_USAGE] += std::max(-netBattery, 0.0f) * hours;
-            componentAccumWh[PANEL_IN] += panelToLoad * hours;
-            componentAccumWh[PANEL_USAGE] += panelToLoad * hours;
-            componentAccumWh[PANEL_SURPLUS] += std::max(availableInPowerW - in, 0.0f) * hours;
-        }
-    }
-    lastFrameMs = timestampMs;
-    haveLastFrame = true;
-}
-
-void tick() {
-    // A missed tick while a query owns the storage mutex is harmless; the
-    // next loop pass catches up without freezing network/control processing.
-    Lock lock(0);
-    if (!lock || !ready) return;
-    const uint32_t minute = static_cast<uint32_t>(time_service::monotonicUs() / kMinuteUs);
-    if (!boundaryInitialized) {
-        nextBoundaryMinute = minute + 1;
-        memset(energyAccumWh, 0, sizeof(energyAccumWh));
-        memset(componentAccumWh, 0, sizeof(componentAccumWh));
-        haveLastFrame = false;
-        boundaryInitialized = true;
-        return;
-    }
-    if (minute < nextBoundaryMinute) return;
-    appendCompletedMinute(nextBoundaryMinute - 1);
-    // If execution was suspended across several boundaries, preserve the
-    // aggregate as one row and resume at the next complete minute.
-    nextBoundaryMinute = minute + 1;
-}
-
-size_t queryTimeBuckets(PowerBucket* out, size_t maxBuckets, int64_t startMs,
-                        int64_t endMs, int64_t nowMs, uint16_t bucketMinutes,
-                        QueryStatus* status) {
+size_t queryTimeBuckets(Dataset dataset, PowerBucket* out, size_t maxBuckets,
+                        int64_t startMs, int64_t endMs, int64_t nowMs,
+                        uint16_t bucketMinutes, QueryStatus* status) {
     if (status) *status = {};
     if (!out || !maxBuckets || !bucketMinutes || endMs <= startMs) return 0;
     const int64_t bucketMs = static_cast<int64_t>(bucketMinutes) * kMinuteMs;
@@ -596,16 +781,22 @@ size_t queryTimeBuckets(PowerBucket* out, size_t maxBuckets, int64_t startMs,
     }
 
     CatalogEntry* catalog = catalogScratch;
-    const size_t files = buildCatalog(catalog, kCatalogCapacity);
+    const size_t files = buildCatalog(dataset, catalog, kCatalogCapacity);
     uint64_t coveredMs = 0, inferredMs = 0;
     const int64_t dataEndMs = std::min(endMs, nowMs);
     for (size_t f = 0; f < files; ++f) {
         int64_t fileStart = 0;
         uint8_t flags = TIME_NONE;
-        if (!resolveEntry(catalog, files, catalog[f], fileStart, flags, bucketMs)) continue;
+        if (!resolveEntry(dataset, catalog, files, catalog[f], fileStart, flags, bucketMs)) continue;
         const uint16_t rows = catalog[f].records + (catalog[f].active ? ramCount : 0);
         const int64_t fileEnd = fileStart + static_cast<int64_t>(rows) * kMinuteMs;
         if (fileEnd <= startMs || fileStart >= dataEndMs) continue;
+        if (dataset == Dataset::Demo && isFixture(catalog[f]) &&
+            overlapsRecordedDemo(catalog, files, fileStart, fileEnd)) {
+            // This should only occur after a severe wall-time correction.
+            // Prefer an explicit fixture gap to double-counting real samples.
+            continue;
+        }
         const uint16_t firstRow = fileStart < startMs
             ? static_cast<uint16_t>((startMs - fileStart) / kMinuteMs) : 0;
         const uint16_t lastRow = static_cast<uint16_t>(std::min<int64_t>(
@@ -614,7 +805,7 @@ size_t queryTimeBuckets(PowerBucket* out, size_t maxBuckets, int64_t startMs,
         File file;
         for (uint16_t r = firstRow; r < lastRow; ++r) {
             LocatedRecord record{};
-            if (!readRecord(catalog[f], r, file, record)) continue;
+            if (!readRecord(dataset, catalog[f], r, file, record)) continue;
             if (status) ++status->recordsRead;
             const int64_t recordStart = fileStart + static_cast<int64_t>(r) * kMinuteMs;
             const int64_t recordEnd = recordStart + kMinuteMs;
@@ -629,22 +820,27 @@ size_t queryTimeBuckets(PowerBucket* out, size_t maxBuckets, int64_t startMs,
                 const uint32_t overlap = static_cast<uint32_t>(
                     std::max<int64_t>(0, overlapEnd - overlapStart));
                 if (!overlap) continue;
-                addEnergy(out[b], record.energy, static_cast<double>(overlap) / kMinuteMs);
+                addRecord(out[b], record.energy, overlap);
                 out[b].coveredMs += overlap;
                 out[b].timeFlags |= flags;
                 if (!out[b].startSequence) out[b].startSequence = sequenceOf(record);
                 coveredMs += overlap;
                 if (flags & TIME_INFERRED) inferredMs += overlap;
             }
-            // Usage aggregation runs in the low-priority history worker.
-            // Let the core's idle/network tasks run between bounded batches;
-            // a large "All" scan otherwise trips the task watchdog even
-            // though LVGL itself is no longer blocked.
             if ((r & 0x3fU) == 0x3fU) vTaskDelay(pdMS_TO_TICKS(1));
         }
         if (file) file.close();
     }
-    for (size_t i = 0; i < bucketCount; ++i) finishBucket(out[i]);
+    bool measurementIncomplete = false;
+    for (size_t i = 0; i < bucketCount; ++i) {
+        const int64_t bucketEnd = out[i].startUnixMs +
+                                  static_cast<int64_t>(out[i].durationMinutes) * kMinuteMs;
+        const uint32_t elapsedMs = dataEndMs > out[i].startUnixMs
+            ? static_cast<uint32_t>(std::min<int64_t>(bucketEnd, dataEndMs) - out[i].startUnixMs)
+            : 0;
+        finishBucket(out[i], elapsedMs);
+        measurementIncomplete |= elapsedMs && (out[i].timeFlags & TIME_INCOMPLETE) != 0;
+    }
 
     const uint64_t elapsedSpan = dataEndMs > startMs ? dataEndMs - startMs : 0;
     const uint64_t missing = elapsedSpan > coveredMs ? elapsedSpan - coveredMs : 0;
@@ -654,16 +850,161 @@ size_t queryTimeBuckets(PowerBucket* out, size_t maxBuckets, int64_t startMs,
         status->coveredMinutes = coveredMs / kMinuteMs;
         status->missingMinutes = missing / kMinuteMs;
         status->inferredMinutes = inferredMs / kMinuteMs;
-        status->incomplete = missing > kMaterialGapMs;
+        status->incomplete = missing > kMaterialGapMs || measurementIncomplete;
         status->hasInferredTime = inferredMs != 0;
     }
     return bucketCount;
 }
 
-size_t getPowerBuckets(PowerBucket* out, size_t maxBuckets,
-                       uint32_t lookbackMinutes, uint16_t bucketMinutes,
-                       uint32_t endOffsetMinutes, bool includePartial,
-                       QueryStatus* status) {
+} // namespace
+
+Dataset activeDataset() {
+    return sensor_mode::get() == sensor_mode::Mode::Demo ? Dataset::Demo : Dataset::Real;
+}
+
+bool init() {
+    if (!mutex) mutex = xSemaphoreCreateRecursiveMutex();
+    Lock lock;
+    if (!lock) return false;
+    if (!LittleFS.begin(true)) {
+        Serial.println("historical_storage: LittleFS mount failed");
+        return false;
+    }
+    if (!LittleFS.exists(kHistoryDir)) LittleFS.mkdir(kHistoryDir);
+    if (!LittleFS.exists(kV1Dir)) LittleFS.mkdir(kV1Dir);
+    if (!LittleFS.exists(kRealDir)) LittleFS.mkdir(kRealDir);
+    if (!LittleFS.exists(kDemoDir)) LittleFS.mkdir(kDemoDir);
+    if (!ram) ram = static_cast<MinuteEnergyRecord*>(heap_caps_calloc(
+        kRamCapacity, sizeof(MinuteEnergyRecord), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!catalogScratch) catalogScratch = static_cast<CatalogEntry*>(heap_caps_calloc(
+        kCatalogCapacity, sizeof(CatalogEntry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!ram || !catalogScratch) {
+        Serial.println("historical_storage: PSRAM allocation failed");
+        return false;
+    }
+    time_service::init();
+    ready = true;
+    if (!seedDemoHistory()) Serial.println("historical_storage: demo fixture seed incomplete");
+    invalidateCatalog();
+    const size_t realFiles = buildCatalog(Dataset::Real, catalogScratch, kCatalogCapacity);
+    invalidateCatalog();
+    const size_t demoFiles = buildCatalog(Dataset::Demo, catalogScratch, kCatalogCapacity);
+    Serial.printf("historical_storage: V1 ready, %u Real and %u Demo files\n",
+                  static_cast<unsigned>(realFiles), static_cast<unsigned>(demoFiles));
+    return true;
+}
+
+void addSampleFrame(Dataset dataset, const SampleFrame& frame) {
+    Lock lock(0);
+    if (!lock || !ready) return;
+    if (!switchRecordingDataset(dataset)) return;
+    if (!boundaryInitialized) {
+        lastFrame = frame;
+        haveLastFrame = true;
+        return;
+    }
+    if (haveLastFrame) {
+        const uint32_t dtMs = frame.timestampMs - lastFrame.timestampMs;
+        if (dtMs && dtMs <= kMaxFrameIntervalMs) {
+            const uint8_t channelMask = lastFrame.eligibleChannelMask & frame.eligibleChannelMask;
+            const uint8_t componentMask = lastFrame.eligibleComponentMask & frame.eligibleComponentMask;
+            uint32_t elapsedMs = 0;
+            while (elapsedMs < dtMs) {
+                const uint32_t cursorMs = lastFrame.timestampMs + elapsedMs;
+                uint32_t toBoundaryMs = nextBoundaryTimestampMs - cursorMs;
+                if (toBoundaryMs == 0) {
+                    appendCompletedMinute(nextBoundaryMinute - 1);
+                    ++nextBoundaryMinute;
+                    nextBoundaryTimestampMs += 60000U;
+                    continue;
+                }
+                const uint32_t partMs = std::min(dtMs - elapsedMs, toBoundaryMs);
+                const double startFraction = static_cast<double>(elapsedMs) / dtMs;
+                const double endFraction = static_cast<double>(elapsedMs + partMs) / dtMs;
+                const double hours = static_cast<double>(partMs) / 3600000.0;
+                minuteConfiguredMask |= lastFrame.configuredChannelMask |
+                                        frame.configuredChannelMask;
+                minuteQualityFlags |= lastFrame.qualityFlags | frame.qualityFlags;
+                for (uint8_t i = 0; i < kSensorCount; ++i) {
+                    if (!(channelMask & (1U << i)) ||
+                        !std::isfinite(lastFrame.channelPowerW[i]) ||
+                        !std::isfinite(frame.channelPowerW[i])) continue;
+                    const double delta = static_cast<double>(frame.channelPowerW[i]) -
+                                         lastFrame.channelPowerW[i];
+                    const double startPower = lastFrame.channelPowerW[i] + delta * startFraction;
+                    const double endPower = lastFrame.channelPowerW[i] + delta * endFraction;
+                    channelEnergyAccumWh[i] += (startPower + endPower) * 0.5 * hours;
+                    channelCoverageAccumMs[i] += partMs;
+                }
+                for (uint8_t i = 0; i < COMPONENT_COUNT; ++i) {
+                    if (!(componentMask & (1U << i)) ||
+                        !std::isfinite(lastFrame.componentPowerW[i]) ||
+                        !std::isfinite(frame.componentPowerW[i])) continue;
+                    const double delta = static_cast<double>(frame.componentPowerW[i]) -
+                                         lastFrame.componentPowerW[i];
+                    const double startPower = lastFrame.componentPowerW[i] + delta * startFraction;
+                    const double endPower = lastFrame.componentPowerW[i] + delta * endFraction;
+                    componentEnergyAccumWh[i] += (startPower + endPower) * 0.5 * hours;
+                    componentCoverageAccumMs[i] += partMs;
+                }
+                elapsedMs += partMs;
+                if (partMs == toBoundaryMs) {
+                    appendCompletedMinute(nextBoundaryMinute - 1);
+                    ++nextBoundaryMinute;
+                    nextBoundaryTimestampMs += 60000U;
+                }
+            }
+        } else if (frame.configuredChannelMask || lastFrame.configuredChannelMask) {
+            minuteQualityFlags |= QUALITY_STALE_OR_MISSING;
+        }
+    }
+    // A point observation belongs to the minute after an exact boundary and
+    // ensures a configured-but-invalid source still emits an explicit gap row.
+    minuteConfiguredMask |= frame.configuredChannelMask;
+    minuteQualityFlags |= frame.qualityFlags;
+    lastFrame = frame;
+    haveLastFrame = true;
+}
+
+void tick() {
+    Lock lock(0);
+    if (!lock || !ready) return;
+    const uint64_t monotonicUs = time_service::monotonicUs();
+    const uint32_t minute = static_cast<uint32_t>(monotonicUs / kMinuteUs);
+    if (!boundaryInitialized) {
+        nextBoundaryMinute = minute + 1;
+        const uint64_t remainingUs = static_cast<uint64_t>(nextBoundaryMinute) * kMinuteUs -
+                                     monotonicUs;
+        nextBoundaryTimestampMs = millis() + static_cast<uint32_t>((remainingUs + 999) / 1000);
+        resetMinuteAccumulators();
+        haveLastFrame = false;
+        boundaryInitialized = true;
+        return;
+    }
+    if (minute < nextBoundaryMinute) return;
+    // Give the producer time to deliver the observation that brackets this
+    // boundary. addSampleFrame() can then split that interval exactly. Once
+    // the accepted interval has expired, close a partial minute and never
+    // bridge the eventual late sample across it.
+    if (static_cast<uint32_t>(millis() - nextBoundaryTimestampMs) < kBoundaryGraceMs) return;
+    if (minuteConfiguredMask) minuteQualityFlags |= QUALITY_STALE_OR_MISSING;
+    appendCompletedMinute(nextBoundaryMinute - 1);
+    haveLastFrame = false;
+    if (minute > nextBoundaryMinute) {
+        // Missing whole minutes are gaps, not zero-valued rows. End the current
+        // contiguous segment so filename position remains truthful.
+        if (!stopActiveRun()) runBreakPending = true;
+    }
+    nextBoundaryMinute = minute + 1;
+    const uint64_t remainingUs = static_cast<uint64_t>(nextBoundaryMinute) * kMinuteUs -
+                                 monotonicUs;
+    nextBoundaryTimestampMs = millis() + static_cast<uint32_t>((remainingUs + 999) / 1000);
+}
+
+size_t getPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
+                                 uint32_t lookbackMinutes, uint16_t bucketMinutes,
+                                 uint32_t endOffsetMinutes, bool includePartial,
+                                 QueryStatus* status) {
     Lock lock;
     if (status) *status = {};
     if (!lock || !ready || !out || !maxBuckets || !lookbackMinutes || !bucketMinutes ||
@@ -674,18 +1015,28 @@ size_t getPowerBuckets(PowerBucket* out, size_t maxBuckets,
     const int64_t endMs = nowMs - static_cast<int64_t>(endOffsetMinutes) * kMinuteMs;
     const int64_t startMs = endMs - static_cast<int64_t>(lookbackMinutes) * kMinuteMs;
     (void)includePartial;
-    return queryTimeBuckets(out, maxBuckets, startMs, endMs, nowMs, bucketMinutes, status);
+    return queryTimeBuckets(dataset, out, maxBuckets, startMs, endMs, nowMs,
+                            bucketMinutes, status);
 }
 
-size_t getCalendarPowerBuckets(PowerBucket* out, size_t maxBuckets,
-                               CalendarRange range, uint16_t bucketMinutes,
-                               QueryStatus* status) {
+size_t getPowerBuckets(PowerBucket* out, size_t maxBuckets,
+                       uint32_t lookbackMinutes, uint16_t bucketMinutes,
+                       uint32_t endOffsetMinutes, bool includePartial,
+                       QueryStatus* status) {
+    return getPowerBucketsForDataset(activeDataset(), out, maxBuckets, lookbackMinutes,
+                                     bucketMinutes, endOffsetMinutes, includePartial, status);
+}
+
+size_t getCalendarPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
+                                         CalendarRange range, uint16_t bucketMinutes,
+                                         QueryStatus* status) {
     Lock lock;
     if (status) *status = {};
     if (!lock || !ready || !out || !maxBuckets ||
         (!bucketMinutes && range != CalendarRange::All) || !time_service::hasCurrentTime()) return 0;
     int64_t nowMs = 0;
-    if (!time_service::resolveUnixTimeMs(time_service::currentSessionId(), time_service::monotonicUs(), nowMs)) return 0;
+    if (!time_service::resolveUnixTimeMs(time_service::currentSessionId(),
+            time_service::monotonicUs(), nowMs)) return 0;
     const int64_t today = localMidnightUtc(nowMs, time_service::utcOffsetMinutes());
     int64_t startMs = today, endMs = nowMs;
     switch (range) {
@@ -696,14 +1047,14 @@ size_t getCalendarPowerBuckets(PowerBucket* out, size_t maxBuckets,
         case CalendarRange::LastTwoWeeks: startMs = today - 13 * kDayMs; break;
         case CalendarRange::All: {
             CatalogEntry* catalog = catalogScratch;
-            const size_t files = buildCatalog(catalog, kCatalogCapacity);
+            const size_t files = buildCatalog(dataset, catalog, kCatalogCapacity);
             bool found = false;
             int64_t oldest = 0;
             const int64_t tolerance = static_cast<int64_t>(bucketMinutes) * kMinuteMs;
             for (size_t i = 0; i < files; ++i) {
                 int64_t resolved = 0;
                 uint8_t flags = TIME_NONE;
-                if (resolveEntry(catalog, files, catalog[i], resolved, flags, tolerance) &&
+                if (resolveEntry(dataset, catalog, files, catalog[i], resolved, flags, tolerance) &&
                     (!found || resolved < oldest)) {
                     oldest = resolved;
                     found = true;
@@ -715,36 +1066,46 @@ size_t getCalendarPowerBuckets(PowerBucket* out, size_t maxBuckets,
             break;
         }
     }
-    return queryTimeBuckets(out, maxBuckets, startMs, endMs, nowMs, bucketMinutes, status);
+    return queryTimeBuckets(dataset, out, maxBuckets, startMs, endMs, nowMs,
+                            bucketMinutes, status);
 }
 
-size_t listFiles(HistoryFileInfo* out, size_t limit, size_t offset, size_t* total,
-                 StorageStats* stats) {
+size_t getCalendarPowerBuckets(PowerBucket* out, size_t maxBuckets,
+                               CalendarRange range, uint16_t bucketMinutes,
+                               QueryStatus* status) {
+    return getCalendarPowerBucketsForDataset(activeDataset(), out, maxBuckets,
+                                             range, bucketMinutes, status);
+}
+
+size_t listFilesForDataset(Dataset dataset, HistoryFileInfo* out, size_t limit,
+                           size_t offset, size_t* total, StorageStats* stats) {
     Lock lock;
-    if (!lock || !ready) { if (total) *total = 0; return 0; }
+    if (!lock || !ready) {
+        if (total) *total = 0;
+        return 0;
+    }
     CatalogEntry* catalog = catalogScratch;
-    const size_t count = buildCatalog(catalog, kCatalogCapacity);
-    size_t visibleCount = 0;
+    const size_t count = buildCatalog(dataset, catalog, kCatalogCapacity);
     if (stats) {
         *stats = {};
         stats->maxFiles = kMaxHistoryFiles;
         for (size_t i = 0; i < count; ++i) {
-            if (isDemoEntry(catalog[i])) continue;
             ++stats->fileCount;
+            if (isFixture(catalog[i])) ++stats->fixtureFileCount;
             stats->committedRecords += catalog[i].records;
             stats->committedBytes += catalog[i].bytes;
         }
-        stats->bufferedRecords = static_cast<uint8_t>(ramCount);
-        stats->bufferedBytes = ramCount * sizeof(MinuteEnergyRecord);
+        if (haveRecordingDataset && recordingDataset == dataset) {
+            stats->bufferedRecords = static_cast<uint8_t>(ramCount);
+            stats->bufferedBytes = ramCount * sizeof(MinuteEnergyRecord);
+        }
     }
-    for (size_t i = 0; i < count; ++i) if (!isDemoEntry(catalog[i])) ++visibleCount;
-    if (total) *total = visibleCount;
-    if (!out || !limit || offset >= visibleCount) return 0;
+    if (total) *total = count;
+    if (!out || !limit || offset >= count) return 0;
     size_t resultCount = 0;
     size_t skipped = 0;
     for (size_t index = count; index > 0 && resultCount < limit; --index) {
         const CatalogEntry& entry = catalog[index - 1];
-        if (isDemoEntry(entry)) continue;
         if (skipped++ < offset) continue;
         HistoryFileInfo info{};
         strncpy(info.name, entry.name, sizeof(info.name) - 1);
@@ -752,12 +1113,16 @@ size_t listFiles(HistoryFileInfo* out, size_t limit, size_t offset, size_t* tota
         info.firstMinute = entry.firstMinute;
         info.committedRecords = entry.records;
         info.bufferedRecords = entry.active ? static_cast<uint8_t>(ramCount) : 0;
-        info.state = entry.active ? FileState::Active : (entry.closed ? FileState::Closed : FileState::Interrupted);
+        info.state = entry.active ? FileState::Active :
+                     (entry.closed ? FileState::Closed : FileState::Interrupted);
         info.bytes = entry.bytes;
-        int64_t start = 0; uint8_t flags = TIME_NONE;
-        if (resolveEntry(catalog, count, entry, start, flags)) {
+        info.fixture = isFixture(entry);
+        int64_t start = 0;
+        uint8_t flags = TIME_NONE;
+        if (resolveEntry(dataset, catalog, count, entry, start, flags)) {
             info.startUnixMs = start;
-            info.endUnixMs = start + static_cast<int64_t>(entry.records + (entry.active ? ramCount : 0)) * kMinuteMs;
+            info.endUnixMs = start + static_cast<int64_t>(
+                entry.records + (entry.active ? ramCount : 0)) * kMinuteMs;
             info.timeFlags = flags;
         }
         out[resultCount++] = info;
@@ -765,35 +1130,71 @@ size_t listFiles(HistoryFileInfo* out, size_t limit, size_t offset, size_t* tota
     return resultCount;
 }
 
-void getStorageStats(StorageStats& out) {
-    listFiles(nullptr, 0, 0, nullptr, &out);
+size_t listFiles(HistoryFileInfo* out, size_t limit, size_t offset,
+                 size_t* total, StorageStats* stats) {
+    return listFilesForDataset(activeDataset(), out, limit, offset, total, stats);
 }
 
-bool clearAll() {
+void getStorageStatsForDataset(Dataset dataset, StorageStats& out) {
+    listFilesForDataset(dataset, nullptr, 0, 0, nullptr, &out);
+}
+
+void getStorageStats(StorageStats& out) {
+    getStorageStatsForDataset(activeDataset(), out);
+}
+
+bool clearDataset(Dataset dataset) {
     Lock lock;
     if (!lock || !ready) return false;
+    if (haveRecordingDataset && recordingDataset == dataset) {
+        ramCount = 0;
+        activeExists = false;
+        activeName[0] = '\0';
+        activeCommitted = 0;
+        boundaryInitialized = false;
+        haveLastFrame = false;
+        runBreakPending = false;
+        resetMinuteAccumulators();
+    }
     bool ok = true;
     CatalogEntry* catalog = catalogScratch;
-    const size_t count = buildCatalog(catalog, kCatalogCapacity);
+    const size_t count = buildCatalog(dataset, catalog, kCatalogCapacity);
     for (size_t i = 0; i < count; ++i) {
-        if (isDemoEntry(catalog[i])) continue;
-        char path[80];
-        fullPath(path, sizeof(path), catalog[i].name);
+        char path[96];
+        fullPath(path, sizeof(path), dataset, catalog[i].name);
         if (LittleFS.exists(path) && !LittleFS.remove(path)) ok = false;
     }
-    ok &= time_service::clearHistoryAnchors();
-    ramCount = 0; activeExists = false; activeName[0] = '\0'; activeCommitted = 0;
-    catalogCount = 0; catalogValid = false;
-    boundaryInitialized = false; haveLastFrame = false;
-    memset(energyAccumWh, 0, sizeof(energyAccumWh));
-    memset(componentAccumWh, 0, sizeof(componentAccumWh));
+    invalidateCatalog();
+    if (dataset == Dataset::Demo) {
+        LittleFS.remove(kFixtureMarkerPath);
+        LittleFS.remove(kFixtureAnchorPath);
+        fixtureAnchorLoaded = false;
+        ok = seedDemoHistory(true) && ok;
+    }
     return ok;
 }
 
-size_t recordCount() {
+bool clearAll() {
+    return clearDataset(activeDataset());
+}
+
+bool clearAllDatasets() {
+    Lock lock;
+    if (!lock || !ready) return false;
+    bool ok = clearDataset(Dataset::Real);
+    ok = clearDataset(Dataset::Demo) && ok;
+    ok = time_service::clearHistoryAnchors() && ok;
+    return ok;
+}
+
+size_t recordCountForDataset(Dataset dataset) {
     StorageStats stats{};
-    getStorageStats(stats);
+    getStorageStatsForDataset(dataset, stats);
     return stats.committedRecords + stats.bufferedRecords;
+}
+
+size_t recordCount() {
+    return recordCountForDataset(activeDataset());
 }
 
 } // namespace historical_storage

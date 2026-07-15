@@ -4,6 +4,7 @@
 #include "display.h"
 #include "sensor.h"
 #include "store.h"
+#include "telemetry.h"
 #include "ui.h"
 
 
@@ -11,6 +12,7 @@ Display display = Display();
 ButtonManager buttonManager = ButtonManager();
 Store store = Store();
 SensorManager sensorManager = SensorManager(&store);
+TelemetryTransmitter telemetry = TelemetryTransmitter(&sensorManager);
 UI ui = UI(&display, &sensorManager, &store);
 
 void setup(){
@@ -20,6 +22,7 @@ void setup(){
     display.setup();
     buttonManager.setup();
     sensorManager.setup();
+    telemetry.setup();
     ui.setup();
 
 }
@@ -32,14 +35,7 @@ void loop(){
     display.refresh();
     buttonManager.refresh();
     sensorManager.refresh();
+    telemetry.refresh();
     store.refresh();
     ui.refresh();
-}
-
-int main(void){
-    init();
-    setup();
-    for (;;){
-       loop();
-    }
 }

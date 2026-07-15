@@ -3,12 +3,12 @@
 ## Milestone status and scope
 
 The embedded web-application milestone is complete. The normal firmware image
-contains a Svelte 5 single-page application with live In/Out readings and a
-canvas graph, browser time contribution, rolling/calendar history, device
-information, and remote-display control. It is a useful product surface, not a
-requirement to duplicate every LVGL page.
+contains a Svelte 5 single-page application with live power, per-channel sensor
+observations, source/UART diagnostics, browser time contribution,
+rolling/calendar history, device information, and remote-display control. It
+is a useful product surface, not a requirement to duplicate every LVGL page.
 
-Calibration pages, broader settings writes, storage browsing/export, and
+Calibration, settings writes, storage browsing/export, and
 light/dark refinements remain incremental backlog to build as needed.
 
 The old MicroPython project is a behavioral reference only. Its Parcel,
@@ -99,6 +99,7 @@ The first public read model is deliberately small:
 
 ```text
 GET  /api/v1/web/status       JSON, no-store
+GET  /api/v1/sensors          raw sensor/source diagnostics, JSON, no-store
 POST /api/v1/time/anchor      local-LAN browser time anchor
 GET  /api/v1/display/...      local-LAN remote display control
 WS   ws://<meter>:81/api/v1/live
@@ -114,10 +115,22 @@ The SPA computes that port from the host name, so the browser user never enters
 it. A later migration of OTA routes to the native server can unite both on port
 80 without changing the browser protocol path or frame layout.
 
-The live WebSocket, browser time anchor, and remote-display endpoints are
-unauthenticated for use on a trusted local network. OTA and diagnostic
-endpoints retain their bearer-token policy. Do not expose the meter beyond the
-trusted LAN without adding authentication to these browser-facing endpoints.
+The live WebSocket, sensor read model, browser time anchor, and remote-display
+endpoints are unauthenticated for use on a trusted local network. OTA and its
+maintenance diagnostics retain their bearer-token policy. Do not expose the
+meter beyond the trusted LAN without adding authentication to these
+browser-facing endpoints.
+
+`/api/v1/sensors` is a read-only diagnostic model used by the Sensors and Setup
+pages. Each channel reports `configured`, `observed`, its
+`valid | out_of_range | not_configured | waiting | invalid | stale` state,
+sample age, finite voltage/current/power observations, and optional duty. A
+finite out-of-range observation remains visible here; unavailable values are
+`null`. Operational Power and History interfaces remain calculation-eligible
+only. UART mode additionally exposes receiving/waiting/stale connection state,
+last-valid age, advertised channel mask, sequence and producer uptime, parser
+error, and bounded frame/error counters. ADC and Demo report `transport: null`
+rather than inventing connection semantics.
 
 The binary frame is exactly 64 bytes, packed and little-endian; do not map a
 future C++ struct directly in browser code. Each new connection receives the
@@ -130,8 +143,8 @@ mistaking an ordinary reconnect for a reboot.
 
 | Offset | Type | Meaning |
 | ---: | --- | --- |
-| 0 | `u32` | magic `VPM1` (`0x314d5056`) |
-| 4 | `u8,u8,u16` | version `1`, type `1`, flags (`bit 0`: wall time valid) |
+| 0 | `u32` | magic `VPM2` (`0x324d5056`) |
+| 4 | `u8,u8,u16` | version `2`, type `1`; flags: bit 0 wall time, bits 1–3 configured mask, bits 4–6 eligible mask |
 | 8 | `u32` | increasing frame sequence |
 | 12 | `u32` | device state revision |
 | 16 | `u32` | uptime milliseconds |
@@ -141,19 +154,31 @@ mistaking an ordinary reconnect for a reboot.
 
 History uses a separate magic/type and an explicitly documented compact bucket
 schema. The two-step asynchronous query starts a bounded history worker job,
-polls until ready, then receives a binary VPH1 response (32-byte header
-followed by 48-byte buckets). `range` supports the calendar ranges `today`,
+polls until ready, then receives a binary VPH2 response (32-byte header
+followed by 80-byte buckets). `range` supports the calendar ranges `today`,
 `yesterday`, `last2days`, `lastweek`, `lasttwoweeks`, and `all`, plus the
 rolling `last1hour`, `last6hours`, and `last24hours` ranges. The firmware, not
 the browser, performs anchoring, gap, and calendar calculations. The browser turns
 the compact Wh fields into average watts to use the same stacked chart semantics
 and colours as the LVGL Usage screen.
 
-VPH1 describes the current alpha history response. Candidate History V1 adds
-an explicit `dataset=real|demo` request and per-channel/component coverage. Its
-public binary response must receive a new protocol version/magic; it must not
-reinterpret existing VPH1 offsets. Storage format version and browser protocol
-version remain separate contracts.
+VPH2 replaces the incompatible alpha VPH1 layout. Its 80-byte record keeps the
+energy fields together and adds configured/time/quality flags plus independent
+channel and component coverage:
+
+| Offset | Type | Meaning |
+| ---: | --- | --- |
+| 0 | `f64` | Bucket start Unix milliseconds |
+| 8 | `u32` | Timeline coverage milliseconds |
+| 12 | `u8 × 4` | Configured mask, time flags, quality flags, reserved zero |
+| 16 | `f32 × 3` | In, Out, Aux energy Wh |
+| 28 | `f32 × 5` | Component energy Wh |
+| 48 | `u32 × 3` | Per-channel valid coverage milliseconds |
+| 60 | `u32 × 5` | Per-component valid coverage milliseconds |
+
+History always follows the active sensor source and exposes no Real/Demo
+request parameter. Storage-format V1 and browser-protocol VPH2 are separate
+contracts.
 
 ## Keeping web and LVGL state synchronized
 
@@ -193,7 +218,7 @@ from a network task or mirror Preferences directly in JavaScript.
 ## Web backlog
 
 1. Add explicit raw-file export UI.
-2. Expand the Info page from additional existing service read models.
+2. Expand Setup with additional device metadata when it becomes useful.
 3. Add validated browser writes one domain at a time, with revision-aware
    refreshes.
 4. Migrate port-80 OTA/static routes to ESP-IDF HTTPD when preserving the

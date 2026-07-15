@@ -6,6 +6,7 @@
     anchorTime,
     getHistory,
     getRemoteScreenshot,
+    getSensors,
     getStatus,
     openLiveSocket,
     sendRemotePointer,
@@ -17,6 +18,7 @@
 
   // How often to poll the REST status endpoint.
   const STATUS_POLL_MS = 10_000;
+  const SENSOR_POLL_MS = 1_000;
 
   // Cap on how many live-chart points we keep in memory.
   const MAX_LIVE_POINTS = 600;
@@ -60,7 +62,8 @@
     overview: '/',
     remote: '/remote',
     history: '/history',
-    settings: '/settings',
+    sensors: '/sensors',
+    setup: '/setup',
   };
 
   // ---------------------------------------------------------------------
@@ -73,6 +76,12 @@
   let status = null;
   let statusError = '';
   let statusPollTimer;
+
+  // Detailed sensor read model. This is polled separately from operational
+  // status because it includes raw out-of-range values and UART diagnostics.
+  let sensorStatus = null;
+  let sensorStatusError = '';
+  let sensorPollTimer;
 
   // Live socket (WebSocket).
   let socket = null;
@@ -135,6 +144,37 @@
     return `${hours}h ${minutes}m ${secs}s`;
   }
 
+  function formatMeasurement(value, unit, digits = 2) {
+    return Number.isFinite(value) ? `${value.toFixed(digits)} ${unit}` : '—';
+  }
+
+  function formatPercent(value) {
+    return Number.isFinite(value) ? `${(value * 100).toFixed(0)}%` : '—';
+  }
+
+  function stateLabel(state) {
+    switch (state) {
+      case 'valid': return 'Good';
+      case 'out_of_range': return 'Out of Range';
+      case 'not_configured': return 'Not configured';
+      case 'waiting': return 'Waiting for data';
+      case 'invalid': return 'Invalid data';
+      case 'stale': return 'Stale';
+      default: return 'Unknown';
+    }
+  }
+
+  function sourceStateLabel(source) {
+    if (!source) return 'Unknown';
+    if (!source.transport) return 'Active';
+    switch (source.transport.state) {
+      case 'receiving': return 'Receiving';
+      case 'stale': return 'Stale';
+      case 'waiting': return 'Waiting for data';
+      default: return 'Unknown';
+    }
+  }
+
   // Turns a thrown error into a stable, user-facing message so different
   // failures (network down, server error, bad response) are distinguishable
   // instead of all collapsing into "undefined" or a raw stack trace.
@@ -154,6 +194,7 @@
   // ---------------------------------------------------------------------
 
   function routeFromPath() {
+    if (location.pathname === '/settings') return 'setup';
     const match = Object.entries(ROUTE_PATHS).find(([, path]) => path === location.pathname);
     return match ? match[0] : 'overview';
   }
@@ -178,6 +219,13 @@
 
     if (next === 'remote') {
       refreshRemote();
+    }
+
+    if (next === 'sensors' || next === 'setup') {
+      refreshSensors();
+      scheduleSensorRefresh();
+    } else {
+      clearInterval(sensorPollTimer);
     }
   }
 
@@ -205,6 +253,20 @@
     } catch (err) {
       statusError = describeError(err, 'reach the meter');
     }
+  }
+
+  async function refreshSensors() {
+    try {
+      sensorStatus = await getSensors();
+      sensorStatusError = '';
+    } catch (err) {
+      sensorStatusError = describeError(err, 'load sensor details');
+    }
+  }
+
+  function scheduleSensorRefresh() {
+    clearInterval(sensorPollTimer);
+    sensorPollTimer = setInterval(refreshSensors, SENSOR_POLL_MS);
   }
 
   // ---------------------------------------------------------------------
@@ -431,6 +493,7 @@
       pauseLive();
       // Don't keep polling history/remote in the background either.
       clearTimeout(historyRefreshTimer);
+      clearInterval(sensorPollTimer);
       return;
     }
 
@@ -442,6 +505,10 @@
 
     if (route === 'history') scheduleHistoryRefresh();
     if (route === 'remote') refreshRemote();
+    if (route === 'sensors' || route === 'setup') {
+      refreshSensors();
+      scheduleSensorRefresh();
+    }
   }
 
   onMount(() => {
@@ -459,6 +526,7 @@
     return () => {
       destroyed = true;
       clearInterval(statusPollTimer);
+      clearInterval(sensorPollTimer);
       clearTimeout(reconnectTimer);
       clearTimeout(remoteRefreshTimer);
       clearTimeout(historyRefreshTimer);
@@ -491,7 +559,8 @@
   <nav aria-label="Main navigation">
     <button class:active={route === 'overview'} on:click={() => navigate('overview')}>Power</button>
     <button class:active={route === 'history'} on:click={() => navigate('history')}>Usage</button>
-    <button class:active={route === 'settings'} on:click={() => navigate('settings')}>Info</button>
+    <button class:active={route === 'sensors'} on:click={() => navigate('sensors')}>Sensors</button>
+    <button class:active={route === 'setup'} on:click={() => navigate('setup')}>Setup</button>
     <button class:active={route === 'remote'} on:click={() => navigate('remote')}>Remote</button>
   </nav>
 
@@ -521,8 +590,49 @@
         ↻
       </button>
     </section>
-  {:else if route === 'settings'}
-    <section class="info-view">
+  {:else if route === 'setup'}
+    <section class="setup-view">
+      {#if sensorStatusError}<p class="error" role="alert">{sensorStatusError}</p>{/if}
+      <h2>Sensor source</h2>
+      <dl class="details">
+        <dt>Active source</dt><dd>{sensorStatus?.source?.label || '—'}</dd>
+        <dt>Source status</dt>
+        <dd>
+          <span class="state" class:good={sensorStatus?.source?.transport?.state === 'receiving' || (sensorStatus?.source && !sensorStatus.source.transport)} class:warning={sensorStatus?.source?.transport?.state === 'stale'}>
+            {sourceStateLabel(sensorStatus?.source)}
+          </span>
+        </dd>
+      </dl>
+
+      <div class="setup-channels" aria-label="Sensor channel status">
+        {#each sensorStatus?.channels || [] as channel}
+          <span class="channel-summary" class:good={channel.state === 'valid'} class:warning={channel.state === 'out_of_range'} class:bad={channel.state === 'invalid' || channel.state === 'stale'}>
+            <b>{channel.label}</b> {stateLabel(channel.state)}
+          </span>
+        {/each}
+      </div>
+
+      {#if sensorStatus?.source?.transport}
+        <h2>UART diagnostics</h2>
+        <dl class="details diagnostics">
+          <dt>Connection</dt><dd>{sensorStatus.source.transport.connected ? 'Receiving' : 'Not receiving'}</dd>
+          <dt>Last valid frame</dt><dd>{Number.isFinite(sensorStatus.source.transport.last_valid_age_ms) ? `${sensorStatus.source.transport.last_valid_age_ms} ms ago` : 'None received'}</dd>
+          <dt>Channels present</dt><dd>{sensorStatus.channels.filter((channel) => channel.configured).map((channel) => channel.label).join(', ') || 'None'}</dd>
+          <dt>Sequence</dt><dd>{sensorStatus.source.transport.sequence ?? '—'}</dd>
+          <dt>Producer uptime</dt><dd>{formatUptime(sensorStatus.source.transport.source_uptime_ms)}</dd>
+          <dt>Valid frames</dt><dd>{sensorStatus.source.transport.valid_frames ?? '—'}</dd>
+          <dt>Invalid frames</dt><dd>{sensorStatus.source.transport.invalid_frames ?? '—'}</dd>
+          <dt>Last parser error</dt><dd>{sensorStatus.source.transport.last_error || '—'}</dd>
+          <dt>Checksum errors</dt><dd>{sensorStatus.source.transport.checksum_errors ?? '—'}</dd>
+          <dt>Overflow frames</dt><dd>{sensorStatus.source.transport.overflow_frames ?? '—'}</dd>
+          <dt>Duplicate frames</dt><dd>{sensorStatus.source.transport.duplicate_frames ?? '—'}</dd>
+          <dt>Missing frames</dt><dd>{sensorStatus.source.transport.missing_frames ?? '—'}</dd>
+          <dt>Sequence gaps</dt><dd>{sensorStatus.source.transport.sequence_gap_events ?? '—'}</dd>
+          <dt>Sequence resets</dt><dd>{sensorStatus.source.transport.sequence_resets ?? '—'}</dd>
+        </dl>
+      {/if}
+
+      <h2>Device</h2>
       <dl>
         <dt>Uptime</dt><dd>{formatUptime(status?.uptime_ms)}</dd>
         <dt>Date</dt><dd>{status?.date || '—'}</dd>
@@ -537,6 +647,35 @@
         <dt>AP IP</dt><dd>{status?.network?.ap_ip || '—'}</dd>
         <dt>WS connections</dt><dd>{status?.ws_connections ?? '—'} / {status?.ws_connection_limit ?? '—'}</dd>
       </dl>
+    </section>
+  {:else if route === 'sensors'}
+    <section class="sensors-view" aria-live="polite">
+      {#if sensorStatusError}<p class="error" role="alert">{sensorStatusError}</p>{/if}
+      <div class="sensor-heading">
+        <div>
+          <h2>Live sensors</h2>
+          <p>{sensorStatus?.source?.label || '—'} source · {sourceStateLabel(sensorStatus?.source)}</p>
+        </div>
+        <button class="refresh" on:click={refreshSensors} aria-label="Refresh sensors" title="Refresh sensors">↻</button>
+      </div>
+      <div class="sensor-grid">
+        {#each sensorStatus?.channels || [] as channel}
+          <article class="sensor-card" class:warning={channel.state === 'out_of_range'} class:bad={channel.state === 'invalid' || channel.state === 'stale'}>
+            <header>
+              <h3>{channel.label}</h3>
+              <span class="state" class:good={channel.state === 'valid'} class:warning={channel.state === 'out_of_range'} class:bad={channel.state === 'invalid' || channel.state === 'stale'}>{stateLabel(channel.state)}</span>
+            </header>
+            <dl class="measurements">
+              <dt>Voltage</dt><dd>{formatMeasurement(channel.voltage, 'V')}</dd>
+              <dt>Current</dt><dd>{formatMeasurement(channel.current, 'A')}</dd>
+              <dt>Power</dt><dd>{formatMeasurement(channel.power, 'W')}</dd>
+              <dt>Duty</dt><dd>{channel.duty?.state === 'valid' ? formatPercent(channel.duty.value) : '—'}</dd>
+            </dl>
+            {#if !channel.configured}<p class="sensor-note">This channel is not configured by the active source.</p>{/if}
+          </article>
+        {/each}
+      </div>
+      {#if !sensorStatus && !sensorStatusError}<p class="empty">Loading sensors…</p>{/if}
     </section>
   {:else if route === 'history'}
     <section class="history-view">
@@ -600,6 +739,8 @@
     --surplus: #00a6dc;
     --battery: #e44331;
     --load: #e59400;
+    --warning: #b86f00;
+    --surface: #f6f8f9;
     --chart-grid: #e4e8ea;
     --chart-zero: #95a1a8;
   }
@@ -617,6 +758,8 @@
       --surplus: #4db6d0;
       --battery: #e56c63;
       --load: #d99a58;
+      --warning: #e0a447;
+      --surface: #182025;
       --chart-grid: #344049;
       --chart-zero: #72818a;
     }
@@ -727,7 +870,8 @@
   .live-view,
   .history-view,
   .remote-view,
-  .info-view {
+  .setup-view,
+  .sensors-view {
     margin-top: 0.55rem;
   }
 
@@ -855,8 +999,110 @@
     width: auto;
   }
 
-  .info-view {
+  .setup-view {
     max-width: 36rem;
+  }
+
+  h2 {
+    margin: 1rem 0 0.55rem;
+    font-size: 1rem;
+  }
+
+  h3 {
+    margin: 0;
+    font-size: 1rem;
+  }
+
+  .setup-view > h2:first-of-type {
+    margin-top: 0;
+  }
+
+  .details {
+    padding-bottom: 0.8rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .setup-channels {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin: 0.75rem 0;
+  }
+
+  .channel-summary,
+  .state {
+    display: inline-block;
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+
+  .channel-summary {
+    padding: 0.25rem 0.45rem;
+    background: var(--surface);
+    border-left: 3px solid var(--border);
+  }
+
+  .state.good,
+  .channel-summary.good { color: var(--charge); }
+  .channel-summary.good { border-left-color: var(--charge); }
+  .state.warning,
+  .channel-summary.warning { color: var(--warning); }
+  .channel-summary.warning { border-left-color: var(--warning); }
+  .state.bad,
+  .channel-summary.bad { color: var(--battery); }
+  .channel-summary.bad { border-left-color: var(--battery); }
+
+  .sensor-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.7rem;
+  }
+
+  .sensor-heading h2 { margin: 0; }
+  .sensor-heading p {
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .sensor-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.7rem;
+  }
+
+  .sensor-card {
+    padding: 0.75rem;
+    border: 1px solid var(--border);
+    background: var(--surface);
+  }
+
+  .sensor-card.warning { border-color: var(--warning); }
+  .sensor-card.bad { border-color: var(--battery); }
+
+  .sensor-card header {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.6rem;
+    margin-bottom: 0.65rem;
+  }
+
+  .measurements {
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 0.35rem 0.7rem;
+  }
+
+  .measurements dd {
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sensor-note {
+    color: var(--muted);
+    margin-top: 0.7rem;
+    font-size: 0.78rem;
   }
 
   dl {
@@ -894,6 +1140,10 @@
 
     .remote {
       height: min(calc(100dvh - 6.7rem), 480px);
+    }
+
+    .sensor-grid {
+      grid-template-columns: 1fr;
     }
   }
 </style>

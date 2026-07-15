@@ -29,6 +29,9 @@
 #include "network/network_manager.h"
 #include "network/live_websocket_service.h"
 #include "network/web_assets.generated.h"
+#include "sensors/pm1_uart_protocol.h"
+#include "sensors/sensor_mode.h"
+#include "sensors/sensor_source_uart.h"
 #include "sensors/sensors.h"
 #include "time/time_service.h"
 #include "ui/input/remote_input.h"
@@ -205,13 +208,16 @@ void webStatus() {
         else snprintf(dest, size, "%.4g", value);
     };
     char inVoltage[16], inCurrent[16], inPower[16], outVoltage[16], outCurrent[16], outPower[16], auxPower[16], netPower[16];
-    jsonFloat(inVoltage, sizeof(inVoltage), hasIn ? in.voltage : NAN);
-    jsonFloat(inCurrent, sizeof(inCurrent), hasIn ? in.current : NAN);
-    jsonFloat(inPower, sizeof(inPower), hasIn ? in.power : NAN);
-    jsonFloat(outVoltage, sizeof(outVoltage), hasOut ? out.voltage : NAN);
-    jsonFloat(outCurrent, sizeof(outCurrent), hasOut ? out.current : NAN);
-    jsonFloat(outPower, sizeof(outPower), hasOut ? out.power : NAN);
-    jsonFloat(auxPower, sizeof(auxPower), aux.power);
+    const bool eligibleIn = hasIn && sensors::isCalculationEligible(in);
+    const bool eligibleOut = hasOut && sensors::isCalculationEligible(out);
+    const bool eligibleAux = sensors::isCalculationEligible(aux);
+    jsonFloat(inVoltage, sizeof(inVoltage), eligibleIn ? in.voltage : NAN);
+    jsonFloat(inCurrent, sizeof(inCurrent), eligibleIn ? in.current : NAN);
+    jsonFloat(inPower, sizeof(inPower), eligibleIn ? in.power : NAN);
+    jsonFloat(outVoltage, sizeof(outVoltage), eligibleOut ? out.voltage : NAN);
+    jsonFloat(outCurrent, sizeof(outCurrent), eligibleOut ? out.current : NAN);
+    jsonFloat(outPower, sizeof(outPower), eligibleOut ? out.power : NAN);
+    jsonFloat(auxPower, sizeof(auxPower), eligibleAux ? aux.power : NAN);
     jsonFloat(netPower, sizeof(netPower), net);
     char date[24] = "-", clock[24] = "-";
     time_t now;
@@ -247,6 +253,135 @@ void webStatus() {
              network_manager::isApEnabled() ? network_manager::getApIpAddress() : "Off");
     server.sendHeader("Cache-Control", "no-store");
     server.send(200, "application/json", response);
+}
+
+const char* readingStateName(sensors::ReadingState state) {
+    switch (state) {
+        case sensors::ReadingState::NotConfigured: return "not_configured";
+        case sensors::ReadingState::Waiting: return "waiting";
+        case sensors::ReadingState::Valid: return "valid";
+        case sensors::ReadingState::OutOfRange: return "out_of_range";
+        case sensors::ReadingState::Invalid: return "invalid";
+        case sensors::ReadingState::Stale: return "stale";
+    }
+    return "invalid";
+}
+
+const char* dutyStateName(sensors::DutyState state) {
+    switch (state) {
+        case sensors::DutyState::NotReported: return "not_reported";
+        case sensors::DutyState::Valid: return "valid";
+        case sensors::DutyState::Invalid: return "invalid";
+    }
+    return "invalid";
+}
+
+void appendJsonFloat(String& json, float value) {
+    if (!isfinite(value)) json += "null";
+    else json += String(value, 4);
+}
+
+void appendSensorJson(String& json, const char* id, const char* label, sensors::SensorId sensor) {
+    sensors::Reading reading{};
+    const bool hasReading = sensors::getLatest(sensor, reading);
+    const bool observed = hasReading &&
+        (reading.state == sensors::ReadingState::Valid || reading.state == sensors::ReadingState::OutOfRange);
+    json += "{\"id\":\"";
+    json += id;
+    json += "\",\"label\":\"";
+    json += label;
+    json += "\",\"configured\":";
+    json += (hasReading && reading.configured) ? "true" : "false";
+    json += ",\"observed\":";
+    json += (observed ? "true" : "false");
+    json += ",\"state\":\"";
+    json += (hasReading ? readingStateName(reading.state) : "waiting");
+    json += "\",\"sample_age_ms\":";
+    if (hasReading) json += String(static_cast<uint32_t>(millis() - reading.timestamp_ms));
+    else json += "null";
+    json += ",\"voltage\":";
+    appendJsonFloat(json, hasReading ? reading.voltage : NAN);
+    json += ",\"current\":";
+    appendJsonFloat(json, hasReading ? reading.current : NAN);
+    json += ",\"power\":";
+    appendJsonFloat(json, hasReading ? reading.power : NAN);
+    json += ",\"duty\":{\"state\":\"";
+    json += (hasReading ? dutyStateName(reading.dutyState) : "not_reported");
+    json += "\",\"value\":";
+    appendJsonFloat(json, hasReading ? reading.dutyCycle : NAN);
+    json += "}}";
+}
+
+// V1 sensor diagnostics are intentionally a read model, not an operational
+// calculation feed. Finite observed values remain visible when out of range;
+// unavailable values are JSON null. The Power and History APIs continue to
+// expose only calculation-eligible values.
+void webSensors() {
+    const sensor_mode::Mode mode = sensor_mode::get();
+    String json;
+    json.reserve(2300);
+    json = "{\"api_version\":1,\"source\":{\"mode\":\"";
+    switch (mode) {
+        case sensor_mode::Mode::Adc: json += "adc"; break;
+        case sensor_mode::Mode::Uart: json += "uart"; break;
+        case sensor_mode::Mode::Demo: json += "demo"; break;
+    }
+    json += "\",\"label\":\"";
+    json += sensor_mode::label();
+    json += "\",\"transport\":";
+    if (mode == sensor_mode::Mode::Uart) {
+        const sensors::pm1::Diagnostics diagnostics = sensors::getUartDiagnostics();
+        const uint32_t age = sensors::getUartLastValidAgeMs();
+        const bool receiving = diagnostics.hasValidFrame && age < sensors::pm1::kStaleAfterMs;
+        json += "{\"type\":\"uart\",\"state\":\"";
+        json += (receiving ? "receiving" : (diagnostics.hasValidFrame ? "stale" : "waiting"));
+        json += "\",\"connected\":";
+        json += (receiving ? "true" : "false");
+        json += ",\"last_valid_age_ms\":";
+        if (diagnostics.hasValidFrame) json += String(age);
+        else json += "null";
+        json += ",\"channel_mask\":";
+        if (diagnostics.hasValidFrame) json += String(diagnostics.mask);
+        else json += "null";
+        json += ",\"sequence\":";
+        if (diagnostics.hasValidFrame) json += String(diagnostics.sequence);
+        else json += "null";
+        json += ",\"source_uptime_ms\":";
+        if (diagnostics.hasValidFrame) json += String(diagnostics.sourceUptimeMs);
+        else json += "null";
+        json += ",\"valid_frames\":";
+        json += String(diagnostics.validFrames);
+        json += ",\"invalid_frames\":";
+        json += String(diagnostics.invalidFrames);
+        json += ",\"checksum_errors\":";
+        json += String(diagnostics.checksumErrors);
+        json += ",\"overflow_frames\":";
+        json += String(diagnostics.overflowFrames);
+        json += ",\"duplicate_frames\":";
+        json += String(diagnostics.duplicateFrames);
+        json += ",\"sequence_gap_events\":";
+        json += String(diagnostics.sequenceGapEvents);
+        json += ",\"missing_frames\":";
+        json += String(diagnostics.missingFrames);
+        json += ",\"sequence_resets\":";
+        json += String(diagnostics.sequenceResets);
+        json += ",\"sequence_wraps\":";
+        json += String(diagnostics.sequenceWraps);
+        json += ",\"last_error\":\"";
+        json += sensors::pm1::parseErrorLabel(diagnostics.lastError);
+        json += "\"}";
+    } else {
+        json += "null";
+    }
+    json += "},\"channels\":[";
+    appendSensorJson(json, "in", "In", sensors::SENSOR_IN);
+    json += ',';
+    appendSensorJson(json, "out", "Out", sensors::SENSOR_OUT);
+    json += ',';
+    appendSensorJson(json, "aux", "Aux", sensors::SENSOR_AUX);
+    json += "]}";
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", json);
 }
 
 void putLeFloat(uint8_t* dest, float value) {
@@ -312,12 +447,12 @@ void webHistoryQuery() {
     }
 
     constexpr size_t kHeaderBytes = 32;
-    constexpr size_t kRecordBytes = 48;
+    constexpr size_t kRecordBytes = 80;
     const size_t responseBytes = kHeaderBytes + count * kRecordBytes;
     auto* response = static_cast<uint8_t*>(heap_caps_calloc(1, responseBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!response) { heap_caps_free(buckets); server.send(503, "application/json", "{\"error\":\"history serialization unavailable\"}"); return; }
-    putLe32(response, 0x31485056); // "VPH1"
-    response[4] = 1; response[5] = 2;
+    putLe32(response, 0x32485056); // "VPH2"; VPH1 was the incompatible alpha layout.
+    response[4] = 2; response[5] = 2;
     uint16_t flags = (status.incomplete ? 1 : 0) | (status.hasInferredTime ? 2 : 0);
     putLe16(response + 6, flags);
     putLe16(response + 8, static_cast<uint16_t>(count));
@@ -330,12 +465,16 @@ void webHistoryQuery() {
         const auto& bucket = buckets[i];
         putLeDouble(record, static_cast<double>(bucket.startUnixMs));
         putLe32(record + 8, bucket.coveredMs);
-        record[12] = bucket.timeFlags;
+        record[12] = bucket.configuredChannelMask;
+        record[13] = bucket.timeFlags;
+        record[14] = bucket.qualityFlags;
         for (size_t value = 0; value < historical_storage::kSensorCount; ++value) {
             putLeFloat(record + 16 + value * 4, bucket.energyWh[value]);
+            putLe32(record + 48 + value * 4, bucket.channelCoverageMs[value]);
         }
         for (size_t value = 0; value < historical_storage::COMPONENT_COUNT; ++value) {
             putLeFloat(record + 28 + value * 4, bucket.componentEnergyWh[value]);
+            putLe32(record + 60 + value * 4, bucket.componentCoverageMs[value]);
         }
     }
     heap_caps_free(buckets);
@@ -675,7 +814,7 @@ void historyFiles() {
     json.reserve(3072);
     char value[512];
     snprintf(value, sizeof(value),
-             "{\"version\":3,\"flush_interval_minutes\":%u,\"record_size_bytes\":%u,"
+             "{\"version\":1,\"flush_interval_minutes\":%u,\"record_size_bytes\":%u,"
              "\"records_per_segment\":%u,\"max_files\":%u,\"file_count\":%u,"
              "\"committed_records\":%lu,\"buffered_records\":%u,"
              "\"committed_bytes\":%lu,\"buffered_bytes\":%lu,"
@@ -698,12 +837,13 @@ void historyFiles() {
         snprintf(value, sizeof(value),
                  "%s{\"name\":\"%s\",\"session_id\":%lu,\"first_minute\":%lu,"
                  "\"committed_records\":%u,\"buffered_records\":%u,\"bytes\":%lu,"
-                 "\"state\":\"%s\",\"anchored\":%s,\"inferred\":%s,"
+                 "\"state\":\"%s\",\"fixture\":%s,\"anchored\":%s,\"inferred\":%s,"
                  "\"start_unix_ms\":%lld,\"end_unix_ms\":%lld}",
                  i ? "," : "",
                  file.name, static_cast<unsigned long>(file.sessionId),
                  static_cast<unsigned long>(file.firstMinute), file.committedRecords,
                  file.bufferedRecords, static_cast<unsigned long>(file.bytes), state,
+                 file.fixture ? "true" : "false",
                  file.timeFlags & historical_storage::TIME_ANCHORED ? "true" : "false",
                  file.timeFlags & historical_storage::TIME_INFERRED ? "true" : "false",
                  static_cast<long long>(file.startUnixMs), static_cast<long long>(file.endUnixMs));
@@ -895,6 +1035,7 @@ void begin() {
     server.on("/api/v1/history/files", HTTP_GET, historyFiles);
     server.on("/api/v1/history/query", HTTP_GET, webHistoryQuery);
     server.on("/api/v1/web/status", HTTP_GET, webStatus);
+    server.on("/api/v1/sensors", HTTP_GET, webSensors);
     server.on("/", HTTP_GET, serveWebAsset);
     server.onNotFound(serveWebAsset);
     server.begin();

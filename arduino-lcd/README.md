@@ -18,11 +18,25 @@ A 2 row LCD display allows showing the data. This allows both tracking instantan
 
 #### Setup
 
-On Ubuntu, do:
-`sudo apt-get install arduino-mk`
+The primary build uses [PlatformIO](https://platformio.org/):
 
-To flash the arduino, do:
-`make upload`
+```sh
+pio run -e uno
+pio run -e uno --target upload
+```
+
+The existing Arduino-Makefile workflow remains available for compatibility. On
+Ubuntu, install it with `sudo apt-get install arduino-mk`, then use
+`make upload` as before.
+
+Run the PM1 checksum and formatting tests locally, without an attached Uno:
+
+```sh
+pio test -e native
+```
+
+The generic wire contract and current Uno-to-ESP32 wiring are documented in
+[`esp32-viewe/docs/UART_SENSOR.md`](../esp32-viewe/docs/UART_SENSOR.md).
 
 ## Usage
 

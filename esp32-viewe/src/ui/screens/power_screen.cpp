@@ -27,7 +27,7 @@ void drawCb(lv_event_t* e) {
  // history buffer fills, put the available (oldest-to-newest) samples at the
  // end of that window so the latest reading remains at "now".
  const size_t firstPoint = count < kPoints ? kPoints - count : 0;
- for(int s=0;s<4;s++){lv_draw_line_dsc_t line;lv_draw_line_dsc_init(&line);line.color=colors[s];line.width=2;for(size_t i=1;i<count;i++){int x1=left+(int)((firstPoint+i-1)*w/(kPoints-1)),x2=left+(int)((firstPoint+i)*w/(kPoints-1));lv_point_t p1{(lv_coord_t)x1,(lv_coord_t)yFor(a,values[s][i-1])},p2{(lv_coord_t)x2,(lv_coord_t)yFor(a,values[s][i])};lv_draw_line(ctx,&line,&p1,&p2);}}
+ for(int s=0;s<4;s++){lv_draw_line_dsc_t line;lv_draw_line_dsc_init(&line);line.color=colors[s];line.width=2;for(size_t i=1;i<count;i++){if(!std::isfinite(values[s][i-1])||!std::isfinite(values[s][i]))continue;int x1=left+(int)((firstPoint+i-1)*w/(kPoints-1)),x2=left+(int)((firstPoint+i)*w/(kPoints-1));lv_point_t p1{(lv_coord_t)x1,(lv_coord_t)yFor(a,values[s][i-1])},p2{(lv_coord_t)x2,(lv_coord_t)yFor(a,values[s][i])};lv_draw_line(ctx,&line,&p1,&p2);}}
 }
 void kpi(lv_obj_t* parent, int index, lv_color_t color, const char* name) {
  lv_obj_t* item=lv_obj_create(parent);lv_obj_remove_style_all(item);lv_obj_set_size(item,0,LV_SIZE_CONTENT);lv_obj_set_flex_grow(item,1);lv_obj_set_flex_flow(item,LV_FLEX_FLOW_COLUMN);lv_obj_set_flex_align(item,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER,LV_FLEX_ALIGN_CENTER);
@@ -38,8 +38,8 @@ void kpi(lv_obj_t* parent, int index, lv_color_t color, const char* name) {
 }
 void update(lv_timer_t*) {
  const size_t inCount=sensors::getRecent(sensors::SENSOR_IN,samples[0],kPoints); const size_t outCount=sensors::getRecent(sensors::SENSOR_OUT,samples[1],kPoints); const size_t auxCount=sensors::getRecent(sensors::SENSOR_AUX,samples[2],kPoints); const size_t n=fminf(inCount,fminf(outCount,auxCount)); count=n; float lo=0,hi=0;
- for(size_t i=0;i<n;i++){ values[0][i]=samples[0][i].power;values[1][i]=samples[1][i].power;values[2][i]=samples[2][i].power;values[3][i]=values[0][i]-values[1][i];for(int s=0;s<4;s++){lo=fminf(lo,values[s][i]);hi=fmaxf(hi,values[s][i]);}}
- step=nice((hi-lo)/6);maximum=ceilf(hi/step)*step;minimum=floorf(lo/step)*step;if(maximum<=minimum){maximum=step;minimum=-step;}for(int s=0;s<4;s++){char b[12];lv_snprintf(b,sizeof(b),"%d",(int)lroundf(n?values[s][n-1]:0));lv_label_set_text(kpiValues[s],b);}lv_obj_invalidate(plot);
+ for(size_t i=0;i<n;i++){ values[0][i]=sensors::isCalculationEligible(samples[0][i])?samples[0][i].power:NAN;values[1][i]=sensors::isCalculationEligible(samples[1][i])?samples[1][i].power:NAN;values[2][i]=sensors::isCalculationEligible(samples[2][i])?samples[2][i].power:NAN;values[3][i]=std::isfinite(values[0][i])&&std::isfinite(values[1][i])?values[0][i]-values[1][i]:NAN;for(int s=0;s<4;s++){if(!std::isfinite(values[s][i]))continue;lo=fminf(lo,values[s][i]);hi=fmaxf(hi,values[s][i]);}}
+ step=nice((hi-lo)/6);maximum=ceilf(hi/step)*step;minimum=floorf(lo/step)*step;if(maximum<=minimum){maximum=step;minimum=-step;}for(int s=0;s<4;s++){char b[12];if(n&&std::isfinite(values[s][n-1]))lv_snprintf(b,sizeof(b),"%d",(int)lroundf(values[s][n-1]));else lv_snprintf(b,sizeof(b),"--");lv_label_set_text(kpiValues[s],b);}lv_obj_invalidate(plot);
 }
 }
 void visibleUpdate(lv_timer_t* timer) {

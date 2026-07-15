@@ -16,7 +16,7 @@ constexpr uint32_t kIntervalMs = 500;
 constexpr size_t kMaxClients = 5;
 constexpr size_t kReplayFrameCount = 60; // 30 seconds at the 2 Hz publish rate.
 constexpr uint8_t kReplayFramesPerWork = 20;
-constexpr uint32_t kLiveMagic = 0x314d5056; // "VPM1" little endian
+constexpr uint32_t kLiveMagic = 0x324d5056; // "VPM2" little endian
 
 struct __attribute__((packed)) LiveFrame {
     uint32_t magic;
@@ -205,7 +205,7 @@ bool buildFrame(LiveFrame& frame) {
 
     frame = {};
     frame.magic = kLiveMagic;
-    frame.version = 1;
+    frame.version = 2;
     frame.type = 1;
     frame.sequence = ++sequence;
     frame.stateRevision = device_state::revision();
@@ -218,9 +218,18 @@ bool buildFrame(LiveFrame& frame) {
             static_cast<double>(time_service::monotonicUs() - anchor.monotonicUs) / 1000.0;
         frame.flags |= 1;
     }
-    frame.inVoltage = in.voltage; frame.inCurrent = in.current; frame.inPower = in.power;
-    frame.outVoltage = out.voltage; frame.outCurrent = out.current; frame.outPower = out.power;
-    frame.auxPower = aux.power;
+    const sensors::Reading readings[] = {in, out, aux};
+    for (uint8_t i = 0; i < sensors::SENSOR_COUNT; ++i) {
+        if (sensors::isConfigured(readings[i])) frame.flags |= static_cast<uint16_t>(1U << (1 + i));
+        if (sensors::isCalculationEligible(readings[i])) frame.flags |= static_cast<uint16_t>(1U << (4 + i));
+    }
+    frame.inVoltage = sensors::isCalculationEligible(in) ? in.voltage : NAN;
+    frame.inCurrent = sensors::isCalculationEligible(in) ? in.current : NAN;
+    frame.inPower = sensors::isCalculationEligible(in) ? in.power : NAN;
+    frame.outVoltage = sensors::isCalculationEligible(out) ? out.voltage : NAN;
+    frame.outCurrent = sensors::isCalculationEligible(out) ? out.current : NAN;
+    frame.outPower = sensors::isCalculationEligible(out) ? out.power : NAN;
+    frame.auxPower = sensors::isCalculationEligible(aux) ? aux.power : NAN;
     float net = NAN;
     frame.netBatteryPower = sensors::getNetBatteryPower(net) ? net : NAN;
     return true;

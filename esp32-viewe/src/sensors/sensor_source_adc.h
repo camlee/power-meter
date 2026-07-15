@@ -8,6 +8,7 @@ class Esp32AnalogSource final : public SensorSource {
 public:
     Esp32AnalogSource(uint8_t voltagePin, uint8_t currentPin);
 
+    bool requiresCalibration() const override { return true; }
     bool init() override;
     SensorSample read() override;
 

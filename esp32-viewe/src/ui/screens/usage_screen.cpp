@@ -120,8 +120,9 @@ void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
     }
     if (!time_service::hasCurrentTime()) setStatus("Set time to view history", true);
     else if (status.hasInferredTime) setStatus("some timestamps inferred", true);
-    // Gaps are apparent in the chart. They are not a time-quality warning,
-    // so anchored data never receives a bare warning icon.
+    else if (status.incomplete) setStatus("sensor data gaps", true);
+    // Keep time inference and measurement gaps explicit rather than rendering
+    // missing coverage as a zero-height observation.
     else if (!status.coveredMinutes) setStatus("No complete intervals yet");
     else setStatus("");
     const uint16_t tickMinutes = range.calendarRange == historical_storage::CalendarRange::All

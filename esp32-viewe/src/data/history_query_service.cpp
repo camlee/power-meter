@@ -19,6 +19,7 @@ struct Job {
     uint32_t id = 0;
     UsageRequest usage{};
     size_t fileLimit = kMaxListedFiles;
+    historical_storage::Dataset fileDataset = historical_storage::Dataset::Real;
 };
 
 SemaphoreHandle_t mutex = nullptr;
@@ -69,8 +70,9 @@ void runJob(const Job& job, Timing& timing) {
     } else if (job.kind == JobKind::Files) {
         historical_storage::StorageStats stats{};
         size_t total = 0;
-        const size_t count = historical_storage::listFiles(
-            filesBuffer, std::min(job.fileLimit, kMaxListedFiles), 0, &total, &stats);
+        const size_t count = historical_storage::listFilesForDataset(
+            job.fileDataset, filesBuffer, std::min(job.fileLimit, kMaxListedFiles),
+            0, &total, &stats);
         Lock lock;
         if (!lock || requestedJobId != job.id) return;
         filesCount = count;
@@ -160,9 +162,14 @@ uint32_t requestUsage(const UsageRequest& request) {
 }
 
 uint32_t requestFiles(size_t limit) {
+    return requestFilesForDataset(historical_storage::activeDataset(), limit);
+}
+
+uint32_t requestFilesForDataset(historical_storage::Dataset dataset, size_t limit) {
     Job job{};
     job.kind = JobKind::Files;
     job.fileLimit = limit;
+    job.fileDataset = dataset;
     return enqueue(job);
 }
 

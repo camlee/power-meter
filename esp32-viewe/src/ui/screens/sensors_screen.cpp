@@ -7,6 +7,7 @@
 #include <cmath>
 #include <algorithm>
 #include <cstdlib>
+#include <limits>
 
 // Assumptions / lv_conf.h requirements (please confirm on your build):
 //  - LVGL 8.3.x API (lv_chart_set_axis_tick, LV_EVENT_DRAW_PART_BEGIN, LV_PART_TICKS)
@@ -35,6 +36,21 @@ constexpr float kDutyShowThreshold = 0.80f;           // duty reveal trips below
 // when drawing tick labels (see axisTickLabelCb).
 static const float kVoltageAxisScale = 10.0f;
 static const float kCurrentAxisScale = 10.0f;
+
+lv_coord_t chartCoordinate(float value, float scale) {
+    const double scaled = static_cast<double>(value) * scale;
+    if (!std::isfinite(scaled) ||
+        scaled < std::numeric_limits<lv_coord_t>::lowest() ||
+        scaled >= std::numeric_limits<lv_coord_t>::max()) return LV_CHART_POINT_NONE;
+    return static_cast<lv_coord_t>(lround(scaled));
+}
+
+lv_coord_t axisCoordinate(float value, float scale) {
+    const double scaled = static_cast<double>(value) * scale;
+    return static_cast<lv_coord_t>(std::max<double>(
+        std::numeric_limits<lv_coord_t>::lowest(),
+        std::min<double>(std::numeric_limits<lv_coord_t>::max() - 1, scaled)));
+}
 
 // Sane default axis windows; these expand automatically if real data falls
 // outside them (see computeDynamicRange), and use a bit of margin so the
@@ -140,6 +156,7 @@ struct SensorTab {
     lv_obj_t* vValueLabel = nullptr;
     lv_obj_t* iValueLabel = nullptr;
     lv_obj_t* pValueLabel = nullptr;
+    lv_obj_t* statusLabel = nullptr;
 
     lv_obj_t* dutyRow = nullptr;    // hidden until duty is observed < threshold
     lv_obj_t* dutyValueLabel = nullptr;
@@ -203,7 +220,7 @@ void closeCalibration(SensorTab& tab);
 bool latestCalibrationInput(const SensorTab::CalibrationEditor& editor, float& input) {
     sensors::Reading latest{};
     if (!sensors::getLatest(static_cast<sensors::SensorId>(editor.sensor), latest)) return false;
-    if (sensor_mode::get() == sensor_mode::Mode::Real) {
+    if (sensor_mode::get() == sensor_mode::Mode::Adc) {
         input = editor.measurement == sensors::calibration::Measurement::Voltage
             ? latest.voltageInputV : latest.currentInputV;
     } else {
@@ -365,7 +382,7 @@ void calibrationControlCb(lv_event_t* event) {
         editor.staged = sensors::calibration::defaults(editor.measurement);
     }
     if (control->action == CalibrationAction::Save) {
-        if (sensor_mode::get() != sensor_mode::Mode::Real ||
+        if (sensor_mode::get() != sensor_mode::Mode::Adc ||
             sensors::calibration::set(sensor, editor.measurement, editor.staged)) editor.saved = editor.staged;
     }
     refreshCalibrationInputs(editor);
@@ -831,7 +848,7 @@ void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measu
     if (editor.lastPreviewTimestamp) {
         const float oldValue = voltage ? latest.voltage : latest.current;
         const float newValue = sensors::calibration::apply(
-            sensor_mode::get() == sensor_mode::Mode::Real
+            sensor_mode::get() == sensor_mode::Mode::Adc
                 ? (voltage ? latest.voltageInputV : latest.currentInputV)
                 : oldValue / editor.saved.gain + editor.saved.offsetInputV,
             editor.staged);
@@ -892,6 +909,12 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     createKpiItem(t.kpiRow, "W", 48, &t.pValueLabel);
     lv_label_set_text(t.pValueLabel, "--");
     t.dutyRow = createKpiItem(t.kpiRow, "%", 32, &t.dutyValueLabel);
+    t.statusLabel = lv_label_create(t.kpiRow);
+    lv_obj_set_flex_grow(t.statusLabel, 1);
+    lv_obj_set_style_text_align(t.statusLabel, LV_TEXT_ALIGN_RIGHT, 0);
+    lv_obj_set_style_text_font(t.statusLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(t.statusLabel, ui_theme::mutedText(), 0);
+    lv_label_set_text(t.statusLabel, "Waiting");
     lv_obj_add_flag(t.dutyRow, LV_OBJ_FLAG_HIDDEN); // hidden until it's seen below threshold
 
     t.calibrationHeader = lv_obj_create(tab);
@@ -1009,7 +1032,7 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Read
 
     const bool voltage = editor.measurement == sensors::calibration::Measurement::Voltage;
     const auto inputFor = [&](const sensors::Reading& reading) {
-        if (sensor_mode::get() == sensor_mode::Mode::Real) return voltage ? reading.voltageInputV : reading.currentInputV;
+        if (sensor_mode::get() == sensor_mode::Mode::Adc) return voltage ? reading.voltageInputV : reading.currentInputV;
         // Simulation supplies engineering units, not ADC volts. Reconstruct a
         // compatible input so the preview graph remains meaningful for UI
         // walkthroughs without ever applying/saving demo calibration.
@@ -1032,7 +1055,7 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Read
     for (size_t i = 0; i < n; ++i) {
         if (readings[i].timestamp_ms <= editor.lastPreviewTimestamp) continue;
         const float preview = sensors::calibration::apply(inputFor(readings[i]), editor.staged);
-        lv_chart_set_next_value(editor.activeChart, editor.preview, lroundf(preview * scale));
+        lv_chart_set_next_value(editor.activeChart, editor.preview, chartCoordinate(preview, scale));
         editor.lastPreviewTimestamp = readings[i].timestamp_ms;
         appended = true;
     }
@@ -1057,30 +1080,37 @@ void updateCb(lv_timer_t* timer) {
         size_t start = findStartAndAdvance(readings, n, tab.lastTimestamp, tab.primed);
         for (size_t k = start; k < n; k++) {
             lv_chart_set_next_value(tab.vChart, tab.vSeries,
-                                     (lv_coord_t)lroundf(readings[k].voltage * kVoltageAxisScale));
+                                     chartCoordinate(readings[k].voltage, kVoltageAxisScale));
             lv_chart_set_next_value(tab.iChart, tab.iSeries,
-                                     (lv_coord_t)lroundf(readings[k].current * kCurrentAxisScale));
+                                     chartCoordinate(readings[k].current, kCurrentAxisScale));
         }
 
         // --- Dynamic Y ranges, computed off the full visible window --------
-        float vMin = readings[0].voltage, vMax = readings[0].voltage;
-        float iMin = readings[0].current, iMax = readings[0].current;
-        for (size_t k = 1; k < n; k++) {
-            vMin = std::min(vMin, readings[k].voltage);
-            vMax = std::max(vMax, readings[k].voltage);
-            iMin = std::min(iMin, readings[k].current);
-            iMax = std::max(iMax, readings[k].current);
+        float vMin = kVoltageDefaultMin, vMax = kVoltageDefaultMax;
+        float iMin = kCurrentDefaultMin, iMax = kCurrentDefaultMax;
+        bool haveVoltage = false, haveCurrent = false;
+        for (size_t k = 0; k < n; k++) {
+            if (std::isfinite(readings[k].voltage)) {
+                vMin = haveVoltage ? std::min(vMin, readings[k].voltage) : readings[k].voltage;
+                vMax = haveVoltage ? std::max(vMax, readings[k].voltage) : readings[k].voltage;
+                haveVoltage = true;
+            }
+            if (std::isfinite(readings[k].current)) {
+                iMin = haveCurrent ? std::min(iMin, readings[k].current) : readings[k].current;
+                iMax = haveCurrent ? std::max(iMax, readings[k].current) : readings[k].current;
+                haveCurrent = true;
+            }
         }
 
         float outMin, outMax;
         computeDynamicRange(vMin, vMax, kVoltageDefaultMin, kVoltageDefaultMax, 0.2f, tab.vRange, outMin, outMax);
         lv_chart_set_range(tab.vChart, LV_CHART_AXIS_PRIMARY_Y,
-                            (lv_coord_t)(outMin * kVoltageAxisScale), (lv_coord_t)(outMax * kVoltageAxisScale));
+                            axisCoordinate(outMin, kVoltageAxisScale), axisCoordinate(outMax, kVoltageAxisScale));
         updateChartAxisLabels(tab.vFrame);
 
         computeDynamicRange(iMin, iMax, kCurrentDefaultMin, kCurrentDefaultMax, 0.3f, tab.iRange, outMin, outMax);
         lv_chart_set_range(tab.iChart, LV_CHART_AXIS_PRIMARY_Y,
-                            (lv_coord_t)(outMin * kCurrentAxisScale), (lv_coord_t)(outMax * kCurrentAxisScale));
+                            axisCoordinate(outMin, kCurrentAxisScale), axisCoordinate(outMax, kCurrentAxisScale));
         updateChartAxisLabels(tab.iFrame);
 
         // --- KPI numbers: trailing 1s average, refreshed every 2s ----------
@@ -1088,39 +1118,53 @@ void updateCb(lv_timer_t* timer) {
                              (latest.timestamp_ms - tab.lastKpiTimestamp) >= kKpiUpdateIntervalMs;
         if (dueForUpdate) {
             float sumV = 0, sumI = 0, sumP = 0;
-            size_t count = 0;
+            size_t countV = 0, countI = 0, countP = 0;
             uint32_t windowStart = (latest.timestamp_ms > kKpiAverageWindowMs)
                                         ? (latest.timestamp_ms - kKpiAverageWindowMs)
                                         : 0;
             for (size_t k = n; k-- > 0;) {
                 if (readings[k].timestamp_ms < windowStart) break;
-                sumV += readings[k].voltage;
-                sumI += readings[k].current;
-                sumP += readings[k].power;
-                count++;
+                if (std::isfinite(readings[k].voltage)) { sumV += readings[k].voltage; ++countV; }
+                if (std::isfinite(readings[k].current)) { sumI += readings[k].current; ++countI; }
+                if (std::isfinite(readings[k].power)) { sumP += readings[k].power; ++countP; }
             }
-            if (count == 0) { sumV = latest.voltage; sumI = latest.current; sumP = latest.power; count = 1; }
 
             char buf[16];
-            snprintf(buf, sizeof(buf), "%.1f", sumV / count);
+            const bool observable = latest.state == sensors::ReadingState::Valid ||
+                                    latest.state == sensors::ReadingState::OutOfRange;
+            if (observable && countV) snprintf(buf, sizeof(buf), "%.1f", sumV / countV);
+            else snprintf(buf, sizeof(buf), "--");
             lv_label_set_text(tab.vValueLabel, buf);
-            snprintf(buf, sizeof(buf), "%.1f", sumI / count);
+            if (observable && countI) snprintf(buf, sizeof(buf), "%.1f", sumI / countI);
+            else snprintf(buf, sizeof(buf), "--");
             lv_label_set_text(tab.iValueLabel, buf);
-            snprintf(buf, sizeof(buf), "%.0f", sumP / count);
+            if (observable && countP) snprintf(buf, sizeof(buf), "%.0f", sumP / countP);
+            else snprintf(buf, sizeof(buf), "--");
             lv_label_set_text(tab.pValueLabel, buf);
+            const char* state = "";
+            switch (latest.state) {
+                case sensors::ReadingState::NotConfigured: state = "Not configured"; break;
+                case sensors::ReadingState::Waiting: state = "Waiting"; break;
+                case sensors::ReadingState::OutOfRange: state = "Out of range"; break;
+                case sensors::ReadingState::Invalid: state = "Invalid"; break;
+                case sensors::ReadingState::Stale: state = "Stale"; break;
+                case sensors::ReadingState::Valid: break;
+            }
+            lv_label_set_text(tab.statusLabel, state);
             tab.lastKpiTimestamp = latest.timestamp_ms;
             tab.kpiPrimed = true;
         }
 
         // --- Duty: stays hidden until first seen below threshold, then always shown ---
         float duty = sensors::getDutyCycle(static_cast<sensors::SensorId>(i));
-        if (!tab.dutyEverLow && duty < kDutyShowThreshold) {
+        if (std::isfinite(duty) && !tab.dutyEverLow && duty < kDutyShowThreshold) {
             tab.dutyEverLow = true;
             lv_obj_clear_flag(tab.dutyRow, LV_OBJ_FLAG_HIDDEN);
         }
         if (tab.dutyEverLow) {
             char buf[8];
-            snprintf(buf, sizeof(buf), "%.0f", duty * 100.0f);
+            if (std::isfinite(duty)) snprintf(buf, sizeof(buf), "%.0f", duty * 100.0f);
+            else snprintf(buf, sizeof(buf), "--");
             lv_label_set_text(tab.dutyValueLabel, buf);
         }
 

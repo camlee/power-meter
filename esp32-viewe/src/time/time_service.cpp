@@ -15,9 +15,9 @@ namespace {
 constexpr char kPreferencesNamespace[] = "time_service";
 constexpr char kSessionKey[] = "session";
 constexpr char kOffsetKey[] = "utc_offset";
-constexpr char kLedgerPath[] = "/history/v3/time-anchors.bin";
-constexpr char kLedgerTempPath[] = "/history/v3/time-anchors.tmp";
-constexpr char kLedgerBackupPath[] = "/history/v3/time-anchors.bak";
+constexpr char kLedgerPath[] = "/history/v1/time-anchors.bin";
+constexpr char kLedgerTempPath[] = "/history/v1/time-anchors.tmp";
+constexpr char kLedgerBackupPath[] = "/history/v1/time-anchors.bak";
 constexpr int16_t kDefaultUtcOffsetMinutes = -7 * 60;
 constexpr int16_t kMinUtcOffsetMinutes = -14 * 60;
 constexpr int16_t kMaxUtcOffsetMinutes = 14 * 60;

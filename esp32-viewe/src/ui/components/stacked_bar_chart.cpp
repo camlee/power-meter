@@ -129,7 +129,7 @@ void drawCb(lv_event_t* event) {
         float positive = 0, negative = 0;
         for (uint8_t series = 0; series < state->data.seriesCount; ++series) {
             const Series& s = state->data.series[series]; const float value = s.values ? s.values[point] : 0;
-            if (value <= 0) continue;
+            if (!std::isfinite(value) || value <= 0) continue;
             const float from = s.positive ? positive : -negative;
             const float to = s.positive ? positive + value : -(negative + value);
             const int yFrom = yFor(*state, top, height, from);
@@ -156,7 +156,11 @@ void setData(lv_obj_t* chart, const Data& data) {
     float high = 0, low = 0;
     for (size_t point = 0; point < data.pointCount; ++point) {
         float up = 0, down = 0;
-        for (uint8_t s = 0; s < data.seriesCount; ++s) (data.series[s].positive ? up : down) += data.series[s].values[point];
+        for (uint8_t s = 0; s < data.seriesCount; ++s) {
+            const float value = data.series[s].values[point];
+            if (!std::isfinite(value)) continue;
+            (data.series[s].positive ? up : down) += value;
+        }
         high = fmaxf(high, up); low = fmaxf(low, down);
     }
     state->step = niceStep(fmaxf(high + low, 1) / 6); state->max = ceilf(high / state->step) * state->step;

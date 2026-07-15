@@ -7,34 +7,36 @@ requirements. This policy lets developers see what the hardware actually
 reported without allowing an impossible, stale, or missing observation to
 fabricate power or energy.
 
-The policy applies equally to realtime Demo, ESP32 ADC, and Arduino UART
+The policy applies equally to realtime Demo, ESP32 ADC, and UART
 sources. Passing plausibility checks means only that a value is eligible for
 calculation; it does not prove that a sensor is correctly installed or
 calibrated.
 
 ## Channel configuration and state
 
-`In`, `Out`, and `Aux` are independently configured. Effective configuration is
-the intersection of two masks:
+`In`, `Out`, and `Aux` have independent presence/state. The completed runtime
+contract accepts the channels a source supports or currently advertises. The
+remaining configuration follow-up will make effective configuration the
+intersection of two masks:
 
 - the channels a source supports or currently advertises;
-- the channels enabled for that source in device Setup.
+- the channels locally enabled for that source in device Setup.
 
-A channel is not configured merely because an ADC pin produced a value;
-floating pins are not attachment detection. Candidate defaults are
-source-specific and stored independently so switching sources does not overwrite
-another source's channel setup:
+A channel must not ultimately be configured merely because an ADC pin produced
+a value; floating pins are not attachment detection. Persisted per-source local
+enable masks are not implemented yet. Until they are, the runtime behavior is:
 
-| Source | Capability/presence | Fresh candidate enabled default |
-| --- | --- | --- |
-| Realtime Demo | `In`, `Out`, `Aux` | All three enabled. |
-| Arduino UART | Advertised by each valid frame, normally `In` and `Out` | All advertised channels allowed. |
-| ESP32 ADC | Hardware supports provisional `In`, `Out`, `Aux` pins | None; the installer explicitly enables attached channels. |
+| Source | Current effective presence |
+| --- | --- |
+| Realtime Demo | `In`, `Out`, and `Aux` are configured. |
+| UART | Each valid frame's advertised mask is authoritative. |
+| ESP32 ADC | All three provisional channels are configured pending installer enable-mask support. |
 
-Setup may disable a UART-advertised or Demo channel. A source cannot enable a
-channel the local configuration disallows. UART disappearance from an otherwise
-valid frame is a presence/configuration diagnostic and must not be treated as a
-zero observation.
+The follow-up Setup control will persist masks independently so switching
+sources does not overwrite another source's choices. It may disable a
+UART-advertised, ADC, or Demo channel, but may not enable a channel the source
+does not advertise. UART disappearance from an otherwise valid frame is already
+a presence/configuration diagnostic and is never treated as a zero observation.
 
 Each configured channel has one of these runtime states:
 
@@ -47,8 +49,8 @@ Each configured channel has one of these runtime states:
 | `Stale` | No acceptable observation arrived within the source's timeout. |
 | `NotConfigured` | The channel is unsupported or intentionally disabled for this source. |
 
-Source-level diagnostics additionally retain last-valid age, invalid/rejected
-counts, timeout/recovery counts, and source-specific errors. A malformed UART
+Source-level diagnostics additionally retain the available last-valid age,
+invalid/rejected counts, and source-specific errors. A malformed UART
 frame is a source transport error; an individually implausible parsed value is
 a channel data-quality error.
 
@@ -147,7 +149,7 @@ equipment, and acceptance tolerances.
 Until then:
 
 - ADC observations expose raw millivolts and calibrated engineering values;
-- UART observations are treated as already calibrated by the Uno;
+- UART observations are treated as already calibrated by the source producer;
 - source provenance and calibration state remain visible in diagnostics;
 - development history can be wiped without migration before candidate V1 is
   treated as production data.

@@ -19,9 +19,18 @@ lv_obj_t* detailLabel = nullptr;
 lv_obj_t* filesList = nullptr;
 lv_obj_t* screenObject = nullptr;
 lv_obj_t* progress = nullptr;
+lv_obj_t* datasetTabview = nullptr;
 historical_storage::HistoryFileInfo* fileBuffer = nullptr;
 uint32_t pendingJob = 0;
 bool loaded = false;
+historical_storage::Dataset selectedDataset = historical_storage::Dataset::Real;
+
+void updateDatasetTab() {
+    if (!datasetTabview) return;
+    lv_tabview_set_act(datasetTabview,
+                       selectedDataset == historical_storage::Dataset::Demo ? 1 : 0,
+                       LV_ANIM_OFF);
+}
 
 void formatMegabytes(char* out, size_t size, uint32_t bytes) {
     snprintf(out, size, "%.1f MB", bytes / (1024.0f * 1024.0f));
@@ -156,7 +165,7 @@ void startLoad() {
             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     }
     if (!fileBuffer) return;
-    pendingJob = history_query_service::requestFiles(kMaxVisibleFiles);
+    pendingJob = history_query_service::requestFilesForDataset(selectedDataset, kMaxVisibleFiles);
     if (!pendingJob) {
         lv_label_set_text(summaryLabel, "History service unavailable");
         return;
@@ -178,9 +187,23 @@ void completionCb(lv_timer_t*) {
 }
 
 void screenRefreshCb(lv_event_t* event) {
-    if (lv_event_get_code(event) != LV_EVENT_REFRESH || loaded) return;
+    if (lv_event_get_code(event) != LV_EVENT_REFRESH) return;
+    // This filter is page-local. Every entry follows the active source again,
+    // making inspection of the inactive dataset a deliberate action.
+    selectedDataset = historical_storage::activeDataset();
+    updateDatasetTab();
+    loaded = false;
     // A hidden screen's request can be superseded by the Usage query. Queue a
     // fresh one on activation so this page cannot remain permanently pending.
+    pendingJob = 0;
+    startLoad();
+}
+
+void datasetChangedCb(lv_event_t* event) {
+    if (lv_event_get_code(event) != LV_EVENT_VALUE_CHANGED) return;
+    selectedDataset = lv_tabview_get_tab_act(datasetTabview) == 1
+        ? historical_storage::Dataset::Demo : historical_storage::Dataset::Real;
+    loaded = false;
     pendingJob = 0;
     startLoad();
 }
@@ -194,10 +217,28 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(screen, 4, 0);
 
+    // Match the view-only Station / Access Point selector on the Wi-Fi page.
+    // The tab pages are intentionally empty: the shared catalog below is
+    // refreshed for whichever dataset tab is active.
+    datasetTabview = lv_tabview_create(screen, LV_DIR_TOP, 36);
+    lv_obj_set_size(datasetTabview, lv_pct(100), 36);
+    lv_obj_set_style_bg_color(datasetTabview, ui_theme::background(), 0);
+    lv_obj_set_style_bg_opa(datasetTabview, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(datasetTabview, 0, 0);
+    lv_obj_set_style_radius(datasetTabview, 0, 0);
+    lv_obj_set_style_shadow_width(datasetTabview, 0, 0);
+    lv_obj_set_style_pad_all(datasetTabview, 0, 0);
+    lv_tabview_add_tab(datasetTabview, "Real");
+    lv_tabview_add_tab(datasetTabview, "Demo");
+    lv_obj_add_event_cb(datasetTabview, datasetChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
+    selectedDataset = historical_storage::activeDataset();
+    updateDatasetTab();
+
     lv_obj_t* summary = lv_obj_create(screen);
-    ui_theme::styleCard(summary, 6);
+    lv_obj_remove_style_all(summary);
     lv_obj_set_size(summary, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(summary, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(summary, 6, 0);
     lv_obj_set_style_pad_row(summary, 2, 0);
     summaryLabel = addLine(summary, "--", ui_theme::text(), &lv_font_montserrat_14);
     detailLabel = addLine(summary, "--", ui_theme::mutedText(), &lv_font_montserrat_12);
@@ -212,8 +253,8 @@ lv_obj_t* create(lv_obj_t* parent) {
     progress = linear_progress::create(screen);
     lv_obj_add_event_cb(screen, screenRefreshCb, LV_EVENT_REFRESH, nullptr);
 
-    // Completion polling is UI-only. Metadata stays fixed after the first
-    // visit; new files appear on the next reboot/page reconstruction.
+    // Completion polling is UI-only; each page entry and filter change starts
+    // a fresh bounded catalog request.
     lv_timer_create(completionCb, 40, nullptr);
     return screen;
 }

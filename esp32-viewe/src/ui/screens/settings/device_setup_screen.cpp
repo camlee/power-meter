@@ -8,6 +8,7 @@
 #include "data/historical_storage.h"
 #include "network/network_manager.h"
 #include "sensors/sensor_mode.h"
+#include "sensors/sensors.h"
 #include "../../theme/ui_theme.h"
 
 namespace device_setup_screen {
@@ -16,8 +17,11 @@ namespace {
 lv_obj_t* deviceIdInput = nullptr;
 lv_obj_t* statusLabel = nullptr;
 lv_obj_t* keyboard = nullptr;
-lv_obj_t* realModeButton = nullptr;
+lv_obj_t* adcModeButton = nullptr;
+lv_obj_t* uartModeButton = nullptr;
 lv_obj_t* demoModeButton = nullptr;
+lv_obj_t* activeSensorStatusLabel = nullptr;
+lv_obj_t* screenObject = nullptr;
 lv_obj_t* lightModeButton = nullptr;
 lv_obj_t* darkModeButton = nullptr;
 lv_obj_t* autoModeButton = nullptr;
@@ -33,6 +37,49 @@ ui_theme::Mode pendingAppearance = ui_theme::Mode::Auto;
 
 void selectSegment(lv_obj_t* selected, lv_obj_t* first, lv_obj_t* second, lv_obj_t* third = nullptr, lv_obj_t* fourth = nullptr);
 void updateActionState();
+
+const char* sensorModeLabel(sensor_mode::Mode mode) {
+    switch (mode) {
+        case sensor_mode::Mode::Adc: return "ADC";
+        case sensor_mode::Mode::Uart: return "UART";
+        case sensor_mode::Mode::Demo: return "Demo";
+    }
+    return "Sensor";
+}
+
+const char* readingSymbol(sensors::SensorId id) {
+    sensors::Reading reading;
+    if (!sensors::getLatest(id, reading)) return LV_SYMBOL_CLOSE;
+    switch (reading.state) {
+        case sensors::ReadingState::Valid: return LV_SYMBOL_OK;
+        case sensors::ReadingState::OutOfRange: return LV_SYMBOL_WARNING;
+        case sensors::ReadingState::Waiting:
+        case sensors::ReadingState::NotConfigured:
+        case sensors::ReadingState::Invalid:
+        case sensors::ReadingState::Stale: return LV_SYMBOL_CLOSE;
+    }
+    return LV_SYMBOL_CLOSE;
+}
+
+void updateActiveSensorStatus() {
+    if (!activeSensorStatusLabel) return;
+    char text[96];
+    snprintf(text, sizeof(text), "%s  In %s  Out %s  Aux %s",
+             sensorModeLabel(sensor_mode::get()), readingSymbol(sensors::SENSOR_IN),
+             readingSymbol(sensors::SENSOR_OUT), readingSymbol(sensors::SENSOR_AUX));
+    lv_label_set_text(activeSensorStatusLabel, text);
+    lv_obj_set_style_text_opa(activeSensorStatusLabel,
+                              pendingSensorMode == sensor_mode::get() ? LV_OPA_COVER : LV_OPA_20,
+                              0);
+}
+
+void screenRefreshCb(lv_event_t* event) {
+    if (lv_event_get_code(event) == LV_EVENT_REFRESH) updateActiveSensorStatus();
+}
+
+void sensorStatusTimerCb(lv_timer_t*) {
+    if (screenObject && lv_obj_is_visible(screenObject)) updateActiveSensorStatus();
+}
 
 bool checkboxChecked(lv_obj_t* checkbox) {
     return lv_obj_has_state(checkbox, LV_STATE_CHECKED);
@@ -154,8 +201,11 @@ void saveChangesCb(lv_event_t*) {
 }
 
 void sensorModeChangedCb(lv_event_t* event) {
-    pendingSensorMode = lv_event_get_target(event) == realModeButton ? sensor_mode::Mode::Real : sensor_mode::Mode::Demo;
-    selectSegment(pendingSensorMode == sensor_mode::Mode::Real ? realModeButton : demoModeButton, realModeButton, demoModeButton);
+    lv_obj_t* target = lv_event_get_target(event);
+    pendingSensorMode = target == adcModeButton ? sensor_mode::Mode::Adc :
+                        target == uartModeButton ? sensor_mode::Mode::Uart : sensor_mode::Mode::Demo;
+    selectSegment(target, adcModeButton, uartModeButton, demoModeButton);
+    updateActiveSensorStatus();
     updateActionState();
 }
 
@@ -175,7 +225,10 @@ void resetChangesCb(lv_event_t*) {
     lv_textarea_set_text(deviceIdInput, device_identity::getDeviceId());
     pendingSensorMode = sensor_mode::get();
     pendingAppearance = ui_theme::mode();
-    selectSegment(pendingSensorMode == sensor_mode::Mode::Real ? realModeButton : demoModeButton, realModeButton, demoModeButton);
+    lv_obj_t* activeSensor = pendingSensorMode == sensor_mode::Mode::Adc ? adcModeButton :
+                             pendingSensorMode == sensor_mode::Mode::Uart ? uartModeButton : demoModeButton;
+    selectSegment(activeSensor, adcModeButton, uartModeButton, demoModeButton);
+    updateActiveSensorStatus();
     lv_obj_t* selected = pendingAppearance == ui_theme::Mode::Light ? lightModeButton : pendingAppearance == ui_theme::Mode::Dark ? darkModeButton : autoModeButton;
     selectSegment(selected, lightModeButton, darkModeButton, autoModeButton);
     lv_obj_clear_state(resetSetupCheckbox, LV_STATE_CHECKED);
@@ -216,6 +269,7 @@ void styleGroupedSegment(lv_obj_t* button) {
 
 lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* screen = lv_obj_create(parent);
+    screenObject = screen;
     ui_theme::styleScreen(screen, 4);
     lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(screen, 5, 0);
@@ -224,13 +278,22 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_label_set_text(modeLabel, "SENSOR MODE");
     ui_theme::styleSectionLabel(modeLabel);
     lv_obj_t* modeRow = createSegmentGroup(screen);
-    realModeButton = lv_btn_create(modeRow); demoModeButton = lv_btn_create(modeRow);
-    lv_obj_set_flex_grow(realModeButton, 1); lv_obj_set_flex_grow(demoModeButton, 1);
-    styleGroupedSegment(realModeButton); styleGroupedSegment(demoModeButton);
-    lv_label_set_text(lv_label_create(realModeButton), "Real"); lv_label_set_text(lv_label_create(demoModeButton), "Demo");
-    lv_obj_add_event_cb(realModeButton, sensorModeChangedCb, LV_EVENT_CLICKED, nullptr);
+    adcModeButton = lv_btn_create(modeRow); uartModeButton = lv_btn_create(modeRow); demoModeButton = lv_btn_create(modeRow);
+    lv_obj_set_flex_grow(adcModeButton, 1); lv_obj_set_flex_grow(uartModeButton, 1); lv_obj_set_flex_grow(demoModeButton, 1);
+    styleGroupedSegment(adcModeButton); styleGroupedSegment(uartModeButton); styleGroupedSegment(demoModeButton);
+    lv_label_set_text(lv_label_create(adcModeButton), "ADC"); lv_label_set_text(lv_label_create(uartModeButton), "UART"); lv_label_set_text(lv_label_create(demoModeButton), "Demo");
+    lv_obj_add_event_cb(adcModeButton, sensorModeChangedCb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(uartModeButton, sensorModeChangedCb, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(demoModeButton, sensorModeChangedCb, LV_EVENT_CLICKED, nullptr);
-    selectSegment(sensor_mode::get() == sensor_mode::Mode::Real ? realModeButton : demoModeButton, realModeButton, demoModeButton);
+    lv_obj_t* activeSensor = sensor_mode::get() == sensor_mode::Mode::Adc ? adcModeButton :
+                             sensor_mode::get() == sensor_mode::Mode::Uart ? uartModeButton : demoModeButton;
+    selectSegment(activeSensor, adcModeButton, uartModeButton, demoModeButton);
+
+    activeSensorStatusLabel = lv_label_create(screen);
+    lv_obj_set_width(activeSensorStatusLabel, lv_pct(100));
+    lv_obj_set_style_text_align(activeSensorStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(activeSensorStatusLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(activeSensorStatusLabel, ui_theme::mutedText(), 0);
 
     lv_obj_t* appearanceLabel = lv_label_create(screen);
     lv_label_set_text(appearanceLabel, "APPEARANCE");
@@ -281,11 +344,18 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_checkbox_set_text(resetUsageCheckbox, "Usage Data");
     lv_obj_add_event_cb(resetUsageCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
 
+    lv_obj_t* actionSpacer = lv_obj_create(screen);
+    lv_obj_remove_style_all(actionSpacer);
+    lv_obj_set_width(actionSpacer, lv_pct(100));
+    lv_obj_set_flex_grow(actionSpacer, 1);
+
     lv_obj_t* actionRow = lv_obj_create(screen);
     lv_obj_remove_style_all(actionRow);
     lv_obj_set_size(actionRow, lv_pct(100), 34);
     lv_obj_set_flex_flow(actionRow, LV_FLEX_FLOW_ROW);
     lv_obj_set_style_pad_column(actionRow, 5, 0);
+    lv_obj_set_flex_align(actionRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_END,
+                          LV_FLEX_ALIGN_END);
 
     resetButton = lv_btn_create(actionRow);
     lv_obj_set_flex_grow(resetButton, 1);
@@ -304,11 +374,14 @@ lv_obj_t* create(lv_obj_t* parent) {
     ui_theme::stylePrimaryButton(saveButton);
     saveButtonLabel = lv_label_create(saveButton);
     lv_label_set_text(saveButtonLabel, "Save");
+    updateActiveSensorStatus();
     updateActionState();
 
     keyboard = lv_keyboard_create(screen);
     lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(keyboard, keyboardEventCb, LV_EVENT_ALL, nullptr);
+    lv_obj_add_event_cb(screen, screenRefreshCb, LV_EVENT_REFRESH, nullptr);
+    lv_timer_create(sensorStatusTimerCb, 1000, nullptr);
 
     return screen;
 }

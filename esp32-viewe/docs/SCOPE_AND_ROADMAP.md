@@ -20,7 +20,7 @@ Wi-Fi must never be required for sensing, energy accounting, or retention.
   readings. `In - Out` is net battery power when both channels are available;
   `Aux` remains independent.
 - Accept readings from multiple source implementations behind one contract:
-  realtime simulation, the ESP32 ADC, and an interim Arduino Uno UART bridge.
+  realtime simulation, the ESP32 ADC, and a versioned UART sensor interface.
 - Carry source health, sample age, channel presence, and optional direct duty
   cycle with every source. Validate finite and physically plausible values for
   all sources, including the local ADC, while preserving finite raw
@@ -39,7 +39,7 @@ Wi-Fi must never be required for sensing, energy accounting, or retention.
 - Provide local calibration, Wi-Fi, storage, time/status, setup, and diagnostics.
 - Serve a useful local web application with live readings, history, browser
   time contribution, device information, and remote-display control.
-- Add browser calibration/settings/storage features as they become useful;
+- Add browser calibration, settings writes, and storage features as they become useful;
   they are product backlog, not blockers for the completed web-app milestone.
 
 ### Time, power loss, and history
@@ -66,14 +66,14 @@ accuracy is deliberately tracked in a later on-site milestone.
 | Milestone | Status | Remaining work |
 | --- | --- | --- |
 | 0. Coherent firmware baseline | Verified | Ongoing documentation maintenance only. |
-| 1. Local live meter and source abstraction | Implemented | Production-ready null/stale/error semantics and independent channel presence are active work. |
-| 2. Session-aware durable history alpha | Proven feasibility | Replace the disposable alpha format with candidate V1, then verify rotation, retention, interruption recovery, and multi-day accuracy. |
+| 1. Local live meter and source abstraction | Candidate implemented | Persist source-specific local enable masks and complete focused state tests. |
+| 2. Session-aware durable history V1 | Candidate implemented | Verify rotation, retention, interruption recovery, fixture isolation, and multi-day accuracy. |
 | 3. Local calibration | Implemented | Electrical calibration and accuracy validation belong to the on-site hardware milestone. |
-| 4. Embedded web application | Complete | Calibration/settings/storage pages and appearance refinements are normal backlog. |
+| 4. Embedded web application | Complete | Calibration, settings writes, storage tools, and appearance refinements are normal backlog. |
 | 5. OTA and remote display | Verified for current workflow | Continue regression coverage as related services change. |
 
-The current ESP32 firmware and embedded web app build successfully. The alpha
-history service, live and historical browser views, Wi-Fi/AP setup,
+The current ESP32 firmware, Arduino firmware, and embedded web app build
+successfully. Candidate History V1, live and historical browser views, Wi-Fi/AP setup,
 browser/NTP time anchors, local calibration, signed OTA, diagnostics, and
 remote display control are in place.
 
@@ -82,6 +82,10 @@ remote display control are in place.
 ### A. Production sensor data contract
 
 Make missing and unreliable sensor data explicit before adding another source.
+
+The runtime contract, calculation gate, UART-advertised presence, consumer null
+handling, local source summary, and browser diagnostics are implemented.
+Persisted local enable masks and focused state-transition tests remain.
 
 Included work:
 
@@ -95,8 +99,8 @@ Included work:
   history rather than coercing them to zero;
 - stop energy integration across missing/stale intervals and create honest
   history gaps;
-- migrate the persisted Demo/Real boolean to a versioned source-mode enum while
-  preserving existing devices' settings.
+- replace the disposable Demo/Real boolean with the V1 `ADC | UART | Demo`
+  source-mode enum; no alpha preference compatibility is required.
 
 Acceptance requires focused tests for partial channel configurations, source
 startup, malformed values, timeout/recovery, mode migration, derived metrics,
@@ -109,6 +113,10 @@ and history reject rather than clamp them. See
 
 ### B. History verification and demo separation
 
+The V1 format, tenant routing, fixtures, catalog filter, retention, reset,
+coverage, and query paths are implemented. Verification below is the active
+work rather than further format design.
+
 Candidate History V1 keeps two isolated logical datasets using one storage and
 query engine:
 
@@ -116,10 +124,14 @@ query engine:
 - **Demo:** realtime Demo recordings plus protected prebuilt fixture files.
 
 Source provenance automatically selects the recording dataset. Settings ->
-History `Real | Demo` is only a view filter and never installs, removes, or
-reclassifies files. Protected Demo fixtures use reserved session zero and a
+Data `Real | Demo` tabs are only a transient file-catalog filter and never install,
+removes, or reclassifies files. It defaults to the active source each time the
+page is entered. Protected Demo fixtures use reserved session zero and a
 fixed past anchor so they cannot slide into and double-count recorded Demo
-sessions. Real and Demo have independent retention/reset boundaries.
+sessions. Fixture V2 is generated from about 29 hours 45 minutes of captured
+source data, preserves one missing source hour as a gap, and initially begins
+48 hours before current time. Real and Demo have independent retention/reset
+boundaries.
 
 Exercise candidate History V1 using deterministic file/query tests, accelerated
 on-device fixtures where safe, and a real-duration hardware soak. Cover torn
@@ -131,10 +143,14 @@ No alpha history compatibility is required. Candidate firmware may wipe the
 single development device and begins the production format at V1. See
 [HISTORY_STORAGE_V1.md](HISTORY_STORAGE_V1.md).
 
-### C. Arduino Uno UART sensor
+### C. UART sensor and current Uno producer
 
 Use the installed `arduino-lcd` meter as an interim real-world source while the
 new ADC hardware is unavailable.
+
+The Uno transmitter, ESP32 parser/source, source mode, local state summary,
+browser diagnostics, and host/build checks are implemented. Physical
+Uno/divider validation remains.
 
 Included work:
 
@@ -142,14 +158,15 @@ Included work:
   retaining Makefile compatibility;
 - preserve its LCD, buttons, calibration, EEPROM, energy, and sampling behavior;
 - emit a bounded versioned record at 2 Hz, independent from its faster sampling;
-- transmit calibrated engineering units, channel presence, sequence/uptime,
-  and Arduino-computed duty; `Aux` is normally absent;
+- transmit calibrated engineering units, an authoritative channel-presence
+  mask, sequence/uptime, and producer-computed duty; the current Uno
+  configuration advertises no `Aux` channel;
 - receive and validate records on VIEWE J4 UART0 RX/GPIO44 without blocking;
 - add a UART sensor mode and source diagnostics to the local and web interfaces;
 - let the ESP32 calculate power and integrate its own energy/history.
 
 The electrical connection and wire contract are specified in
-[ARDUINO_UART_SENSOR.md](ARDUINO_UART_SENSOR.md). Because the Uno is not
+[UART_SENSOR.md](UART_SENSOR.md). Because the Uno is not
 currently available for bench testing, its changes require reviewable host-side
 protocol tests and a conservative flash/on-site checklist.
 

@@ -18,6 +18,22 @@
 // #define LOAD2_CURRENT_PIN 5
 // #define LOAD2_VOLTAGE_PIN 2
 
+// PM1 channel mapping. A channel is advertised only when this build has both
+// of its required sensor inputs. The transmitted support mask is derived from
+// these definitions on every frame; the receiver does not infer it.
+#if defined(PANEL_VOLTAGE_PIN) && defined(PANEL_CURRENT_PIN)
+#define PM1_IN_SENSOR PANEL
+#define PM1_IN_DUTY_AVAILABLE true
+#endif
+#if defined(LOAD_VOLTAGE_PIN) && defined(LOAD_CURRENT_PIN)
+#define PM1_OUT_SENSOR LOAD
+#define PM1_OUT_DUTY_AVAILABLE false
+#endif
+#if defined(LOAD2_VOLTAGE_PIN) && defined(LOAD2_CURRENT_PIN)
+#define PM1_AUX_SENSOR LOAD2
+#define PM1_AUX_DUTY_AVAILABLE false
+#endif
+
 #define SENSOR_ADC_MAX_VALUE 1024.0
 #define SENSOR_ADC_REFERENCE_VOLTAGE 5.07
 

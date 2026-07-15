@@ -21,7 +21,7 @@ struct Anchor {
     uint32_t uncertaintyMs;
 };
 
-// Starts a persistent monotonic boot session and loads the small V3 anchor
+// Starts a persistent monotonic boot session and loads the small V1 anchor
 // ledger from LittleFS. LittleFS must already be mounted. Safe to call twice.
 void init();
 

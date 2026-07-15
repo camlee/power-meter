@@ -1,15 +1,34 @@
 #pragma once
 #include <cstdint>
+#include <limits>
 
-// One electrical sample at read time. In real mode these are raw ADC input
-// volts; sensors.cpp applies the persisted calibration. Simulated sources
-// return already-engineering-unit values and bypass calibration.
+// Transport/acquisition state reported by a source. Plausibility is applied
+// centrally by sensors.cpp after calibration, so individual sources do not
+// get to define calculation policy.
+enum class SensorSampleState : uint8_t {
+    NotConfigured,
+    Waiting,
+    Observed,
+    Invalid,
+    Stale,
+};
+
+// One electrical sample at read time. In ADC mode these are raw ADC input
+// volts; sensors.cpp applies the persisted calibration. Other sources return
+// engineering-unit values and bypass calibration.
 struct SensorSample {
-    float voltage;
-    float current;
-    // Sources that can observe sub-sample PWM may report its averaged duty
-    // directly. A negative value asks sensors.cpp to derive duty from history.
-    float dutyCycle = -1.0f;
+    SensorSampleState state = SensorSampleState::Waiting;
+    // Presence is independent from runtime state. UART remains unconfigured
+    // while waiting for its first authoritative mask; a known ADC channel may
+    // be configured while Waiting/Invalid.
+    bool configured = false;
+    float voltage = std::numeric_limits<float>::quiet_NaN();
+    float current = std::numeric_limits<float>::quiet_NaN();
+    // Sources that can observe sub-sample PWM may report its averaged duty.
+    // Keep presence separate from the value: an omitted duty can be derived,
+    // while a reported-but-invalid duty remains a data-quality diagnostic.
+    bool hasDutyCycle = false;
+    float dutyCycle = std::numeric_limits<float>::quiet_NaN();
 };
 
 // Implement this once per physical sensor part (e.g. INA219, INA226,
@@ -22,9 +41,14 @@ class SensorSource {
 public:
     virtual ~SensorSource() = default;
 
+    // ADC sources return input volts and opt into the persisted ESP32
+    // calibration. Demo and UART sources already report engineering units and
+    // leave this false so their values are never calibrated twice.
+    virtual bool requiresCalibration() const { return false; }
+
     // Called once at startup (e.g. begin I2C, check chip ID). Return false
-    // on failure -- sensors.cpp will log it and keep running with the last
-    // known-good reading of 0 rather than crash the task.
+    // on failure -- sensors.cpp will log it and publish Invalid readings rather
+    // than fabricate a zero observation or crash the task.
     virtual bool init() = 0;
 
     // Called once per sample interval from the sensor task. Should be fast

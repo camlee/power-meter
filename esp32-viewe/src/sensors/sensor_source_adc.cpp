@@ -18,5 +18,10 @@ SensorSample Esp32AnalogSource::read()
     const float voltageInputV = analogReadMilliVolts(voltagePin_) / 1000.0f;
     const float currentInputV = analogReadMilliVolts(currentPin_) / 1000.0f;
 
-    return {.voltage = voltageInputV, .current = currentInputV};
+    SensorSample sample;
+    sample.state = SensorSampleState::Observed;
+    sample.configured = true;
+    sample.voltage = voltageInputV;
+    sample.current = currentInputV;
+    return sample;
 }

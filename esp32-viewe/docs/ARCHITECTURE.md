@@ -49,7 +49,7 @@ hardware validation will establish per-channel offsets and gains.
 ## Layering
 
 ```text
-Demo / ADC / Uno UART sources
+Demo / ADC / UART sources
         |
         v
 Sensor source contract -------> sensors (validation, buffers, derived values)
@@ -73,8 +73,9 @@ units. The service validates values, applies calibration exactly once, derives
 power once, and owns short in-memory histories.
 
 Realtime Demo remains valuable for exercising the complete live/history path.
-The ESP32 ADC source is the final local target. The interim Arduino Uno UART
-source provides calibrated `In`/`Out` readings and duty while `Aux` is absent.
+The ESP32 ADC source is the final local target. The UART source accepts
+calibrated readings and optional duty from an external producer; the current
+Uno producer supplies `In`/`Out` while `Aux` is absent.
 One UART frame supplies a coherent multi-channel snapshot, so its receiver is a
 shared frame source rather than three independent serial readers.
 
@@ -111,9 +112,10 @@ Current top-level screens are:
 - **Settings:** nested configuration and diagnostics pages:
   - **Wi-Fi:** station scan/connect, station IP/RSSI, plus local AP control
     and its gateway IP;
-  - **Setup:** persisted device ID/hostname (`meter-...`) and hardware ID;
+  - **Setup:** persisted device ID/hostname (`meter-...`), source selection,
+    active channel-state summary, appearance, and reset controls;
   - **Info:** build, current date/time, uptime, and current station/AP IPs;
-  - **History:** bounded, filename-driven segment diagnostics and live RAM state;
+  - **Data:** dataset-filtered, filename-driven segment diagnostics and live RAM state;
   - **Debug:** SDK/chip/reset details, disjoint internal/PSRAM heap usage and
     largest free blocks, storage, and OTA diagnostics.
 
@@ -140,10 +142,14 @@ measured zero from partial/missing coverage, and later maps unsynchronized
 records into an honest time window without inventing a precise timestamp.
 
 Real and Demo are logical tenants of the same engine. ADC/UART route to Real;
-realtime simulation routes to Demo. The Settings -> History segmented control
-is a view filter only. Protected Demo fixture files use reserved session zero
-and fixed past time; they coexist with ordinary recorded Demo sessions without
-sliding or overlap. Seeding/versioning never touches Real.
+realtime simulation routes to Demo. The Settings -> Data tab switcher is a
+transient file-catalog filter only and defaults to the active source on page
+entry. Usage and browser history always follow the active source. Protected
+Demo fixture files use reserved session zero and fixed past time; they coexist
+with ordinary recorded Demo sessions without sliding or overlap. Fixture V2 is
+generated from the timestamped `demo-source` capture, spans about 29 hours 45
+minutes, retains its one-hour source gap, and initially begins 48 hours before
+current time. Seeding/versioning never touches Real.
 
 Five rows are buffered in PSRAM and appended as one 280-byte write. Segments
 close after 240 records (about four hours). Stale `.open` files retain complete
@@ -191,12 +197,15 @@ well-defined non-UI owner; UI screens issue commands and display state.
 
 The implemented local service layer includes:
 
-- a realtime/history browser API and embedded web application;
+- realtime power/history plus raw sensor-diagnostic browser APIs;
+- an embedded web application with Power, Usage, Sensors, read-only Setup, and
+  remote-display views;
 - browser time contribution;
 - signed OTA delivery and diagnostics;
 - remote display capture and input on a trusted local network.
 
-Browser calibration/settings/storage pages remain incremental product backlog.
+Browser calibration, settings writes, and storage tools remain incremental
+product backlog.
 Data export and synchronization between devices remain future work.
 
 Mesh networking is a future architectural option, not a near-term dependency;
@@ -204,11 +213,12 @@ the first network contract should work over ordinary Wi-Fi AP/station mode.
 
 ## Configuration and persistence
 
-Configuration belongs in NVS/Preferences and is versioned. It includes sensor
-source mode, channel presence/mapping, calibration values, device identity, and
-Wi-Fi/AP settings. The current persisted Demo/Real boolean must migrate to a
-versioned mode enum before UART is added while preserving existing settings.
-Future peer/service settings are out of the current phase.
+Configuration belongs in NVS/Preferences and is versioned. It includes the V1
+`ADC | UART | Demo` sensor source mode, calibration values, device identity, and
+Wi-Fi/AP settings. Persisted source-specific channel enable masks remain an
+active follow-up; source-advertised presence already flows through the runtime
+model. No alpha source-mode compatibility is required. Future peer/service
+settings are out of the current phase.
 
 Secrets need an explicit security policy before remote access is introduced.
 The current plain NVS credential storage is acceptable only as a local-device
@@ -234,14 +244,16 @@ starting point; it is not a sufficient design for exposed remote services.
 
 These are documented design gaps, not accepted final behavior:
 
-- Sensor readings do not yet carry production-ready channel presence,
-  validity/staleness, provenance, or error diagnostics through every consumer.
+- Runtime channel presence, validity/staleness, calculation eligibility, local
+  source summary, and browser sensor/UART diagnostics are implemented.
+  Persisted per-source local enable masks remain incomplete.
 - Candidate History V1 tenant isolation, per-channel coverage, protected Demo
-  fixtures, and dataset-scoped reset/retention are designed but not implemented.
+  fixtures, and dataset-scoped reset/retention are implemented but not yet
+  validated by the complete history test plan.
 - History/time needs deterministic recovery/query tests, accelerated retention
   tests, and real rotation/multi-day verification before it is production-durable.
-- The Arduino Uno UART source and its versioned protocol are specified but not
-  implemented.
+- The UART source and its versioned protocol build and pass host tests, but the
+  current producer has not been tested with the physical Uno and divider.
 - Physical ADC conversion/calibration accuracy remains a separate future
   on-site integration milestone.
 - Role configuration and peer synchronization are explicitly out of scope.
@@ -256,5 +268,5 @@ validation/history path as physical sources. Source health must be observable
 through local and web diagnostics. Raw ADC millivolts plus converted readings
 remain available for the future hardware-integration procedure. See
 `SCOPE_AND_ROADMAP.md`, `SENSOR_DATA_POLICY.md`, `HISTORY_STORAGE_V1.md`,
-`ARDUINO_UART_SENSOR.md`, and `HISTORY_TEST_PLAN.md` for the active delivery
+`UART_SENSOR.md`, and `HISTORY_TEST_PLAN.md` for the active delivery
 sequence and acceptance work.

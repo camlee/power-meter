@@ -1,5 +1,6 @@
 #pragma once
 
+#include "sensor_limits.h"
 #include <stdint.h>
 
 namespace sensors::calibration {
@@ -16,8 +17,8 @@ struct Value {
 
 constexpr float kAdcMinInputV = 0.0f;
 constexpr float kAdcMaxInputV = 3.3f;
-constexpr float kVoltageMaxV = 120.0f;
-constexpr float kCurrentMaxA = 50.0f;
+constexpr float kVoltageMaxV = kMaximumVoltageV;
+constexpr float kCurrentMaxA = kMaximumCurrentA;
 
 void init();
 Value defaults(Measurement measurement);

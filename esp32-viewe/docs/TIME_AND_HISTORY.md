@@ -61,19 +61,22 @@ engine.
 
 - ADC and UART sources automatically record to Real.
 - Realtime simulation automatically records to Demo.
-- Settings -> History provides a segmented `Real | Demo` view filter.
-- The filter changes the file catalog and local Usage data being viewed; it
-  never installs, removes, copies, or reclassifies data.
-- The view defaults to Real after boot and Demo views are prominently labeled.
-- When recording and viewing differ, the UI shows both states.
+- Settings -> Data provides a tabbed `Real | Demo` file-catalog filter.
+- The filter never installs, removes, copies, or reclassifies data.
+- It defaults to the active sensor source whenever the page is entered and is
+  reset when the page is left, making a non-active view intentional.
+- Usage and browser history always follow the active sensor source and expose no
+  independent dataset selector.
 
 The Demo dataset contains protected session-zero fixture files plus normal
-recorded Demo sessions. Fixture time is pinned once to a recent complete-day
-window that does not overlap any resolved recorded Demo interval, rather than
-sliding to now on every boot. If recorded Demo time is unresolved, fixture
-anchoring waits. Queries never sum fixture and recorded coverage for the same
-interval. New Demo files appear normally when the Demo source runs and Demo
-data is viewed.
+recorded Demo sessions. Fixture V2 is generated from the timestamped
+`demo-source` capture: it spans about 29 hours 45 minutes and preserves one
+missing source hour as an explicit gap. On a fresh dataset its start is pinned
+once at approximately 48 hours before current time. If that would overlap a
+resolved recorded Demo interval, it moves earlier; if recorded Demo time is
+unresolved, anchoring waits. Queries never sum fixture and recorded coverage
+for the same interval. New Demo files appear normally when the Demo source runs
+and Demo data is viewed.
 
 Candidate firmware idempotently creates/updates only the protected fixture
 version. Firmware flash or OTA never removes or rewrites Real history. Demo
@@ -114,14 +117,14 @@ power loss are absent according to the current durability policy.
 
 ## Catalog, query, and reset
 
-Settings -> History lists only the selected dataset. The catalog is derived
+Settings -> Data lists only the selected dataset. The catalog is derived
 from strict filenames, sizes, anchor metadata, and current RAM; it does not scan
 row bodies. New files update the catalog incrementally and appear without a
 reboot.
 
-The browser catalog/query API accepts `dataset=real|demo`, returns the selected
-dataset, and defaults omitted values to Real. Queries seek directly to required
-rows and return time coverage plus per-channel/component measurement coverage.
+The browser catalog/query API follows the active sensor source. It has no
+Real/Demo parameter. Queries seek directly to required rows and return time
+coverage plus per-channel/component measurement coverage.
 
 Reset is dataset-scoped. Real reset cannot touch Demo; Demo reset cannot touch
 Real. Factory/development reset may clear both and then recreate only protected
@@ -129,8 +132,7 @@ Demo fixtures after explicit confirmation.
 
 ## Verification status
 
-This V1 candidate is not implemented yet. The current alpha demonstrated basic
-build, flash append, catalog, UI, and query feasibility, but candidate V1 must
-pass [HISTORY_TEST_PLAN.md](HISTORY_TEST_PLAN.md), including tenant isolation,
+This V1 candidate is implemented and builds. It must still pass
+[HISTORY_TEST_PLAN.md](HISTORY_TEST_PLAN.md), including tenant isolation,
 partial coverage, interruption recovery, natural rotation, retention, and
-multi-day accuracy.
+multi-day accuracy, before it is production durable.
