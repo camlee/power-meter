@@ -8,8 +8,14 @@ enum class Mode : uint8_t { Light, Dark, Auto };
 
 void init();
 Mode mode();
+// Returns the appearance actually applied to the current LVGL object tree.
 bool isDark();
 void setMode(Mode mode);
+
+// Auto cannot safely recolor the persistent screen/timer tree in place yet.
+// Detects a clock-driven day/night transition, persists the next effective
+// appearance, and remains true until the caller performs a controlled restart.
+bool autoRestartRequired();
 
 lv_color_t background();
 lv_color_t surface();

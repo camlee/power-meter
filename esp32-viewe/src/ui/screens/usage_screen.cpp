@@ -15,7 +15,9 @@ namespace usage_screen {
 namespace {
 
 constexpr size_t kMaxPoints = 336; // 14 days * 24 one-hour buckets
-constexpr uint32_t kRefreshIntervalMs = 60000;
+constexpr uint32_t kRefreshCheckMs = 1000;
+constexpr uint32_t kStorageBoundaryGraceMs = 2000;
+constexpr uint32_t kQueryRetryMs = 30000;
 
 struct Range {
     const char* title;
@@ -52,6 +54,8 @@ lv_obj_t* progress = nullptr;
 uint8_t selectedRange = 0;
 lv_obj_t* screenObject = nullptr;
 uint32_t pendingJob = 0;
+uint32_t nextRefreshAtMs = 0;
+uint16_t renderedBucketMinutes = 0;
 
 lv_color_t seriesColor(uint8_t index)
 {
@@ -103,6 +107,7 @@ void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
         ? static_cast<uint32_t>((status.endUnixMs - status.startUnixMs + 59999) / 60000)
         : range.lookbackMinutes;
     const size_t expectedPoints = count;
+    renderedBucketMinutes = count ? buckets[0].durationMinutes : range.bucketMinutes;
     for (size_t i = 0; i < expectedPoints; ++i) for (auto& values : chartValues) values[i] = 0;
 
     for (size_t point = 0; point < expectedPoints; ++point) {
@@ -132,6 +137,28 @@ void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
                                       time_service::utcOffsetMinutes()});
 }
 
+uint16_t refreshMinutes() {
+    const Range& range = kRanges[selectedRange];
+    if (range.calendar && range.calendarRange == historical_storage::CalendarRange::Yesterday) {
+        return 0;
+    }
+    return range.bucketMinutes ? range.bucketMinutes : renderedBucketMinutes;
+}
+
+void scheduleNextRefresh() {
+    const uint16_t minutes = refreshMinutes();
+    if (!minutes) {
+        nextRefreshAtMs = 0;
+        return;
+    }
+    const uint32_t cadenceMs = static_cast<uint32_t>(minutes) * 60000UL;
+    const uint32_t now = millis();
+    // History rows close on monotonic minute boundaries. Query just after the
+    // corresponding bucket boundary so repeated refreshes stay synchronized
+    // with storage instead of drifting from the moment this screen opened.
+    nextRefreshAtMs = now + (cadenceMs - now % cadenceMs) + kStorageBoundaryGraceMs;
+}
+
 void startQuery(bool replacePending = false)
 {
     if (!screenObject || !lv_obj_is_visible(screenObject)) return;
@@ -141,6 +168,7 @@ void startQuery(bool replacePending = false)
                                                        range.lookbackMinutes, range.bucketMinutes});
     if (!pendingJob) {
         setStatus("history service unavailable", true);
+        nextRefreshAtMs = millis() + kQueryRetryMs;
         return;
     }
     linear_progress::show(progress);
@@ -158,6 +186,13 @@ void completionCb(lv_timer_t*) {
     pendingJob = 0;
     linear_progress::hide(progress);
     renderChart(buckets, count, status);
+    scheduleNextRefresh();
+}
+
+void autoRefreshCb(lv_timer_t*) {
+    if (!screenObject || !lv_obj_is_visible(screenObject) || pendingJob || !nextRefreshAtMs) return;
+    if (static_cast<int32_t>(millis() - nextRefreshAtMs) < 0) return;
+    startQuery();
 }
 
 void rangeChangedCb(lv_event_t* event)
@@ -174,6 +209,8 @@ void rangeChangedCb(lv_event_t* event)
     const uint16_t selected = lv_dropdown_get_selected(lv_event_get_target(event));
     if (selected >= sizeof(kRanges) / sizeof(kRanges[0])) return;
     selectedRange = selected;
+    nextRefreshAtMs = 0;
+    renderedBucketMinutes = 0;
     startQuery(true);
 }
 
@@ -255,6 +292,9 @@ lv_obj_t* create(lv_obj_t* parent)
     // This timer only transfers completed background results into LVGL; it
     // never performs filesystem work or aggregation.
     lv_timer_create(completionCb, 40, nullptr);
+    // The cadence timer is also cheap: it only checks visibility and queues a
+    // worker job after an x-axis bucket boundary.
+    lv_timer_create(autoRefreshCb, kRefreshCheckMs, nullptr);
     return screen;
 }
 

@@ -10,6 +10,33 @@ export async function getSensors() {
   return response.json();
 }
 
+export async function getSetup() {
+  const response = await fetch('/api/v1/setup', { cache: 'no-store' });
+  if (!response.ok) throw new Error(`setup ${response.status}`);
+  return response.json();
+}
+
+export async function saveSetup(settings) {
+  const response = await fetch('/api/v1/setup', {
+    method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings)
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(result.error || `setup ${response.status}`);
+    error.status = response.status;
+    error.userMessage = result.error;
+    throw error;
+  }
+  return result;
+}
+
+export async function getDebug() {
+  const response = await fetch('/api/v1/debug', { cache: 'no-store' });
+  if (!response.ok) throw new Error(`debug ${response.status}`);
+  return response.json();
+}
+
 export async function anchorTime() {
   const response = await fetch('/api/v1/time/anchor', {
     method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
@@ -73,6 +100,8 @@ function parseHistory(buffer) {
   if (view.byteLength < 32 || view.getUint32(0, true) !== 0x32485056 || view.getUint8(4) !== 2 || view.getUint8(5) !== 2) throw new Error('Unsupported history response');
   const flags = view.getUint16(6, true), count = view.getUint16(8, true), recordBytes = view.getUint16(10, true);
   if (recordBytes !== 80 || view.byteLength !== 32 + count * recordBytes) throw new Error('Invalid history response');
+  const startUnixMs = view.getFloat64(16, true);
+  const endUnixMs = view.getFloat64(24, true);
   const buckets = [];
   for (let index = 0; index < count; index += 1) {
     const offset = 32 + index * recordBytes;
@@ -94,7 +123,12 @@ function parseHistory(buffer) {
       panelSurplus: watts(view.getFloat32(offset + 44, true), componentCoverageMs[4])
     });
   }
-  return { flags, buckets };
+  const bucketMinutes = count > 1
+    ? Math.max(1, Math.round((buckets[1].unixMs - buckets[0].unixMs) / 60_000))
+    : (count === 1 && endUnixMs > startUnixMs
+      ? Math.max(1, Math.round((endUnixMs - startUnixMs) / 60_000))
+      : 0);
+  return { flags, startUnixMs, endUnixMs, bucketMinutes, buckets };
 }
 
 export async function getHistory(range = 'today', bucketMinutes = 30) {

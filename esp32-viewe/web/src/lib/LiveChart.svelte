@@ -369,6 +369,7 @@
     const observer = new ResizeObserver(resize);
     observer.observe(canvas);
     colorScheme.addEventListener('change', refreshColors);
+    window.addEventListener('viewe-theme-change', refreshColors);
     refreshColors();
     resize();
     ensureLoopRunning();
@@ -376,6 +377,7 @@
     return () => {
       observer.disconnect();
       colorScheme.removeEventListener('change', refreshColors);
+      window.removeEventListener('viewe-theme-change', refreshColors);
       if (rafId != null) cancelAnimationFrame(rafId);
       rafId = null;
     };

@@ -35,6 +35,7 @@
 #include "sensors/sensors.h"
 #include "time/time_service.h"
 #include "ui/input/remote_input.h"
+#include "ui/theme/ui_theme.h"
 
 #ifndef OTA_SHARED_TOKEN
 #define OTA_SHARED_TOKEN ""
@@ -101,6 +102,24 @@ const char* resetReasonName(esp_reset_reason_t reason) {
         case ESP_RST_BROWNOUT: return "brownout";
         default: return "other";
     }
+}
+
+const char* sensorModeName(sensor_mode::Mode mode) {
+    switch (mode) {
+        case sensor_mode::Mode::Adc: return "adc";
+        case sensor_mode::Mode::Uart: return "uart";
+        case sensor_mode::Mode::Demo: return "demo";
+    }
+    return "adc";
+}
+
+const char* appearanceModeName(ui_theme::Mode mode) {
+    switch (mode) {
+        case ui_theme::Mode::Light: return "light";
+        case ui_theme::Mode::Dark: return "dark";
+        case ui_theme::Mode::Auto: return "auto";
+    }
+    return "auto";
 }
 
 void persistPendingAttempt(const char* targetPartition, const String& targetVersion) {
@@ -231,12 +250,13 @@ void webStatus() {
     const size_t storageTotal = LittleFS.totalBytes();
     const unsigned storagePercent = storageTotal
         ? static_cast<unsigned>((LittleFS.usedBytes() * 100U) / storageTotal) : 0;
-    char response[1152];
+    char response[1280];
     snprintf(response, sizeof(response),
              "{\"api_version\":1,\"web_build\":\"%s\",\"state_revision\":%lu,"
              "\"device_id\":\"%s\",\"hostname\":\"%s\",\"uptime_ms\":%lu,"
              "\"time_source\":\"%s\",\"date\":\"%s\",\"time\":\"%s\","
              "\"build_version\":\"%s\",\"build_date\":\"%s\",\"build_time\":\"%s\","
+             "\"sensor_mode\":\"%s\",\"appearance\":{\"mode\":\"%s\",\"dark\":%s},"
              "\"data_storage_percent\":%u,\"ws_connections\":%u,\"ws_connection_limit\":%u,"
              "\"in\":{\"voltage\":%s,\"current\":%s,\"power\":%s},"
              "\"out\":{\"voltage\":%s,\"current\":%s,\"power\":%s},"
@@ -244,7 +264,9 @@ void webStatus() {
              "\"network\":{\"state\":%u,\"station_ip\":\"%s\",\"ap_ip\":\"%s\"}}",
              web_assets::kBuildId, static_cast<unsigned long>(device_state::revision()),
              device_identity::getDeviceId(), network_manager::getHostname(), static_cast<unsigned long>(millis()),
-             timeSource, date, clock, BUILD_VERSION, BUILD_DATE, BUILD_TIME, storagePercent,
+             timeSource, date, clock, BUILD_VERSION, BUILD_DATE, BUILD_TIME,
+             sensorModeName(sensor_mode::get()), appearanceModeName(ui_theme::mode()),
+             ui_theme::isDark() ? "true" : "false", storagePercent,
              static_cast<unsigned>(live_websocket_service::clientCount()),
              static_cast<unsigned>(live_websocket_service::clientLimit()),
              inVoltage, inCurrent, inPower, outVoltage, outCurrent, outPower,
@@ -570,10 +592,143 @@ bool jsonBool(const String& json, const char* name, bool& value) {
     if (keyAt < 0) return false;
     int colon = json.indexOf(':', keyAt + key.length());
     if (colon < 0) return false;
-    const String tail = json.substring(colon + 1);
+    int valueAt = colon + 1;
+    while (valueAt < static_cast<int>(json.length()) &&
+           isspace(static_cast<unsigned char>(json[valueAt]))) ++valueAt;
+    const String tail = json.substring(valueAt);
     if (tail.startsWith("true")) { value = true; return true; }
     if (tail.startsWith("false")) { value = false; return true; }
     return false;
+}
+
+bool clearPreferences(const char* name) {
+    Preferences prefs;
+    if (!prefs.begin(name, false)) return false;
+    const bool cleared = prefs.clear();
+    prefs.end();
+    return cleared;
+}
+
+void webSetup() {
+    if (server.method() == HTTP_GET) {
+        String response = String("{\"api_version\":1,\"hostname\":\"") +
+            device_identity::getDeviceId() + "\",\"sensor_mode\":\"" +
+            sensorModeName(sensor_mode::get()) + "\",\"appearance\":\"" +
+            appearanceModeName(ui_theme::mode()) + "\"}";
+        server.sendHeader("Cache-Control", "no-store");
+        server.send(200, "application/json", response);
+        return;
+    }
+
+    const String body = server.arg("plain");
+    String hostname, requestedSensorMode, requestedAppearance;
+    bool resetSetup = false, resetWifi = false, resetCalibration = false, resetUsage = false;
+    if (!jsonString(body, "hostname", hostname) ||
+        !jsonString(body, "sensor_mode", requestedSensorMode) ||
+        !jsonString(body, "appearance", requestedAppearance) ||
+        !jsonBool(body, "reset_setup", resetSetup) ||
+        !jsonBool(body, "reset_wifi", resetWifi) ||
+        !jsonBool(body, "reset_calibration", resetCalibration) ||
+        !jsonBool(body, "reset_usage", resetUsage)) {
+        server.send(400, "application/json", "{\"error\":\"invalid setup request\"}");
+        return;
+    }
+    if (!device_identity::isValidDeviceId(hostname.c_str())) {
+        server.send(400, "application/json", "{\"error\":\"Use lowercase letters, numbers, and hyphens (max 31); it cannot start or end with a hyphen.\"}");
+        return;
+    }
+
+    sensor_mode::Mode mode;
+    if (requestedSensorMode == "adc") mode = sensor_mode::Mode::Adc;
+    else if (requestedSensorMode == "uart") mode = sensor_mode::Mode::Uart;
+    else if (requestedSensorMode == "demo") mode = sensor_mode::Mode::Demo;
+    else {
+        server.send(400, "application/json", "{\"error\":\"invalid sensor mode\"}");
+        return;
+    }
+    ui_theme::Mode appearance;
+    if (requestedAppearance == "light") appearance = ui_theme::Mode::Light;
+    else if (requestedAppearance == "dark") appearance = ui_theme::Mode::Dark;
+    else if (requestedAppearance == "auto") appearance = ui_theme::Mode::Auto;
+    else {
+        server.send(400, "application/json", "{\"error\":\"invalid device appearance\"}");
+        return;
+    }
+
+    if (resetSetup) {
+        if (!clearPreferences("device") || !clearPreferences("sensors") ||
+            !clearPreferences("appearance")) {
+            server.send(500, "application/json", "{\"error\":\"Could not reset setup preferences.\"}");
+            return;
+        }
+    } else {
+        if (hostname != device_identity::getDeviceId() &&
+            !device_identity::setDeviceId(hostname.c_str())) {
+            server.send(500, "application/json", "{\"error\":\"Could not save hostname.\"}");
+            return;
+        }
+        if (mode != sensor_mode::get() && !sensor_mode::set(mode)) {
+            server.send(500, "application/json", "{\"error\":\"Could not save sensor mode.\"}");
+            return;
+        }
+        if (appearance != ui_theme::mode()) ui_theme::setMode(appearance);
+    }
+    if (resetCalibration && !clearPreferences("sensor_cal")) {
+        server.send(500, "application/json", "{\"error\":\"Could not reset sensor calibration.\"}");
+        return;
+    }
+    if (resetWifi && !network_manager::clearSavedCredentials()) {
+        server.send(500, "application/json", "{\"error\":\"Could not reset Wi-Fi credentials.\"}");
+        return;
+    }
+    if (resetUsage && !historical_storage::clearAll()) {
+        server.send(500, "application/json", "{\"error\":\"Could not reset usage history.\"}");
+        return;
+    }
+
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", "{\"ok\":true,\"restarting\":true}");
+    delay(250); // let the browser receive confirmation before settings take effect
+    ESP.restart();
+}
+
+void webDebug() {
+    constexpr uint32_t kInternalCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    constexpr uint32_t kPsramCaps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+    const size_t internalTotal = heap_caps_get_total_size(kInternalCaps);
+    const size_t internalFree = heap_caps_get_free_size(kInternalCaps);
+    const size_t psramTotal = heap_caps_get_total_size(kPsramCaps);
+    const size_t psramFree = heap_caps_get_free_size(kPsramCaps);
+    const size_t storageTotal = LittleFS.totalBytes();
+    const uint32_t validationRemaining = validationRemainingMs();
+    history_query_service::Timing timing{};
+    history_query_service::getTiming(timing);
+
+    String response;
+    response.reserve(1050);
+    response = String("{\"api_version\":1,\"lvgl\":\"") + LVGL_VERSION_MAJOR + "." +
+        LVGL_VERSION_MINOR + "." + LVGL_VERSION_PATCH + "\",\"sdk\":\"" + ESP.getSdkVersion() +
+        "\",\"chip\":\"" + ESP.getChipModel() + " rev " + ESP.getChipRevision() +
+        "\",\"cpu_mhz\":" + ESP.getCpuFreqMHz() + ",\"flash_mb\":" +
+        (ESP.getFlashChipSize() / (1024 * 1024)) + ",\"last_reset\":\"" +
+        resetReasonName(esp_reset_reason()) + "\",\"internal_heap\":{\"used_percent\":" +
+        (internalTotal ? ((internalTotal - internalFree) * 100 + internalTotal / 2) / internalTotal : 0) +
+        ",\"largest_free_kb\":" + (heap_caps_get_largest_free_block(kInternalCaps) / 1024) +
+        "},\"psram_heap\":{\"used_percent\":" +
+        (psramTotal ? ((psramTotal - psramFree) * 100 + psramTotal / 2) / psramTotal : 0) +
+        ",\"largest_free_kb\":" + (heap_caps_get_largest_free_block(kPsramCaps) / 1024) +
+        "},\"storage\":{\"mounted\":" + (storageTotal ? "true" : "false") +
+        ",\"used_kb\":" + (LittleFS.usedBytes() / 1024) + ",\"total_kb\":" +
+        (storageTotal / 1024) + "},\"ota\":{\"health\":\"" + healthStatus() +
+        "\",\"validation_remaining_ms\":" + validationRemaining + ",\"running_slot\":\"" +
+        runningPartitionLabel() + "\",\"boot_slot\":\"" + bootPartitionLabel() +
+        "\",\"image_state\":\"" + runningImageState() + "\",\"rollback_detected\":" +
+        (rollbackDetected() ? "true" : "false") + "},\"history_query\":{\"last_duration_ms\":" +
+        timing.lastDurationMs + ",\"max_duration_ms\":" + timing.maxDurationMs +
+        ",\"records_read\":" + timing.lastRecordsRead + ",\"files_read\":" + timing.lastFilesRead +
+        ",\"was_usage\":" + (timing.lastWasUsage ? "true" : "false") + "}}";
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", response);
 }
 
 void putLe16(uint8_t* dest, uint16_t value) {
@@ -1036,6 +1191,9 @@ void begin() {
     server.on("/api/v1/history/query", HTTP_GET, webHistoryQuery);
     server.on("/api/v1/web/status", HTTP_GET, webStatus);
     server.on("/api/v1/sensors", HTTP_GET, webSensors);
+    server.on("/api/v1/setup", HTTP_GET, webSetup);
+    server.on("/api/v1/setup", HTTP_POST, webSetup);
+    server.on("/api/v1/debug", HTTP_GET, webDebug);
     server.on("/", HTTP_GET, serveWebAsset);
     server.onNotFound(serveWebAsset);
     server.begin();

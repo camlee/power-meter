@@ -4,12 +4,15 @@
   import HistoryChart from './lib/HistoryChart.svelte';
   import {
     anchorTime,
+    getDebug,
     getHistory,
     getRemoteScreenshot,
     getSensors,
+    getSetup,
     getStatus,
     openLiveSocket,
     sendRemotePointer,
+    saveSetup,
   } from './lib/api.js';
 
   // ---------------------------------------------------------------------
@@ -19,6 +22,7 @@
   // How often to poll the REST status endpoint.
   const STATUS_POLL_MS = 10_000;
   const SENSOR_POLL_MS = 1_000;
+  const DEBUG_POLL_MS = 1_000;
 
   // Cap on how many live-chart points we keep in memory.
   const MAX_LIVE_POINTS = 600;
@@ -37,20 +41,21 @@
   // flaky connection can't hammer the meter in a tight reconnect loop.
   const RECONNECT_BASE_MS = 1_000;
   const RECONNECT_MAX_MS = 30_000;
-  const RECONNECT_WARN_AFTER_ATTEMPTS = 6;
+  const RECONNECT_FAIL_AFTER_ATTEMPTS = 6;
 
-  // History ranges. `minutes` controls the server-side bucket size;
-  // `refreshMs` controls how often we auto-refresh this view while it's
-  // open (null = no periodic refresh, manual only).
+  // History ranges. The refresh cadence matches one x-axis bucket, so a
+  // multi-day query is not repeated just because another minute elapsed.
+  // The all-history bucket is selected by the firmware and learned from the
+  // response. Yesterday is complete and therefore manual-refresh only.
   const historyRanges = [
-    { id: 'last1hour', label: 'Last 1 Hour', minutes: 2, refreshMs: 60_000 },
-    { id: 'last6hours', label: 'Last 6 Hours', minutes: 15, refreshMs: 5 * 60_000 },
-    { id: 'last24hours', label: 'Last 24 Hours', minutes: 30, refreshMs: 5 * 60_000 },
-    { id: 'today', label: 'Today', minutes: 30, refreshMs: 5 * 60_000 },
+    { id: 'last1hour', label: 'Last 1 Hour', minutes: 2, refreshMs: 2 * 60_000 },
+    { id: 'last6hours', label: 'Last 6 Hours', minutes: 15, refreshMs: 15 * 60_000 },
+    { id: 'last24hours', label: 'Last 24 Hours', minutes: 30, refreshMs: 30 * 60_000 },
+    { id: 'today', label: 'Today', minutes: 30, refreshMs: 30 * 60_000 },
     { id: 'yesterday', label: 'Yesterday', minutes: 30, refreshMs: null },
-    { id: 'last2days', label: 'Last 2 Days', minutes: 60, refreshMs: 5 * 60_000 },
-    { id: 'lastweek', label: 'Last Week', minutes: 240, refreshMs: 15 * 60_000 },
-    { id: 'all', label: 'All', minutes: 0, refreshMs: 15 * 60_000 },
+    { id: 'last2days', label: 'Last 2 Days', minutes: 60, refreshMs: 60 * 60_000 },
+    { id: 'lastweek', label: 'Last Week', minutes: 240, refreshMs: 240 * 60_000 },
+    { id: 'all', label: 'All', minutes: 0, refreshMs: null },
   ];
 
   // Route <-> path mapping. Declared here (not down in the "Routing"
@@ -64,7 +69,11 @@
     history: '/history',
     sensors: '/sensors',
     setup: '/setup',
+    info: '/info',
+    debug: '/debug',
   };
+
+  const SETTINGS_ROUTES = ['setup', 'info', 'debug', 'remote'];
 
   // ---------------------------------------------------------------------
   // State
@@ -76,6 +85,7 @@
   let status = null;
   let statusError = '';
   let statusPollTimer;
+  let statusFetchedAt = 0;
 
   // Detailed sensor read model. This is polled separately from operational
   // status because it includes raw out-of-range values and UART diagnostics.
@@ -83,11 +93,33 @@
   let sensorStatusError = '';
   let sensorPollTimer;
 
+  // Setup writes are staged locally and applied together by the device.
+  let setup = null;
+  let setupHostname = '';
+  let setupSensorMode = 'adc';
+  let setupAppearance = 'auto';
+  let resetSetup = false;
+  let resetWifi = false;
+  let resetCalibration = false;
+  let resetUsage = false;
+  let setupError = '';
+  let setupMessage = '';
+  let setupBusy = false;
+
+  // On-device diagnostics are refreshed only while Debug is visible.
+  let debugStatus = null;
+  let debugError = '';
+  let debugPollTimer;
+
+  // This preference controls only the browser. "auto" follows the browser/
+  // OS color preference; "device" follows the display's effective theme.
+  let webTheme = loadWebTheme();
+  let colorSchemeMedia;
+
   // Live socket (WebSocket).
   let socket = null;
-  let connection = 'connecting'; // connecting | live | limited | offline | paused
+  let connection = 'connecting'; // connecting | reconnecting | live | failed | limited | paused
   let connectionLimit = 5;
-  let connectionError = '';
   let reconnectAttempts = 0;
   let reconnectTimer;
   let livePaused = false;
@@ -120,14 +152,51 @@
 
   const meterName = () => status?.hostname || 'meter';
 
+  function loadWebTheme() {
+    try {
+      const saved = localStorage.getItem('viewe-web-theme');
+      return ['light', 'dark', 'auto', 'device'].includes(saved) ? saved : 'device';
+    } catch (_) {
+      return 'device';
+    }
+  }
+
+  function applyWebTheme() {
+    let resolved = webTheme;
+    if (resolved === 'auto') {
+      resolved = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } else if (resolved === 'device') {
+      resolved = typeof status?.appearance?.dark === 'boolean'
+        ? (status.appearance.dark ? 'dark' : 'light')
+        : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    }
+    document.documentElement.dataset.theme = resolved;
+    document.querySelector('meta[name="theme-color"]')?.setAttribute(
+      'content', resolved === 'dark' ? '#101417' : '#ffffff',
+    );
+    window.dispatchEvent(new Event('viewe-theme-change'));
+  }
+
+  function selectWebTheme(next) {
+    webTheme = next;
+    try { localStorage.setItem('viewe-web-theme', next); } catch (_) { /* storage may be disabled */ }
+    applyWebTheme();
+  }
+
+  function colorSchemeChanged() {
+    if (webTheme === 'auto' || (webTheme === 'device' && !status?.appearance)) applyWebTheme();
+  }
+
   function connectionLabel() {
     switch (connection) {
       case 'live':
         return 'Live connection';
       case 'limited':
         return `Connection limit reached (${connectionLimit})`;
-      case 'offline':
-        return 'Connection offline — reconnecting…';
+      case 'reconnecting':
+        return 'Reconnecting…';
+      case 'failed':
+        return 'Failed to connect; still retrying…';
       case 'paused':
         return 'Connection paused (tab in background)';
       default:
@@ -150,6 +219,11 @@
 
   function formatPercent(value) {
     return Number.isFinite(value) ? `${(value * 100).toFixed(0)}%` : '—';
+  }
+
+  function titleCase(value) {
+    if (!value) return '—';
+    return value.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
   }
 
   function stateLabel(state) {
@@ -183,6 +257,7 @@
     if (err.name === 'TypeError' && /fetch/i.test(err.message || '')) {
       return `Unable to ${action}: can't reach the meter on the network.`;
     }
+    if (err.userMessage) return `Unable to ${action}: ${err.userMessage}`;
     if (err.status) {
       return `Unable to ${action}: meter responded with an error (${err.status}).`;
     }
@@ -221,6 +296,14 @@
       refreshRemote();
     }
 
+    if (next === 'setup') refreshSetup();
+
+    clearInterval(debugPollTimer);
+    if (next === 'debug') {
+      refreshDebug();
+      debugPollTimer = setInterval(refreshDebug, DEBUG_POLL_MS);
+    }
+
     if (next === 'sensors' || next === 'setup') {
       refreshSensors();
       scheduleSensorRefresh();
@@ -246,12 +329,19 @@
   async function refreshStatus() {
     try {
       status = await getStatus();
+      statusFetchedAt = Date.now();
+      applyWebTheme();
+      if (route === 'setup' && !setup && setupMessage) refreshSetup();
       if (Number.isFinite(status?.ws_connection_limit)) {
         connectionLimit = status.ws_connection_limit;
       }
       statusError = '';
     } catch (err) {
-      statusError = describeError(err, 'reach the meter');
+      // A tab returning from the background can briefly outrun the browser's
+      // restored network connection. The live-socket state already represents
+      // that recovery, so only surface an independent REST failure while the
+      // socket itself is healthy.
+      statusError = connection === 'live' ? describeError(err, 'reach the meter') : '';
     }
   }
 
@@ -267,6 +357,85 @@
   function scheduleSensorRefresh() {
     clearInterval(sensorPollTimer);
     sensorPollTimer = setInterval(refreshSensors, SENSOR_POLL_MS);
+  }
+
+  function loadSetupDraft(value) {
+    setup = value;
+    setupBusy = false;
+    setupHostname = value.hostname;
+    setupSensorMode = value.sensor_mode;
+    setupAppearance = value.appearance;
+    resetSetup = resetWifi = resetCalibration = resetUsage = false;
+    setupError = '';
+    setupMessage = '';
+  }
+
+  async function refreshSetup() {
+    try {
+      loadSetupDraft(await getSetup());
+    } catch (err) {
+      setupError = describeError(err, 'load setup');
+    }
+  }
+
+  function setupDirty() {
+    return !!setup && (setupHostname !== setup.hostname || setupSensorMode !== setup.sensor_mode ||
+      setupAppearance !== setup.appearance || resetSetup || resetWifi || resetCalibration || resetUsage);
+  }
+
+  function validHostname() {
+    return /^[a-z0-9](?:[a-z0-9-]{0,29}[a-z0-9])?$/.test(setupHostname);
+  }
+
+  async function submitSetup() {
+    setupError = '';
+    setupMessage = '';
+    if (!validHostname()) {
+      setupError = 'Use lowercase letters, numbers, and hyphens (max 31); it cannot start or end with a hyphen.';
+      return;
+    }
+    setupBusy = true;
+    try {
+      await saveSetup({
+        hostname: setupHostname, sensor_mode: setupSensorMode, appearance: setupAppearance,
+        reset_setup: resetSetup, reset_wifi: resetWifi,
+        reset_calibration: resetCalibration, reset_usage: resetUsage,
+      });
+      setupMessage = 'Settings saved. The device is restarting…';
+      setup = null;
+    } catch (err) {
+      setupError = describeError(err, 'save setup');
+      setupBusy = false;
+    }
+  }
+
+  async function refreshDebug() {
+    try {
+      debugStatus = await getDebug();
+      debugError = '';
+    } catch (err) {
+      debugError = describeError(err, 'load debug details');
+    }
+  }
+
+  function debugHistoryLabel(query) {
+    if (!query?.last_duration_ms) return 'No query yet';
+    return `${query.was_usage ? 'Usage' : 'Files'} ${query.last_duration_ms}ms; ${query.files_read} files, ${query.records_read} rows (max ${query.max_duration_ms}ms)`;
+  }
+
+  function debugResetLabel(value) {
+    const labels = {
+      power_on: 'Power-on', software: 'Software', panic: 'Panic',
+      interrupt_watchdog: 'Interrupt WDT', task_watchdog: 'Task WDT',
+      watchdog: 'Other WDT', brownout: 'Brownout', other: 'Other',
+    };
+    return labels[value] || '—';
+  }
+
+  function otaHealthLabel(ota) {
+    if (!ota) return '—';
+    if (ota.validation_remaining_ms > 0) return `${ota.health}; verify ${(ota.validation_remaining_ms / 1000).toFixed(1)} s`;
+    return ota.health === 'confirmed' ? 'confirmed; verified' : ota.health;
   }
 
   // ---------------------------------------------------------------------
@@ -312,12 +481,30 @@
     // teardown. They must not overwrite "paused" or schedule a new socket.
     if (livePaused || destroyed) return;
 
-    connection = state;
     if (limit) connectionLimit = limit;
 
-    if (state === 'live' || state === 'limited') {
+    if (state === 'live') {
+      connection = 'live';
       reconnectAttempts = 0;
-      connectionError = '';
+      statusError = '';
+      return;
+    }
+
+    if (state === 'limited') {
+      connection = 'limited';
+      reconnectAttempts = 0;
+      statusError = '';
+      return;
+    }
+
+    // WebSocket errors are followed by a close event. Move the indicator to
+    // its transient state immediately, but let close own retry scheduling so
+    // one failed connection produces only one backoff step.
+    if (state === 'reconnecting') {
+      if (reconnectAttempts < RECONNECT_FAIL_AFTER_ATTEMPTS) {
+        connection = 'reconnecting';
+      }
+      statusError = '';
       return;
     }
 
@@ -327,10 +514,10 @@
       if (document.hidden) return;
 
       reconnectAttempts += 1;
-      connectionError =
-        reconnectAttempts >= RECONNECT_WARN_AFTER_ATTEMPTS
-          ? 'Having trouble maintaining a stable connection to the meter. Still retrying…'
-          : '';
+      connection = reconnectAttempts >= RECONNECT_FAIL_AFTER_ATTEMPTS
+        ? 'failed'
+        : 'reconnecting';
+      statusError = '';
 
       clearTimeout(reconnectTimer);
       reconnectTimer = setTimeout(connectLive, reconnectDelay(reconnectAttempts));
@@ -357,7 +544,8 @@
   function resumeLive() {
     livePaused = false;
     reconnectAttempts = 0;
-    connectionError = '';
+    connection = 'reconnecting';
+    statusError = '';
     connectLive();
   }
 
@@ -394,11 +582,24 @@
     clearTimeout(historyRefreshTimer);
     if (route !== 'history') return;
 
-    const interval = historyRange.refreshMs;
+    // "All" uses a firmware-selected bucket size; other ranges have a fixed
+    // bucket. Align to the device's monotonic minute boundaries, just after
+    // storage closes the minute, instead of drifting from page-open time.
+    const interval = historyRange.refreshMs ||
+      (historyRange.id === 'all' && history?.bucketMinutes
+        ? history.bucketMinutes * 60_000
+        : null);
     if (!interval) return; // this range is manual-refresh only
 
     const elapsed = Date.now() - historyFetchedAt;
-    const delay = Math.max(0, interval - elapsed);
+    let delay = Math.max(0, interval - elapsed);
+    if (Number.isFinite(status?.uptime_ms) && elapsed < interval) {
+      const estimatedUptime = status.uptime_ms + Math.max(0, Date.now() - statusFetchedAt);
+      const untilBoundary = interval - (estimatedUptime % interval);
+      // Storage normally completes on the sample bracketing the boundary;
+      // a short grace also covers its bounded late-sample path.
+      delay = Math.min(delay, untilBoundary + 2_000);
+    }
     historyRefreshTimer = setTimeout(() => refreshHistory(historyRange, { silent: true }), delay);
   }
 
@@ -494,6 +695,7 @@
       // Don't keep polling history/remote in the background either.
       clearTimeout(historyRefreshTimer);
       clearInterval(sensorPollTimer);
+      clearInterval(debugPollTimer);
       return;
     }
 
@@ -509,10 +711,17 @@
       refreshSensors();
       scheduleSensorRefresh();
     }
+    if (route === 'debug') {
+      refreshDebug();
+      debugPollTimer = setInterval(refreshDebug, DEBUG_POLL_MS);
+    }
   }
 
   onMount(() => {
     destroyed = false;
+    colorSchemeMedia = matchMedia('(prefers-color-scheme: dark)');
+    colorSchemeMedia.addEventListener?.('change', colorSchemeChanged);
+    applyWebTheme();
     refreshStatus();
     anchorTime();
     connectLive();
@@ -527,11 +736,13 @@
       destroyed = true;
       clearInterval(statusPollTimer);
       clearInterval(sensorPollTimer);
+      clearInterval(debugPollTimer);
       clearTimeout(reconnectTimer);
       clearTimeout(remoteRefreshTimer);
       clearTimeout(historyRefreshTimer);
       socket?.close();
       if (remoteImage) URL.revokeObjectURL(remoteImage);
+      colorSchemeMedia?.removeEventListener?.('change', colorSchemeChanged);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
       window.removeEventListener('popstate', handlePopState);
     };
@@ -544,28 +755,45 @@
     <span
       class="connection"
       class:live={connection === 'live'}
-      class:offline={connection === 'offline' || connection === 'limited'}
+      class:reconnecting={connection === 'connecting' || connection === 'reconnecting'}
+      class:failed={connection === 'failed' || connection === 'limited'}
       class:paused={connection === 'paused'}
       aria-label={connectionLabel()}
       title={connectionLabel()}
     >
       <b></b>
     </span>
-    {#if connection === 'limited'}
+    {#if connection === 'failed'}
+      <span class="connection-message" role="alert">Failed to connect</span>
+    {:else if connection === 'limited'}
       <span class="connection-message">Connection limit reached ({connectionLimit})</span>
     {/if}
+    <div class="theme-segments" aria-label="Web appearance">
+      {#each ['light', 'dark', 'auto', 'device'] as option}
+        <button class:active={webTheme === option} aria-pressed={webTheme === option} on:click={() => selectWebTheme(option)}>
+          {option === 'device' ? 'Device' : titleCase(option)}
+        </button>
+      {/each}
+    </div>
   </header>
 
-  <nav aria-label="Main navigation">
+  <nav class="main-nav" aria-label="Main navigation">
+    <button class:active={route === 'sensors'} on:click={() => navigate('sensors')}>Sensors</button>
     <button class:active={route === 'overview'} on:click={() => navigate('overview')}>Power</button>
     <button class:active={route === 'history'} on:click={() => navigate('history')}>Usage</button>
-    <button class:active={route === 'sensors'} on:click={() => navigate('sensors')}>Sensors</button>
-    <button class:active={route === 'setup'} on:click={() => navigate('setup')}>Setup</button>
-    <button class:active={route === 'remote'} on:click={() => navigate('remote')}>Remote</button>
+    <button class:active={SETTINGS_ROUTES.includes(route)} on:click={() => navigate('setup')}>Settings</button>
   </nav>
 
+  {#if SETTINGS_ROUTES.includes(route)}
+    <nav class="settings-nav" aria-label="Settings navigation">
+      <button class:active={route === 'setup'} on:click={() => navigate('setup')}>Setup</button>
+      <button class:active={route === 'info'} on:click={() => navigate('info')}>Info</button>
+      <button class:active={route === 'debug'} on:click={() => navigate('debug')}>Debug</button>
+      <button class:active={route === 'remote'} on:click={() => navigate('remote')}>Remote</button>
+    </nav>
+  {/if}
+
   {#if statusError}<p class="error" role="alert">{statusError}</p>{/if}
-  {#if connectionError}<p class="error" role="alert">{connectionError}</p>{/if}
 
   {#if route === 'remote'}
     <section class="remote-view">
@@ -592,60 +820,84 @@
     </section>
   {:else if route === 'setup'}
     <section class="setup-view">
+      {#if setupError}<p class="error" role="alert">{setupError}</p>{/if}
+      {#if setupMessage}<p class="success" role="status">{setupMessage}</p>{/if}
       {#if sensorStatusError}<p class="error" role="alert">{sensorStatusError}</p>{/if}
-      <h2>Sensor source</h2>
-      <dl class="details">
-        <dt>Active source</dt><dd>{sensorStatus?.source?.label || '—'}</dd>
-        <dt>Source status</dt>
-        <dd>
-          <span class="state" class:good={sensorStatus?.source?.transport?.state === 'receiving' || (sensorStatus?.source && !sensorStatus.source.transport)} class:warning={sensorStatus?.source?.transport?.state === 'stale'}>
-            {sourceStateLabel(sensorStatus?.source)}
-          </span>
-        </dd>
-      </dl>
+      {#if setup}
+        <form on:submit|preventDefault={submitSetup}>
+          <fieldset disabled={setupBusy}>
+            <legend>Sensor mode</legend>
+            <div class="form-segments">
+              {#each [['adc', 'ADC'], ['uart', 'UART'], ['demo', 'Demo']] as option}
+                <button type="button" class:active={setupSensorMode === option[0]} aria-pressed={setupSensorMode === option[0]} on:click={() => setupSensorMode = option[0]}>{option[1]}</button>
+              {/each}
+            </div>
+            <p class="field-note">Active: {sensorStatus?.source?.label || '—'} · {sourceStateLabel(sensorStatus?.source)}</p>
 
-      <div class="setup-channels" aria-label="Sensor channel status">
-        {#each sensorStatus?.channels || [] as channel}
-          <span class="channel-summary" class:good={channel.state === 'valid'} class:warning={channel.state === 'out_of_range'} class:bad={channel.state === 'invalid' || channel.state === 'stale'}>
-            <b>{channel.label}</b> {stateLabel(channel.state)}
-          </span>
-        {/each}
-      </div>
+            <div class="field-label">Device appearance</div>
+            <div class="form-segments">
+              {#each ['light', 'dark', 'auto'] as option}
+                <button type="button" class:active={setupAppearance === option} aria-pressed={setupAppearance === option} on:click={() => setupAppearance = option}>{titleCase(option)}</button>
+              {/each}
+            </div>
 
-      {#if sensorStatus?.source?.transport}
-        <h2>UART diagnostics</h2>
-        <dl class="details diagnostics">
-          <dt>Connection</dt><dd>{sensorStatus.source.transport.connected ? 'Receiving' : 'Not receiving'}</dd>
-          <dt>Last valid frame</dt><dd>{Number.isFinite(sensorStatus.source.transport.last_valid_age_ms) ? `${sensorStatus.source.transport.last_valid_age_ms} ms ago` : 'None received'}</dd>
-          <dt>Channels present</dt><dd>{sensorStatus.channels.filter((channel) => channel.configured).map((channel) => channel.label).join(', ') || 'None'}</dd>
-          <dt>Sequence</dt><dd>{sensorStatus.source.transport.sequence ?? '—'}</dd>
-          <dt>Producer uptime</dt><dd>{formatUptime(sensorStatus.source.transport.source_uptime_ms)}</dd>
-          <dt>Valid frames</dt><dd>{sensorStatus.source.transport.valid_frames ?? '—'}</dd>
-          <dt>Invalid frames</dt><dd>{sensorStatus.source.transport.invalid_frames ?? '—'}</dd>
-          <dt>Last parser error</dt><dd>{sensorStatus.source.transport.last_error || '—'}</dd>
-          <dt>Checksum errors</dt><dd>{sensorStatus.source.transport.checksum_errors ?? '—'}</dd>
-          <dt>Overflow frames</dt><dd>{sensorStatus.source.transport.overflow_frames ?? '—'}</dd>
-          <dt>Duplicate frames</dt><dd>{sensorStatus.source.transport.duplicate_frames ?? '—'}</dd>
-          <dt>Missing frames</dt><dd>{sensorStatus.source.transport.missing_frames ?? '—'}</dd>
-          <dt>Sequence gaps</dt><dd>{sensorStatus.source.transport.sequence_gap_events ?? '—'}</dd>
-          <dt>Sequence resets</dt><dd>{sensorStatus.source.transport.sequence_resets ?? '—'}</dd>
-        </dl>
+            <label class="field-label" for="hostname">Hostname</label>
+            <input id="hostname" bind:value={setupHostname} maxlength="31" pattern="[a-z0-9](?:[a-z0-9-]{0,29}[a-z0-9])?" autocapitalize="none" autocomplete="off" spellcheck="false" />
+
+            <div class="field-label">Reset</div>
+            <div class="reset-options">
+              <label><input type="checkbox" bind:checked={resetSetup} /> Setup</label>
+              <label><input type="checkbox" bind:checked={resetWifi} /> Wi-Fi</label>
+              <label><input type="checkbox" bind:checked={resetCalibration} /> Sensor Calibration</label>
+              <label><input type="checkbox" bind:checked={resetUsage} /> Usage Data</label>
+            </div>
+          </fieldset>
+
+          <p class="save-warning">Saving applies all selected changes and restarts the device.</p>
+          <div class="form-actions">
+            <button type="button" class="secondary" disabled={!setupDirty() || setupBusy} on:click={() => loadSetupDraft(setup)}>Discard</button>
+            <button type="submit" class="primary" disabled={!setupDirty() || setupBusy}>{setupBusy ? 'Applying…' : 'Save'}</button>
+          </div>
+        </form>
+      {:else if !setupMessage}
+        <p class="empty">Loading setup…</p>
       {/if}
-
-      <h2>Device</h2>
-      <dl>
+    </section>
+  {:else if route === 'info'}
+    <section class="table-view">
+      <h2>Device info</h2>
+      <dl class="striped-details">
         <dt>Uptime</dt><dd>{formatUptime(status?.uptime_ms)}</dd>
         <dt>Date</dt><dd>{status?.date || '—'}</dd>
         <dt>Time</dt><dd>{status?.time || '—'}</dd>
         <dt>Time source</dt><dd>{status?.time_source || 'unanchored'}</dd>
         <dt>Build</dt><dd>{status?.build_version ? `v${status.build_version}` : '—'}</dd>
-        <dt>Build date</dt><dd>{status?.build_date || '—'}</dd>
-        <dt>Build time</dt><dd>{status?.build_time || '—'}</dd>
+        <dt>Build Date</dt><dd>{status?.build_date || '—'}</dd>
+        <dt>Build Time</dt><dd>{status?.build_time || '—'}</dd>
         <dt>Web build</dt><dd>{status?.web_build || '—'}</dd>
         <dt>Data storage</dt><dd>{Number.isFinite(status?.data_storage_percent) ? `${status.data_storage_percent}%` : '—'}</dd>
+        <dt>WS connections</dt><dd>{status?.ws_connections ?? '—'} / {status?.ws_connection_limit ?? '—'}</dd>
         <dt>Station IP</dt><dd>{status?.network?.station_ip || '—'}</dd>
         <dt>AP IP</dt><dd>{status?.network?.ap_ip || '—'}</dd>
-        <dt>WS connections</dt><dd>{status?.ws_connections ?? '—'} / {status?.ws_connection_limit ?? '—'}</dd>
+      </dl>
+    </section>
+  {:else if route === 'debug'}
+    <section class="table-view">
+      <h2>Debug</h2>
+      {#if debugError}<p class="error" role="alert">{debugError}</p>{/if}
+      <dl class="striped-details">
+        <dt>LVGL</dt><dd>{debugStatus?.lvgl || '—'}</dd>
+        <dt>ESP-IDF / SDK</dt><dd>{debugStatus?.sdk || '—'}</dd>
+        <dt>Chip</dt><dd>{debugStatus?.chip || '—'}</dd>
+        <dt>CPU / flash</dt><dd>{debugStatus ? `${debugStatus.cpu_mhz} MHz / ${debugStatus.flash_mb} MB flash` : '—'}</dd>
+        <dt>Last reset</dt><dd>{debugResetLabel(debugStatus?.last_reset)}</dd>
+        <dt>Internal heap</dt><dd>{debugStatus ? `${debugStatus.internal_heap.used_percent}% used; max ${debugStatus.internal_heap.largest_free_kb}K` : '—'}</dd>
+        <dt>PSRAM heap</dt><dd>{debugStatus ? `${debugStatus.psram_heap.used_percent}% used; max ${debugStatus.psram_heap.largest_free_kb}K` : '—'}</dd>
+        <dt>Data storage</dt><dd>{debugStatus ? (debugStatus.storage.mounted ? `${debugStatus.storage.used_kb} KB / ${debugStatus.storage.total_kb} KB` : 'Unmounted') : '—'}</dd>
+        <dt>OTA</dt><dd>{otaHealthLabel(debugStatus?.ota)}</dd>
+        <dt>OTA slots</dt><dd>{debugStatus ? `${debugStatus.ota.running_slot} → ${debugStatus.ota.boot_slot}` : '—'}</dd>
+        <dt>OTA image</dt><dd>{debugStatus ? `${debugStatus.ota.image_state}${debugStatus.ota.rollback_detected ? '; rollback detected' : ''}` : '—'}</dd>
+        <dt>History query</dt><dd>{debugHistoryLabel(debugStatus?.history_query)}</dd>
       </dl>
     </section>
   {:else if route === 'sensors'}
@@ -728,7 +980,7 @@
   }
 
   :global(:root) {
-    color-scheme: light dark;
+    color-scheme: light;
     --background: #fff;
     --text: #202428;
     --muted: #68747c;
@@ -743,37 +995,52 @@
     --surface: #f6f8f9;
     --chart-grid: #e4e8ea;
     --chart-zero: #95a1a8;
+    /* Override the inline boot stylesheet's prefers-color-scheme background
+       once the explicit browser theme has resolved. */
+    background-color: var(--background);
   }
 
-  @media (prefers-color-scheme: dark) {
-    :global(:root) {
-      color-scheme: dark;
-      --background: #101417;
-      --text: #f1f5f7;
-      --muted: #aab5bc;
-      --border: #3c4851;
-      --accent: #4ca9f5;
-      --charge: #3ca76c;
-      --panel: #5596e6;
-      --surplus: #4db6d0;
-      --battery: #e56c63;
-      --load: #d99a58;
-      --warning: #e0a447;
-      --surface: #182025;
-      --chart-grid: #344049;
-      --chart-zero: #72818a;
-    }
+  :global(:root[data-theme='dark']) {
+    color-scheme: dark;
+    --background: #101417;
+    --text: #f1f5f7;
+    --muted: #aab5bc;
+    --border: #3c4851;
+    --accent: #4ca9f5;
+    --charge: #3ca76c;
+    --panel: #5596e6;
+    --surplus: #4db6d0;
+    --battery: #e56c63;
+    --load: #d99a58;
+    --warning: #e0a447;
+    --surface: #182025;
+    --chart-grid: #344049;
+    --chart-zero: #72818a;
+  }
+
+  :global(html),
+  :global(body),
+  :global(#app) {
+    min-width: 100%;
+    min-height: 100%;
+    background-color: var(--background);
   }
 
   :global(body) {
     margin: 0;
-    background: var(--background);
     color: var(--text);
     font: 16px/1.4 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   }
 
+  /* The inline boot screen centers #app with grid. Reset that shell after
+     Svelte mounts so main owns the full viewport, including overflow. */
+  :global(#app) {
+    display: block;
+  }
+
   main {
-    width: min(100%, 80rem);
+    width: 100%;
+    max-width: 80rem;
     min-height: 100dvh;
     margin: auto;
     padding: 0.5rem 0.75rem;
@@ -796,6 +1063,28 @@
     gap: 0.5rem;
   }
 
+  .theme-segments {
+    display: flex;
+    margin-left: auto;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    overflow: hidden;
+  }
+
+  .theme-segments button {
+    padding: 0.24rem 0.42rem;
+    border: 0;
+    border-left: 1px solid var(--border);
+    font-size: 0.7rem;
+  }
+
+  .theme-segments button:first-child { border-left: 0; }
+  .theme-segments button.active,
+  .form-segments button.active {
+    background: var(--accent);
+    color: white;
+  }
+
   .connection b {
     display: block;
     width: 0.58rem;
@@ -804,11 +1093,16 @@
     background: var(--load);
   }
 
+  .connection.reconnecting b {
+    background: var(--warning);
+    animation: reconnect-pulse 1s ease-in-out infinite;
+  }
+
   .connection.live b {
     background: var(--charge);
   }
 
-  .connection.offline b {
+  .connection.failed b {
     background: var(--battery);
   }
 
@@ -824,7 +1118,7 @@
     clip: rect(0, 0, 0, 0);
   }
 
-  nav {
+  .main-nav {
     display: flex;
     overflow-x: auto;
     border-bottom: 1px solid var(--border);
@@ -847,13 +1141,25 @@
     cursor: wait;
   }
 
-  nav button {
+  .main-nav button,
+  .settings-nav button {
     padding: 0.55rem 0.68rem;
   }
 
-  nav button.active {
+  .main-nav button.active,
+  .settings-nav button.active {
     color: var(--accent);
     box-shadow: inset 0 -2px var(--accent);
+  }
+
+  .settings-nav {
+    display: flex;
+    gap: 0.25rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .settings-nav button {
+    font-size: 0.8rem;
   }
 
   .connection-message {
@@ -871,7 +1177,8 @@
   .history-view,
   .remote-view,
   .setup-view,
-  .sensors-view {
+  .sensors-view,
+  .table-view {
     margin-top: 0.55rem;
   }
 
@@ -1003,6 +1310,119 @@
     max-width: 36rem;
   }
 
+  .table-view { max-width: 42rem; }
+
+  form { margin-top: 0.3rem; }
+
+  fieldset {
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  legend,
+  .field-label {
+    display: block;
+    width: 100%;
+    margin: 0.9rem 0 0.38rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+
+  fieldset > legend:first-child { margin-top: 0; }
+
+  .form-segments {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+  }
+
+  .form-segments button {
+    min-height: 2.25rem;
+    border: 0;
+    border-left: 1px solid var(--border);
+    color: var(--text);
+  }
+
+  .form-segments button:first-child { border-left: 0; }
+
+  .field-note {
+    margin-top: 0.35rem;
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+
+  #hostname {
+    width: 100%;
+    padding: 0.55rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 0.25rem;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+  }
+
+  .reset-options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem 1rem;
+  }
+
+  .reset-options label {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+  }
+
+  .reset-options input { accent-color: var(--accent); }
+
+  .save-warning {
+    margin-top: 1rem;
+    color: var(--warning);
+    font-size: 0.82rem;
+  }
+
+  .success {
+    margin: 0.65rem 0;
+    color: var(--charge);
+  }
+
+  .form-actions {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    margin-top: 0.65rem;
+  }
+
+  .form-actions button {
+    min-height: 2.3rem;
+    border-radius: 0.3rem;
+  }
+
+  .form-actions .secondary { border-color: var(--border); }
+  .form-actions .primary {
+    background: var(--accent);
+    color: white;
+  }
+
+  .striped-details {
+    overflow: hidden;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    gap: 0;
+  }
+
+  .striped-details dt,
+  .striped-details dd { padding: 0.42rem 0.55rem; }
+
+  .striped-details dt:nth-of-type(even),
+  .striped-details dd:nth-of-type(even) { background: var(--surface); }
+
   h2 {
     margin: 1rem 0 0.55rem;
     font-size: 1rem;
@@ -1013,44 +1433,15 @@
     font-size: 1rem;
   }
 
-  .setup-view > h2:first-of-type {
-    margin-top: 0;
-  }
-
-  .details {
-    padding-bottom: 0.8rem;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .setup-channels {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    margin: 0.75rem 0;
-  }
-
-  .channel-summary,
   .state {
     display: inline-block;
     color: var(--muted);
     font-size: 0.78rem;
   }
 
-  .channel-summary {
-    padding: 0.25rem 0.45rem;
-    background: var(--surface);
-    border-left: 3px solid var(--border);
-  }
-
-  .state.good,
-  .channel-summary.good { color: var(--charge); }
-  .channel-summary.good { border-left-color: var(--charge); }
-  .state.warning,
-  .channel-summary.warning { color: var(--warning); }
-  .channel-summary.warning { border-left-color: var(--warning); }
-  .state.bad,
-  .channel-summary.bad { color: var(--battery); }
-  .channel-summary.bad { border-left-color: var(--battery); }
+  .state.good { color: var(--charge); }
+  .state.warning { color: var(--warning); }
+  .state.bad { color: var(--battery); }
 
   .sensor-heading {
     display: flex;
@@ -1120,13 +1511,22 @@
     to { transform: translateX(320%); }
   }
 
+  @keyframes reconnect-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .connection.reconnecting b { animation: none; }
+  }
+
   @media (max-width: 34rem) {
     main {
       padding-left: 0.5rem;
       padding-right: 0.5rem;
     }
 
-    nav {
+    .main-nav {
       margin-left: -0.5rem;
       margin-right: -0.5rem;
       padding-left: 0.5rem;

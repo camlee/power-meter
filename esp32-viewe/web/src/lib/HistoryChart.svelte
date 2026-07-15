@@ -233,7 +233,11 @@
   onMount(() => {
     const observer = new ResizeObserver(draw);
     observer.observe(canvas);
-    return () => observer.disconnect();
+    window.addEventListener('viewe-theme-change', draw);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('viewe-theme-change', draw);
+    };
   });
 </script>
 

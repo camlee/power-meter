@@ -16,7 +16,7 @@ constexpr size_t kDeviceIdMaxLen = 31;  // DNS hostname limit is 63; keep UI-fri
 char deviceId[kDeviceIdMaxLen + 1] = {0};
 char hardwareId[18] = {0};  // 12 hex MAC chars plus NUL.
 
-bool isValidDeviceId(const char* value) {
+bool validDeviceId(const char* value) {
     if (!value || value[0] == '\0') return false;
     size_t len = strlen(value);
     if (len > kDeviceIdMaxLen || value[0] == '-' || value[len - 1] == '-') return false;
@@ -54,7 +54,7 @@ void init() {
         return;
     }
     String persistedId = prefs.getString("id", "");
-    if (isValidDeviceId(persistedId.c_str())) {
+    if (validDeviceId(persistedId.c_str())) {
         strncpy(deviceId, persistedId.c_str(), sizeof(deviceId) - 1);
         deviceId[sizeof(deviceId) - 1] = '\0';
     } else {
@@ -68,8 +68,10 @@ const char* getDeviceId() { return deviceId; }
 const char* getHostname() { return deviceId; }
 const char* getHardwareId() { return hardwareId; }
 
+bool isValidDeviceId(const char* value) { return validDeviceId(value); }
+
 bool setDeviceId(const char* newDeviceId) {
-    if (!isValidDeviceId(newDeviceId)) return false;
+    if (!validDeviceId(newDeviceId)) return false;
     Preferences prefs;
     if (!prefs.begin("device", false)) return false;
     bool saved = prefs.putString("id", newDeviceId) > 0;

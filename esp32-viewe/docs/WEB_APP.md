@@ -4,12 +4,13 @@
 
 The embedded web-application milestone is complete. The normal firmware image
 contains a Svelte 5 single-page application with live power, per-channel sensor
-observations, source/UART diagnostics, browser time contribution,
-rolling/calendar history, device information, and remote-display control. It
-is a useful product surface, not a requirement to duplicate every LVGL page.
+observations, browser time contribution, rolling/calendar history, device
+information and diagnostics, device setup, independent Web appearance, and
+remote-display control. It is a useful product surface, not a requirement to
+duplicate every LVGL page.
 
-Calibration, settings writes, storage browsing/export, and
-light/dark refinements remain incremental backlog to build as needed.
+Calibration, storage browsing/export, and further appearance refinements
+remain incremental backlog to build as needed.
 
 The old MicroPython project is a behavioral reference only. Its Parcel,
 Material UI, Chart.js, CSV parsing, and text/CSV websocket protocol are not
@@ -100,6 +101,9 @@ The first public read model is deliberately small:
 ```text
 GET  /api/v1/web/status       JSON, no-store
 GET  /api/v1/sensors          raw sensor/source diagnostics, JSON, no-store
+GET  /api/v1/setup            persisted device setup, JSON, no-store
+POST /api/v1/setup            validate, persist, and restart
+GET  /api/v1/debug            on-device Debug read model, JSON, no-store
 POST /api/v1/time/anchor      local-LAN browser time anchor
 GET  /api/v1/display/...      local-LAN remote display control
 WS   ws://<meter>:81/api/v1/live
@@ -195,11 +199,24 @@ independent 10-second status polling is the fallback when no live socket is
 connected. This gives touchscreen-originated changes near-immediate browser
 visibility without having HTTP callbacks touch LVGL.
 
-Future browser settings writes must use the same service mutation methods as
-LVGL and call the same `device_state::changed` point only after persistence and
-readback succeed. A browser write should optimistically show a pending state,
-then refresh status after the returned revision. Do not manipulate UI widgets
-from a network task or mirror Preferences directly in JavaScript.
+The Setup page stages hostname, sensor source, device appearance, and reset
+scopes in the browser. `POST /api/v1/setup` validates the complete request and
+uses the same persistence/service methods as LVGL before restarting, because
+those settings are initialized at boot. Web appearance is a separate,
+browser-local Light/Dark/Auto/Device preference: `auto` follows the browser OS
+preference, while `device` follows the effective LVGL theme reported by
+`/api/v1/web/status` and continues tracking it. Device Auto selects dark from
+19:00 through 06:59 local time. Because the persistent LVGL screens cannot yet
+be recolored safely in place, a boundary transition persists the next
+effective appearance and performs a controlled restart; the persisted value
+prevents a clock-sync restart loop. Do not manipulate UI widgets from a
+network task or mirror Preferences directly in JavaScript.
+
+While Usage is visible, both browser and LVGL refresh just after a monotonic
+storage boundary at a cadence equal to one displayed x-axis bucket (2 minutes
+for Last 1 Hour through 4 hours for Last Week). The firmware-selected All
+bucket controls its cadence after the first result. Yesterday is complete and
+manual-refresh only. Queries remain asynchronous and hidden views do no work.
 
 ## Resource limits
 
@@ -219,7 +236,5 @@ from a network task or mirror Preferences directly in JavaScript.
 
 1. Add explicit raw-file export UI.
 2. Expand Setup with additional device metadata when it becomes useful.
-3. Add validated browser writes one domain at a time, with revision-aware
-   refreshes.
-4. Migrate port-80 OTA/static routes to ESP-IDF HTTPD when preserving the
+3. Migrate port-80 OTA/static routes to ESP-IDF HTTPD when preserving the
    existing updater semantics has dedicated verification coverage.

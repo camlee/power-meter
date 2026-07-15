@@ -6,6 +6,12 @@
 namespace ui_theme {
 namespace {
 Mode selectedMode = Mode::Auto;
+bool appliedDark = true;
+bool restartPending = false;
+
+constexpr char kPreferencesNamespace[] = "appearance";
+constexpr char kModeKey[] = "mode";
+constexpr char kAutoDarkKey[] = "auto_dark";
 
 bool clockIsValid() {
     time_t now = time(nullptr);
@@ -14,10 +20,7 @@ bool clockIsValid() {
     return local.tm_year >= (2020 - 1900);
 }
 
-bool autoDark() {
-    // A newly booted offline meter has no trustworthy wall clock. Prefer the
-    // safer night-friendly appearance until NTP becomes available.
-    if (!clockIsValid()) return true;
+bool desiredAutoDark() {
     time_t now = time(nullptr);
     struct tm local {};
     localtime_r(&now, &local);
@@ -29,26 +32,54 @@ lv_color_t color(uint32_t light, uint32_t dark) { return lv_color_hex(isDark() ?
 
 void init() {
     Preferences prefs;
-    if (prefs.begin("appearance", true)) {
-        const uint8_t value = prefs.getUChar("mode", static_cast<uint8_t>(Mode::Auto));
+    bool savedAutoDark = true;
+    if (prefs.begin(kPreferencesNamespace, true)) {
+        const uint8_t value = prefs.getUChar(kModeKey, static_cast<uint8_t>(Mode::Auto));
         selectedMode = value <= static_cast<uint8_t>(Mode::Auto) ? static_cast<Mode>(value) : Mode::Auto;
+        savedAutoDark = prefs.getBool(kAutoDarkKey, true);
         prefs.end();
     }
 
-    lv_theme_t* theme = lv_theme_default_init(nullptr, accent(), accent(), isDark(), LV_FONT_DEFAULT);
+    // Before the first trustworthy clock arrives, reuse Auto's last applied
+    // appearance. This prevents a daytime NTP sync from causing a reboot loop.
+    appliedDark = selectedMode == Mode::Dark ||
+        (selectedMode == Mode::Auto && (clockIsValid() ? desiredAutoDark() : savedAutoDark));
+    restartPending = false;
+
+    lv_theme_t* theme = lv_theme_default_init(nullptr, accent(), accent(), appliedDark, LV_FONT_DEFAULT);
     if (lv_disp_get_default()) lv_disp_set_theme(lv_disp_get_default(), theme);
 }
 
 Mode mode() { return selectedMode; }
-bool isDark() { return selectedMode == Mode::Dark || (selectedMode == Mode::Auto && autoDark()); }
+bool isDark() { return appliedDark; }
 
 void setMode(Mode value) {
     Preferences prefs;
-    if (prefs.begin("appearance", false)) {
-        prefs.putUChar("mode", static_cast<uint8_t>(value));
+    if (prefs.begin(kPreferencesNamespace, false)) {
+        prefs.putUChar(kModeKey, static_cast<uint8_t>(value));
         prefs.end();
     }
     selectedMode = value;
+}
+
+bool autoRestartRequired() {
+    if (restartPending) return true;
+    if (selectedMode != Mode::Auto || !clockIsValid()) return false;
+
+    const bool desiredDark = desiredAutoDark();
+    if (desiredDark == appliedDark) return false;
+
+    // Save before restarting so boot can apply the intended appearance even
+    // if network time is not restored until after LVGL is created.
+    Preferences prefs;
+    bool saved = false;
+    if (prefs.begin(kPreferencesNamespace, false)) {
+        saved = prefs.putBool(kAutoDarkKey, desiredDark) == sizeof(bool);
+        prefs.end();
+    }
+    if (!saved) return false;
+    restartPending = true;
+    return true;
 }
 
 lv_color_t background() { return color(0xFFFFFF, 0x101417); }

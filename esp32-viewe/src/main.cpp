@@ -4,6 +4,7 @@
 #include <LittleFS.h>
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include "board_setup.h"
 #include "lvgl_v8_port.h"
 
@@ -16,6 +17,7 @@
 #include "network/live_websocket_service.h"
 
 #include "ui/navigation/app_navigation.h"
+#include "ui/theme/ui_theme.h"
 
 using namespace esp_panel::board;
 using namespace esp_panel::drivers;
@@ -25,6 +27,7 @@ void ensureRollbackVerificationDeferral();
 namespace {
 uint32_t lastStorageFeedMs = 0;
 uint32_t lastNetworkUpdateMs = 0;
+uint32_t lastThemeCheckMs = 0;
 
 historical_storage::SampleFrame makeHistoryFrame(uint32_t now)
 {
@@ -128,6 +131,17 @@ void loop()
     }
     historical_storage::tick(); // cheap; fine to call every loop()
     ota_service::noteHealthyLoop();
+
+    if (now - lastThemeCheckMs >= 1000) {
+        lastThemeCheckMs = now;
+        const bool otaRestartSafe =
+            strcmp(ota_service::runningImageState(), "pending_verify") != 0;
+        if (ui_theme::autoRestartRequired() && otaRestartSafe) {
+            Serial.println("ui_theme: Auto appearance changed; restarting to rebuild LVGL");
+            delay(50);
+            ESP.restart();
+        }
+    }
 
     delay(5);
 }
