@@ -81,12 +81,14 @@
   let connectionError = '';
   let reconnectAttempts = 0;
   let reconnectTimer;
+  let livePaused = false;
+  let destroyed = false;
 
   // Live chart data.
   let points = [];
   let lastRevision = 0;
+  let lastSessionId = null;
   let lastSequence = 0;
-  let lastUptimeMs = 0;
 
   // History view.
   let history = null;
@@ -216,12 +218,14 @@
   }
 
   function handleFrame(frame) {
-    if (frame.uptimeMs < lastUptimeMs) {
-      // Device rebooted — its sequence counter restarted from zero too.
+    // The ESP32 replays its last 30 seconds on every connection. A stable
+    // per-boot session ID lets us reject that replay precisely while still
+    // recognizing a real reboot, where both uptime and sequence restart.
+    if (frame.sessionId !== lastSessionId) {
+      lastSessionId = frame.sessionId;
       lastSequence = 0;
       points = [];
     }
-    lastUptimeMs = frame.uptimeMs;
 
     if (frame.sequence <= lastSequence) return; // duplicate or out-of-order frame
     lastSequence = frame.sequence;
@@ -242,6 +246,10 @@
   }
 
   function handleConnectionState(state, limit) {
+    // close/error callbacks can arrive after an intentional pause or after
+    // teardown. They must not overwrite "paused" or schedule a new socket.
+    if (livePaused || destroyed) return;
+
     connection = state;
     if (limit) connectionLimit = limit;
 
@@ -278,12 +286,14 @@
   // the background.
   function pauseLive() {
     clearTimeout(reconnectTimer);
+    livePaused = true;
     socket?.close();
     socket = null;
     connection = 'paused';
   }
 
   function resumeLive() {
+    livePaused = false;
     reconnectAttempts = 0;
     connectionError = '';
     connectLive();
@@ -435,6 +445,7 @@
   }
 
   onMount(() => {
+    destroyed = false;
     refreshStatus();
     anchorTime();
     connectLive();
@@ -446,6 +457,7 @@
     window.addEventListener('popstate', handlePopState);
 
     return () => {
+      destroyed = true;
       clearInterval(statusPollTimer);
       clearTimeout(reconnectTimer);
       clearTimeout(remoteRefreshTimer);
@@ -566,7 +578,7 @@
         <span class="charge"></span>In
         <span class="battery"></span>Out
       </p>
-      <LiveChart {points} />
+      <LiveChart {points} sessionId={lastSessionId} active={!livePaused} />
     </section>
   {/if}
 </main>

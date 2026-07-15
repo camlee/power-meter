@@ -41,11 +41,13 @@ export function openLiveSocket(onFrame, onState) {
     }
     if (!(event.data instanceof ArrayBuffer)) return;
     const view = new DataView(event.data);
-    if (view.byteLength !== 64 || view.getUint32(0, true) !== 0x314d5056 || view.getUint8(4) !== 1) return;
+    if (view.byteLength !== 64 || view.getUint32(0, true) !== 0x314d5056 ||
+        view.getUint8(4) !== 1 || view.getUint8(5) !== 1 || view.getUint32(20, true) === 0) return;
     onFrame({
       sequence: view.getUint32(8, true),
       stateRevision: view.getUint32(12, true),
       uptimeMs: view.getUint32(16, true),
+      sessionId: view.getUint32(20, true),
       unixMs: view.getFloat64(24, true),
       in: { voltage: view.getFloat32(32, true), current: view.getFloat32(36, true), power: view.getFloat32(40, true) },
       out: { voltage: view.getFloat32(44, true), current: view.getFloat32(48, true), power: view.getFloat32(52, true) },

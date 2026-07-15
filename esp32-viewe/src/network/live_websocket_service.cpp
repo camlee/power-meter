@@ -26,7 +26,7 @@ struct __attribute__((packed)) LiveFrame {
     uint32_t sequence;
     uint32_t stateRevision;
     uint32_t uptimeMs;
-    uint32_t reserved;
+    uint32_t sessionId;
     double unixMs;
     float inVoltage;
     float inCurrent;
@@ -210,6 +210,7 @@ bool buildFrame(LiveFrame& frame) {
     frame.sequence = ++sequence;
     frame.stateRevision = device_state::revision();
     frame.uptimeMs = millis();
+    frame.sessionId = time_service::currentSessionId();
     frame.unixMs = NAN;
     time_service::Anchor anchor{};
     if (time_service::getCurrentAnchor(anchor)) {

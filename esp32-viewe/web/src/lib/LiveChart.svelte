@@ -2,53 +2,75 @@
   import { onMount } from 'svelte';
 
   export let points = [];
+  export let sessionId = null;
+  export let active = true;
 
-  // ---------------------------------------------------------------------
-  // Constants
-  // ---------------------------------------------------------------------
-
-  // Selectable time windows. `tickSeconds` is a round, human-friendly
-  // increment for that window (never computed dynamically, so ticks are
-  // always on a clean boundary like 5s/10s/30s/1m).
   const WINDOW_OPTIONS = [
-    { seconds: 30, tickSeconds: 5, label: '30 seconds' },
-    { seconds: 60, tickSeconds: 10, label: '1 minute' },
+    { seconds: 30, tickSeconds: 10, label: '30 seconds' },
+    { seconds: 60, tickSeconds: 20, label: '1 minute' },
     { seconds: 120, tickSeconds: 30, label: '2 minutes' },
     { seconds: 300, tickSeconds: 60, label: '5 minutes' },
   ];
   const DEFAULT_WINDOW_SECONDS = 30;
-
-  // If two consecutive visible points are further apart than this, treat
-  // it as a connection gap (e.g. a websocket reconnect) rather than a
-  // continuous reading, and don't draw a line across it.
   const GAP_THRESHOLD_MS = 3_000;
-
-  // How often to redraw on a timer, independent of new data arriving.
-  // This is what makes the axis keep scrolling — and old points age off
-  // the left edge, and a stalled connection visibly goes blank — even
-  // when no new frames are coming in.
-  const REDRAW_INTERVAL_MS = 500;
-
   const CHART_PADDING = { left: 47, right: 8, top: 12, bottom: 29 };
 
-  // ---------------------------------------------------------------------
-  // State
-  // ---------------------------------------------------------------------
+  // A delayed replay must never pull the visible window backward. We only
+  // resync when device time has moved materially *ahead* of our extrapolated
+  // clock; ordinary jitter and reconnect backlog remain at their real x
+  // positions and slide naturally into view.
+  const MAX_FORWARD_CLOCK_DRIFT_MS = GAP_THRESHOLD_MS;
+
+  // Small filled circle drawn at each data point, on top of the lines.
+  const MARKER_RADIUS = 2.5;
 
   let canvas;
   let windowSeconds = DEFAULT_WINDOW_SECONDS;
-  let redrawTimer;
-
-  // Used to extrapolate "now" in the same clock domain as point
-  // timestamps (see virtualNow() below).
+  let rafId = null;
   let referenceDataTime = null;
   let referenceWallTime = null;
+  let referenceSessionId = null;
+  let sortedPoints = [];
+  let chartWidth = 0;
+  let chartHeight = 0;
+  let colors = null;
 
   $: windowOption = WINDOW_OPTIONS.find((option) => option.seconds === windowSeconds) ?? WINDOW_OPTIONS[0];
 
-  // ---------------------------------------------------------------------
-  // Helpers
-  // ---------------------------------------------------------------------
+  // Defensive: `points` is expected to arrive in ascending timestamp order,
+  // but a reconnect backlog merge or a batch of updates flushed after the
+  // tab was hidden can land a point out of order (e.g. a stale point
+  // re-appended after fresher ones). extendedPoints()'s window-slice scan and
+  // drawSeries()'s point-to-point line drawing assume ascending order —
+  // without this guard, one out-of-order point makes rendered lines
+  // visibly jump backward, and can make legitimately in-window points
+  // fall outside the slice extendedPoints() computes (i.e. data appears
+  // to vanish from the chart).
+  $: sortedPoints = sortPoints(points);
+
+  // A new firmware session is the one event where moving to a completely
+  // different timestamp domain is expected. Reset the chart clock along
+  // with App.svelte's point buffer instead of trying to infer a reboot from
+  // uptime or timestamp movement.
+  $: if (sessionId !== referenceSessionId) {
+    referenceSessionId = sessionId;
+    referenceDataTime = null;
+    referenceWallTime = null;
+  }
+
+  function sortPoints(list) {
+    return list
+      .filter((point) => point && Number.isFinite(point.timestamp))
+      .slice()
+      .sort((a, b) => a.timestamp - b.timestamp);
+  }
+
+  function newestReceivedPoint() {
+    for (let index = points.length - 1; index >= 0; index -= 1) {
+      if (points[index] && Number.isFinite(points[index].timestamp)) return points[index];
+    }
+    return null;
+  }
 
   function palette() {
     const css = getComputedStyle(document.documentElement);
@@ -61,7 +83,6 @@
     };
   }
 
-  // Nice round step for the y-axis (watts), e.g. 1/2/5/10/20/50/100...
   function niceStep(span) {
     const power = 10 ** Math.floor(Math.log10(Math.max(span, 1)));
     const normalized = span / power;
@@ -69,35 +90,39 @@
     return base * power;
   }
 
-  // Point timestamps may be either wall-clock (unix ms) or device uptime
-  // (ms since boot) — we don't know which, and it can vary by whether the
-  // meter's clock is time-synced. Either way they advance at the same
-  // rate as real time, so instead of assuming Date.now() lines up with
-  // them, we track the offset between "the last timestamp we saw" and
-  // "the wall-clock time we saw it", and extrapolate forward from there.
-  // This keeps the chart scrolling smoothly and correctly even if the
-  // point timestamps are nowhere near Date.now() in absolute terms.
+  // We do NOT reset this reference every time a new point arrives. Doing so
+  // would force each point to render exactly at the current right edge
+  // (windowEnd IS virtualNow),
+  // which is what causes points to pop into place instead of sliding in.
+  // Leaving the reference alone for small drift means a point that
+  // arrives a little ahead of or behind our prediction still renders at
+  // its own real timestamp — possibly briefly beyond the (clipped) right
+  // edge — and eases into view over the next frames as virtualNow's
+  // normal wall-clock extrapolation catches up to it.
   function virtualNow() {
-    const last = points[points.length - 1];
+    const last = newestReceivedPoint();
     if (last && Number.isFinite(last.timestamp)) {
-      if (referenceDataTime !== last.timestamp) {
+      if (referenceDataTime == null) {
         referenceDataTime = last.timestamp;
         referenceWallTime = Date.now();
+      } else if (last.timestamp !== referenceDataTime) {
+        const predicted = referenceDataTime + (Date.now() - referenceWallTime);
+        const drift = last.timestamp - predicted;
+        if (drift >= MAX_FORWARD_CLOCK_DRIFT_MS) {
+          // A forward clock correction should become visible promptly. A
+          // negative drift is commonly delayed replay and intentionally
+          // does not move the window backward.
+          referenceDataTime = last.timestamp;
+          referenceWallTime = Date.now();
+        }
       }
-      return referenceDataTime + (Date.now() - referenceWallTime);
     }
     return referenceDataTime != null ? referenceDataTime + (Date.now() - referenceWallTime) : Date.now();
   }
 
-  function formatTickLabel(secondsAgo) {
-    if (secondsAgo === 0) return 'now';
-    if (secondsAgo % 60 === 0) return `-${secondsAgo / 60}m`;
-    return `-${secondsAgo}s`;
+  function wallClockOffset() {
+    return referenceDataTime != null ? referenceWallTime - referenceDataTime : 0;
   }
-
-  // ---------------------------------------------------------------------
-  // Drawing
-  // ---------------------------------------------------------------------
 
   function computeYAxis(visiblePoints) {
     const values = visiblePoints.flatMap((point) => [point.in, point.out]).filter(Number.isFinite);
@@ -133,15 +158,26 @@
     return scaleY;
   }
 
-  function drawXAxis(ctx, plot, windowMs, tickSeconds, colors) {
+  const TIME_FORMAT_WITH_SECONDS = new Intl.DateTimeFormat(undefined, {
+    hour12: true, hour: 'numeric', minute: '2-digit', second: '2-digit'
+  });
+  const TIME_FORMAT_MINUTES_ONLY = new Intl.DateTimeFormat(undefined, {
+    hour12: true, hour: 'numeric', minute: '2-digit',
+  });
+
+  function drawXAxis(ctx, plot, windowStart, windowEnd, tickSeconds, colors) {
+    const offset = wallClockOffset();
+    const tickMs = tickSeconds * 1000;
+    const majorTickMs = windowEnd - windowStart <= 30_000 ? 30_000 : 60_000;
+    const wallStart = windowStart + offset;
+    const wallEnd = windowEnd + offset;
+    const firstTickWall = Math.ceil(wallStart / tickMs) * tickMs;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';
 
-    const tickMs = tickSeconds * 1000;
-    for (let elapsed = 0; elapsed <= windowMs + tickMs * 0.01; elapsed += tickMs) {
-      // elapsed = 0 is the oldest edge of the window; the axis reads
-      // left (oldest) to right (now).
-      const fraction = elapsed / windowMs;
+    for (let wallTick = firstTickWall; wallTick <= wallEnd + tickMs * 0.01; wallTick += tickMs) {
+      const dataTimestamp = wallTick - offset;
+      const fraction = (dataTimestamp - windowStart) / (windowEnd - windowStart);
       const x = plot.left + plot.width * fraction;
 
       ctx.strokeStyle = colors.grid;
@@ -151,16 +187,55 @@
       ctx.lineTo(x, plot.top + plot.height);
       ctx.stroke();
 
-      const secondsAgo = Math.round((windowMs - elapsed) / 1000);
-      ctx.fillStyle = colors.muted;
-      ctx.fillText(formatTickLabel(secondsAgo), x, plot.top + plot.height + 8);
+      const isMajorTick = wallTick % majorTickMs === 0;
+      if (isMajorTick) {
+        const formatter = wallTick % 60_000 === 0 ? TIME_FORMAT_MINUTES_ONLY : TIME_FORMAT_WITH_SECONDS;
+        const label = formatter.format(new Date(wallTick));
+        const halfLabelWidth = ctx.measureText(label).width / 2;
+        const labelX = Math.max(
+          plot.left + halfLabelWidth,
+          Math.min(plot.left + plot.width - halfLabelWidth, x),
+        );
+        ctx.fillStyle = colors.muted;
+        ctx.fillText(label, labelX, plot.top + plot.height + 8);
+      }
     }
   }
 
-  // Draws one series (in/out), starting a new sub-path — i.e. leaving a
-  // visible gap — wherever consecutive points are further apart than
-  // GAP_THRESHOLD_MS, so a connection drop doesn't get drawn as a smooth
-  // line across the missing time.
+  // `visiblePoints` (strictly inside [windowStart, windowEnd]) is what we
+  // use for axis scaling and the "no readings" empty state — that should
+  // only reflect what's actually in the window.
+  //
+  // For DRAWING the lines, though, strictly-inside points cause a visible
+  // pop: a segment whose one endpoint is a hair outside the window gets
+  // dropped entirely, so a point appears/disappears abruptly right at the
+  // edge instead of sliding off it. To fix that we draw with one extra
+  // point tacked on each side — the last known point before windowStart
+  // and the first known point after windowEnd, if they exist — and rely
+  // on canvas clipping (see draw()) to cut those segments off cleanly at
+  // the plot boundary. `drawSeries`'s existing gap logic still applies to
+  // these extra points, so a real connection gap straddling the edge
+  // still renders as a break rather than a fake connecting line.
+  //
+  // This scan assumes ascending timestamp order, which is why it reads
+  // from `sortedPoints` rather than the raw `points` prop — see
+  // sortPoints() above.
+  function extendedPoints(windowStart, windowEnd) {
+    let startIndex = sortedPoints.findIndex((point) => point.timestamp >= windowStart);
+    if (startIndex === -1) startIndex = sortedPoints.length;
+
+    let endIndex = sortedPoints.length - 1;
+    for (let i = startIndex; i < sortedPoints.length; i++) {
+      if (sortedPoints[i].timestamp > windowEnd) {
+        endIndex = i;
+        break;
+      }
+    }
+
+    const from = startIndex > 0 ? startIndex - 1 : 0;
+    return sortedPoints.slice(from, endIndex + 1);
+  }
+
   function drawSeries(ctx, visiblePoints, field, color, scaleX, scaleY) {
     ctx.strokeStyle = color;
     ctx.lineWidth = 2;
@@ -169,11 +244,16 @@
 
     let previousTimestamp = null;
     visiblePoints.forEach((point) => {
+      const value = point[field];
+      if (!Number.isFinite(value)) {
+        previousTimestamp = null;
+        return;
+      }
       const isGap = previousTimestamp != null && point.timestamp - previousTimestamp > GAP_THRESHOLD_MS;
       if (previousTimestamp == null || isGap) {
-        ctx.moveTo(scaleX(point.timestamp), scaleY(point[field]));
+        ctx.moveTo(scaleX(point.timestamp), scaleY(value));
       } else {
-        ctx.lineTo(scaleX(point.timestamp), scaleY(point[field]));
+        ctx.lineTo(scaleX(point.timestamp), scaleY(value));
       }
       previousTimestamp = point.timestamp;
     });
@@ -181,79 +261,123 @@
     ctx.stroke();
   }
 
-  function draw() {
-    if (!canvas) return;
+  // Small filled circle at each data point, drawn on top of the line.
+  function drawMarkers(ctx, dataPoints, field, color, scaleX, scaleY) {
+    ctx.fillStyle = color;
+    dataPoints.forEach((point) => {
+      const value = point[field];
+      if (!Number.isFinite(value)) return;
+      ctx.beginPath();
+      ctx.arc(scaleX(point.timestamp), scaleY(value), MARKER_RADIUS, 0, Math.PI * 2);
+      ctx.fill();
+    });
+  }
 
-    const rect = canvas.getBoundingClientRect();
+  function draw() {
+    if (!canvas || chartWidth <= 0 || chartHeight <= 0) return;
+
     const ratio = window.devicePixelRatio || 1;
-    canvas.width = Math.max(1, Math.round(rect.width * ratio));
-    canvas.height = Math.max(1, Math.round(rect.height * ratio));
+    const pixelWidth = Math.max(1, Math.round(chartWidth * ratio));
+    const pixelHeight = Math.max(1, Math.round(chartHeight * ratio));
+    if (canvas.width !== pixelWidth) canvas.width = pixelWidth;
+    if (canvas.height !== pixelHeight) canvas.height = pixelHeight;
 
     const ctx = canvas.getContext('2d');
-    const width = rect.width;
-    const height = rect.height;
+    const width = chartWidth;
+    const height = chartHeight;
     const plot = {
       left: CHART_PADDING.left,
       top: CHART_PADDING.top,
       width: width - CHART_PADDING.left - CHART_PADDING.right,
       height: height - CHART_PADDING.top - CHART_PADDING.bottom,
     };
-    const colors = palette();
+    const chartColors = colors ?? (colors = palette());
 
-    ctx.scale(ratio, ratio);
+    // setTransform avoids accumulating scale when the backing dimensions did
+    // not change. Resizing the canvas is intentionally limited to real size
+    // or device-pixel-ratio changes because it reallocates the backing store.
+    ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
     ctx.clearRect(0, 0, width, height);
     ctx.font = '11px system-ui, sans-serif';
 
-    // Fixed time window ending "now" — the axis always spans the full
-    // selected window, even if we don't have that much data yet, rather
-    // than shrinking to fit whatever points happen to be available.
     const windowMs = windowOption.seconds * 1000;
-    const now = virtualNow();
-    const windowStart = now - windowMs;
-    const visiblePoints = points.filter(
-      (point) => Number.isFinite(point.timestamp) && point.timestamp >= windowStart && point.timestamp <= now,
+    const windowEnd = virtualNow();
+    const windowStart = windowEnd - windowMs;
+    const visiblePoints = sortedPoints.filter(
+      (point) => point.timestamp >= windowStart && point.timestamp <= windowEnd,
     );
 
     const axis = computeYAxis(visiblePoints);
-    const scaleY = drawYAxis(ctx, plot, axis, colors);
-    drawXAxis(ctx, plot, windowMs, windowOption.tickSeconds, colors);
+    const scaleY = drawYAxis(ctx, plot, axis, chartColors);
+    drawXAxis(ctx, plot, windowStart, windowEnd, windowOption.tickSeconds, chartColors);
 
     const scaleX = (timestamp) => plot.left + (plot.width * (timestamp - windowStart)) / windowMs;
 
-    if (!points.length) {
+    if (!sortedPoints.length) {
       ctx.textAlign = 'center';
-      ctx.fillStyle = colors.muted;
+      ctx.fillStyle = chartColors.muted;
       ctx.fillText('Waiting for live readings…', width / 2, height / 2);
       return;
     }
 
     if (!visiblePoints.length) {
       ctx.textAlign = 'center';
-      ctx.fillStyle = colors.muted;
+      ctx.fillStyle = chartColors.muted;
       ctx.fillText(`No readings in the last ${windowOption.label}`, width / 2, height / 2);
       return;
     }
 
-    drawSeries(ctx, visiblePoints, 'in', colors.charge, scaleX, scaleY);
-    drawSeries(ctx, visiblePoints, 'out', colors.battery, scaleX, scaleY);
+    const drawPoints = extendedPoints(windowStart, windowEnd);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(plot.left, plot.top, plot.width, plot.height);
+    ctx.clip();
+    drawSeries(ctx, drawPoints, 'in', chartColors.charge, scaleX, scaleY);
+    drawMarkers(ctx, drawPoints, 'in', chartColors.charge, scaleX, scaleY);
+    drawSeries(ctx, drawPoints, 'out', chartColors.battery, scaleX, scaleY);
+    drawMarkers(ctx, drawPoints, 'out', chartColors.battery, scaleX, scaleY);
+    ctx.restore();
   }
 
-  // ---------------------------------------------------------------------
-  // Lifecycle
-  // ---------------------------------------------------------------------
+  function loop() {
+    draw();
+    rafId = active ? requestAnimationFrame(loop) : null;
+  }
 
-  $: points, windowOption, draw();
+  function ensureLoopRunning() {
+    if (active && rafId == null) {
+      rafId = requestAnimationFrame(loop);
+    }
+  }
+
+  $: sortedPoints, sessionId, active, windowOption, draw();
+  $: if (active) ensureLoopRunning();
 
   onMount(() => {
-    const observer = new ResizeObserver(draw);
+    const resize = () => {
+      const rect = canvas.getBoundingClientRect();
+      chartWidth = rect.width;
+      chartHeight = rect.height;
+      draw();
+    };
+    const refreshColors = () => {
+      colors = palette();
+      draw();
+    };
+    const colorScheme = window.matchMedia('(prefers-color-scheme: dark)');
+    const observer = new ResizeObserver(resize);
     observer.observe(canvas);
-
-    // Keep scrolling / age out stale data even when no new points arrive.
-    redrawTimer = setInterval(draw, REDRAW_INTERVAL_MS);
+    colorScheme.addEventListener('change', refreshColors);
+    refreshColors();
+    resize();
+    ensureLoopRunning();
 
     return () => {
       observer.disconnect();
-      clearInterval(redrawTimer);
+      colorScheme.removeEventListener('change', refreshColors);
+      if (rafId != null) cancelAnimationFrame(rafId);
+      rafId = null;
     };
   });
 </script>

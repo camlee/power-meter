@@ -120,7 +120,10 @@ The binary frame is exactly 64 bytes, packed and little-endian; do not map a
 future C++ struct directly in browser code. Each new connection receives the
 most recent 60 frames (about 30 seconds) in chronological order before normal
 2 Hz delivery resumes. `web/src/lib/api.js` parses it with `DataView` and is
-the normative current browser implementation.
+the normative current browser implementation. The boot/session ID increments
+on every firmware boot and remains constant across WebSocket reconnects. The
+browser pairs it with the frame sequence to reject replayed frames without
+mistaking an ordinary reconnect for a reboot.
 
 | Offset | Type | Meaning |
 | ---: | --- | --- |
@@ -128,7 +131,8 @@ the normative current browser implementation.
 | 4 | `u8,u8,u16` | version `1`, type `1`, flags (`bit 0`: wall time valid) |
 | 8 | `u32` | increasing frame sequence |
 | 12 | `u32` | device state revision |
-| 16 | `u32,u32` | uptime milliseconds, reserved |
+| 16 | `u32` | uptime milliseconds |
+| 20 | `u32` | boot/session ID |
 | 24 | `f64` | Unix milliseconds, or NaN before anchoring |
 | 32 | `f32 × 8` | In V/A/W, Out V/A/W, Aux W, net battery W |
 
