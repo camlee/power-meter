@@ -3,7 +3,7 @@
 VIEWE devices accept updates only when all of these conditions are met:
 
 - the request has the shared bearer token;
-- `manifest.json` has a valid detached RSA-3072/RSA-PSS/SHA-256 signature;
+- `manifest.json` has a valid detached ECDSA P-256/SHA-256 signature;
 - the firmware SHA-256 and size match the signed manifest; and
 - the manifest board is `meter`.
 
@@ -84,7 +84,7 @@ This builds the normal PlatformIO application and writes these files to
 - `firmware.bin` — the inactive OTA slot image to upload;
 - `manifest.json` — canonical, sorted-key JSON with `format`, `board`,
   `version`, `sha256`, and `image_size`;
-- `manifest.sig` — base64 detached RSA-PSS/SHA-256 signature over the exact
+- `manifest.sig` — base64 detached ECDSA P-256/SHA-256 signature over the exact
   bytes of `manifest.json`.
 
 The build number is stored locally in ignored `.build_number`, so it does not
@@ -117,6 +117,9 @@ POSTs `multipart/form-data` to `/api/v1/update`, and sends:
 It then polls `/api/v1/info` until the expected board/version reports a
 confirmed health state. An accepted update can be installed regardless of
 whether its version is lower or higher than the currently running firmware.
+The live WebSocket service is stopped before signature verification to release
+its clients and internal task memory. It is restarted if the update is rejected;
+a successful update reboots immediately after the image is validated.
 
 ## Failure and recovery
 

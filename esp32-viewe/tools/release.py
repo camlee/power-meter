@@ -41,10 +41,18 @@ def default_version():
 
 
 def sign(payload, private_key):
+    inspect = ["openssl", "pkey", "-in", str(private_key), "-text", "-noout"]
+    try:
+        key_info = subprocess.run(inspect, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                  text=True, check=True).stdout
+    except FileNotFoundError:
+        sys.exit("openssl was not found. Install OpenSSL and try again.")
+    except subprocess.CalledProcessError as error:
+        sys.exit("OpenSSL could not read the signing key (exit {}).".format(error.returncode))
+    if "ASN1 OID: prime256v1" not in key_info and "NIST CURVE: P-256" not in key_info:
+        sys.exit("Signing key must be ECDSA P-256. Rotate it with tools/create_ota_keys.py --force.")
     command = [
         "openssl", "pkeyutl", "-sign", "-rawin", "-digest", "sha256",
-        "-pkeyopt", "rsa_padding_mode:pss",
-        "-pkeyopt", "rsa_pss_saltlen:digest",
         "-inkey", str(private_key),
     ]
     try:
@@ -92,6 +100,8 @@ def main():
     }
     payload = canonical_json(manifest)
     signature = sign(payload, args.private_key)
+    if not signature or len(signature) > 80:
+        sys.exit("OpenSSL produced an invalid ECDSA P-256 signature.")
     (output / "manifest.json").write_bytes(payload)
     (output / "manifest.sig").write_text(base64.b64encode(signature).decode("ascii") + "\n", encoding="ascii")
 

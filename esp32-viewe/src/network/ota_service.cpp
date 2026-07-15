@@ -12,7 +12,6 @@
 #include <esp_heap_caps.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/pk.h>
-#include <mbedtls/rsa.h>
 #include <mbedtls/sha256.h>
 #include <math.h>
 #include <time.h>
@@ -65,6 +64,7 @@ uint32_t expectedImageSize = 0;
 uint32_t receivedImageSize = 0;
 mbedtls_sha256_context shaContext;
 bool shaStarted = false;
+bool liveServicePausedForUpload = false;
 constexpr uint32_t kValidationWindowMs = 10000;
 bool applicationReady = false;
 bool healthyLoopSeen = false;
@@ -1009,7 +1009,28 @@ void historyFiles() {
     heap_caps_free(files);
 }
 
-// The canonical manifest bytes themselves are signed with RSA-PSS/SHA-256.
+void pauseLiveServiceForUpload() {
+    if (liveServicePausedForUpload) return;
+    liveServicePausedForUpload = live_websocket_service::stop();
+    if (liveServicePausedForUpload) Serial.println("Live WebSocket service paused for OTA verification");
+}
+
+void resumeLiveServiceAfterUploadFailure() {
+    if (!liveServicePausedForUpload) return;
+    liveServicePausedForUpload = false;
+    if (!live_websocket_service::begin()) {
+        Serial.println("Live WebSocket service could not restart after rejected OTA");
+    }
+}
+
+void setSignatureVerificationError(const char* stage, int rc) {
+    uploadError = String("manifest signature verification failed at ") + stage +
+        " (rc=" + rc + ", largest_internal=" +
+        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) + ")";
+    Serial.println(uploadError);
+}
+
+// The canonical manifest bytes themselves are signed with ECDSA P-256/SHA-256.
 bool verifyManifestSignature(const String& manifest, const String& signatureBase64) {
     if (strlen(OTA_SIGNING_PUBLIC_KEY_PEM) == 0) {
         uploadError = "signing public key is not configured";
@@ -1019,11 +1040,11 @@ bool verifyManifestSignature(const String& manifest, const String& signatureBase
     int rc = mbedtls_base64_decode(nullptr, 0, &signatureLength,
                                    reinterpret_cast<const unsigned char*>(signatureBase64.c_str()),
                                    signatureBase64.length());
-    if (rc != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL || signatureLength == 0 || signatureLength > 512) {
+    if (rc != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL || signatureLength == 0 || signatureLength > 80) {
         uploadError = "invalid base64 signature";
         return false;
     }
-    uint8_t signature[512];
+    uint8_t signature[80];
     if (mbedtls_base64_decode(signature, sizeof(signature), &signatureLength,
                               reinterpret_cast<const unsigned char*>(signatureBase64.c_str()),
                               signatureBase64.length()) != 0) {
@@ -1037,20 +1058,22 @@ bool verifyManifestSignature(const String& manifest, const String& signatureBase
     }
     mbedtls_pk_context key;
     mbedtls_pk_init(&key);
+    const char* failureStage = "public key parse";
     rc = mbedtls_pk_parse_public_key(&key,
             reinterpret_cast<const unsigned char*>(OTA_SIGNING_PUBLIC_KEY_PEM),
             strlen(OTA_SIGNING_PUBLIC_KEY_PEM) + 1);
-    if (rc == 0 && !mbedtls_pk_can_do(&key, MBEDTLS_PK_RSA)) rc = MBEDTLS_ERR_PK_TYPE_MISMATCH;
-    if (rc == 0 && signatureLength != mbedtls_rsa_get_len(mbedtls_pk_rsa(key))) {
-        rc = MBEDTLS_ERR_RSA_BAD_INPUT_DATA;
+    if (rc == 0 && !mbedtls_pk_can_do(&key, MBEDTLS_PK_ECDSA)) {
+        failureStage = "public key type";
+        rc = MBEDTLS_ERR_PK_TYPE_MISMATCH;
     }
     if (rc == 0) {
-        rc = mbedtls_rsa_rsassa_pss_verify(mbedtls_pk_rsa(key), MBEDTLS_MD_SHA256,
-                                           sizeof(digest), digest, signature);
+        failureStage = "ECDSA verify";
+        rc = mbedtls_pk_verify(&key, MBEDTLS_MD_SHA256, digest, sizeof(digest),
+                               signature, signatureLength);
     }
     mbedtls_pk_free(&key);
     if (rc != 0) {
-        uploadError = "manifest signature verification failed";
+        setSignatureVerificationError(failureStage, rc);
         return false;
     }
     return true;
@@ -1075,15 +1098,30 @@ bool prepareUpload() {
     if (board != OTA_BOARD_ID) { uploadError = "firmware board does not match"; return false; }
     if (imageSize == 0) { uploadError = "invalid manifest image_size"; return false; }
     if (!validSha256(hash)) { uploadError = "invalid manifest sha256"; return false; }
-    if (!verifyManifestSignature(manifest, signature)) return false;
+    pauseLiveServiceForUpload();
+    if (!verifyManifestSignature(manifest, signature)) {
+        resumeLiveServiceAfterUploadFailure();
+        return false;
+    }
     expectedSha256 = hash;
     expectedVersion = version;
     expectedImageSize = imageSize;
     receivedImageSize = 0;
     mbedtls_sha256_init(&shaContext);
-    if (mbedtls_sha256_starts(&shaContext, 0) != 0) { uploadError = "image hash setup failed"; return false; }
+    if (mbedtls_sha256_starts(&shaContext, 0) != 0) {
+        uploadError = "image hash setup failed";
+        mbedtls_sha256_free(&shaContext);
+        resumeLiveServiceAfterUploadFailure();
+        return false;
+    }
     shaStarted = true;
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) { uploadError = String("not enough OTA space: ") + Update.errorString(); return false; }
+    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
+        uploadError = String("not enough OTA space: ") + Update.errorString();
+        mbedtls_sha256_free(&shaContext);
+        shaStarted = false;
+        resumeLiveServiceAfterUploadFailure();
+        return false;
+    }
     return true;
 }
 
@@ -1115,6 +1153,7 @@ void handleUpload() {
             uploadError = String("flash write failed: ") + Update.errorString();
             uploadAccepted = false;
             Update.abort();
+            if (shaStarted) { mbedtls_sha256_free(&shaContext); shaStarted = false; }
         } else {
             receivedImageSize += upload.currentSize;
         }
@@ -1136,17 +1175,20 @@ void handleUpload() {
         if (shaStarted) { mbedtls_sha256_free(&shaContext); shaStarted = false; }
         uploadAccepted = false;
         uploadError = "upload aborted";
+        resumeLiveServiceAfterUploadFailure();
     }
 }
 
 void completeUpload() {
     if (!uploadAccepted) {
+        resumeLiveServiceAfterUploadFailure();
         server.send(uploadError == "unauthorised" ? 401 : 400, "application/json",
                     String("{\"ok\":false,\"error\":\"") + uploadError + "\"}");
         return;
     }
     const esp_partition_t* target = esp_ota_get_next_update_partition(nullptr);
     if (!target) {
+        resumeLiveServiceAfterUploadFailure();
         server.send(500, "application/json", "{\"ok\":false,\"error\":\"OTA target partition unavailable\"}");
         return;
     }

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create the local RSA key pair used to sign VIEWE OTA releases."""
+"""Create the local ECDSA P-256 key pair used to sign VIEWE OTA releases."""
 
 import argparse
 import os
@@ -44,8 +44,9 @@ def main():
     args.private_key.parent.mkdir(parents=True, exist_ok=True)
     args.public_key.parent.mkdir(parents=True, exist_ok=True)
     run([
-        "openssl", "genpkey", "-algorithm", "RSA",
-        "-pkeyopt", "rsa_keygen_bits:3072",
+        "openssl", "genpkey", "-algorithm", "EC",
+        "-pkeyopt", "ec_paramgen_curve:P-256",
+        "-pkeyopt", "ec_param_enc:named_curve",
         "-out", str(args.private_key),
     ])
     os.chmod(args.private_key, 0o600)

@@ -260,6 +260,17 @@ bool begin() {
     return true;
 }
 
+bool stop() {
+    if (!server) return false;
+    if (httpd_stop(server) != ESP_OK) return false;
+    server = nullptr;
+    portENTER_CRITICAL(&stateMux);
+    for (Client& client : clients) client = {};
+    sendQueued = false;
+    portEXIT_CRITICAL(&stateMux);
+    return true;
+}
+
 void update() {
     if (!server || sendQueued || millis() - lastPublishMs < kIntervalMs) return;
     LiveFrame frame{};

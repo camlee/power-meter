@@ -9,6 +9,7 @@
 namespace live_websocket_service {
 
 bool begin();
+bool stop();
 void update();
 uint8_t clientCount();
 uint8_t clientLimit();
