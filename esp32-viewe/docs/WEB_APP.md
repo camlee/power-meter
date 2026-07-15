@@ -1,12 +1,15 @@
 # Embedded Web App
 
-## Scope of the first vertical slice
+## Milestone status and scope
 
-The meter now embeds a small Svelte 5 single-page application in the normal
-firmware image. It provides an overview with live In/Out readings and a canvas
-graph, a browser time-anchor control, a today/hourly history graph, and the
-existing remote-display control. It is deliberately a foundation rather than a
-duplicate of every LVGL page; editable settings build on the contracts below.
+The embedded web-application milestone is complete. The normal firmware image
+contains a Svelte 5 single-page application with live In/Out readings and a
+canvas graph, browser time contribution, rolling/calendar history, device
+information, and remote-display control. It is a useful product surface, not a
+requirement to duplicate every LVGL page.
+
+Calibration pages, broader settings writes, storage browsing/export, and
+light/dark refinements remain incremental backlog to build as needed.
 
 The old MicroPython project is a behavioral reference only. Its Parcel,
 Material UI, Chart.js, CSV parsing, and text/CSV websocket protocol are not
@@ -146,6 +149,12 @@ the browser, performs anchoring, gap, and calendar calculations. The browser tur
 the compact Wh fields into average watts to use the same stacked chart semantics
 and colours as the LVGL Usage screen.
 
+VPH1 describes the current alpha history response. Candidate History V1 adds
+an explicit `dataset=real|demo` request and per-channel/component coverage. Its
+public binary response must receive a new protocol version/magic; it must not
+reinterpret existing VPH1 offsets. Storage format version and browser protocol
+version remain separate contracts.
+
 ## Keeping web and LVGL state synchronized
 
 Both surfaces must read/write the same services; neither owns a separate
@@ -181,7 +190,7 @@ from a network task or mirror Preferences directly in JavaScript.
 - History remains an asynchronous, bounded job in `history_query_service`;
   do not add a handler that scans files synchronously on the network/LVGL path.
 
-## Next web milestones
+## Web backlog
 
 1. Add explicit raw-file export UI.
 2. Expand the Info page from additional existing service read models.

@@ -1,114 +1,136 @@
-# Time and History V3
+# Time and history V1 candidate behavior
 
-This is the behavioral overview for the implemented time/history service. The
-exact storage contract and algorithms are specified in
-[`HISTORY_STORAGE_V3.md`](HISTORY_STORAGE_V3.md).
+This is the user-visible behavioral overview for the next history
+implementation. The exact candidate file, tenant, coverage, retention, and
+recovery contract is [HISTORY_STORAGE_V1.md](HISTORY_STORAGE_V1.md). The current
+alpha files called V3 require no compatibility and may be wiped.
 
 ## Timeline behavior
 
-Every boot receives a persistent monotonic `uint32_t` session ID. Measurement
-order is available without Wi-Fi or wall time: each segment filename contains
-its session and first complete monotonic minute, and every following 32-byte row
-represents the next minute.
+Every boot receives a persistent nonzero monotonic session ID. Measurement
+order remains available without Wi-Fi or wall time: each segment filename
+contains dataset, session, and first complete monotonic minute; each following
+fixed-size row represents the next complete minute.
 
-NTP and the browser time endpoint submit the same anchor relationship:
+NTP and the browser submit the same anchor relationship:
 
-- session ID and session-local monotonic instant;
+- boot session ID;
+- session-local monotonic instant;
 - Unix UTC milliseconds;
 - fixed local UTC offset;
 - source and declared uncertainty.
 
-The bounded LittleFS anchor ledger keeps one useful anchor per session. Repeated
-clock refreshes are accepted for the live clock but do not rewrite the ledger
-unless their precision is materially better. A wholly unanchored block is
-placed only when anchored data surrounds it. Its total unexplained downtime is
-timestamp uncertainty, and it may be shown only when that uncertainty is no
-larger than the selected graph's bucket width.
+The bounded LittleFS anchor ledger retains one useful anchor per nonzero boot
+session, independent of the history dataset being viewed. Routine clock
+refreshes do not rewrite it unless precision is materially better. A wholly
+unanchored block is placed only when anchored data surrounds it and its
+unexplained downtime fits the selected graph bucket. Reserved session-zero Demo
+fixtures have separate fixed-anchor metadata.
 
-All Usage ranges use the same real-time timeline, including Last 1/6/24 Hours.
-They leave unresolved/missing intervals empty rather than moving record-order
-data to "now." Calendar views use a persisted fixed UTC offset and provide
-Today, Yesterday, Last 2 Days, Last Week, Last Two Weeks, and All. Today and
-Last 2 Days retain their complete local-day axes after the current time.
-Missing coverage must exceed one minute before the Usage screen shows its small
-warning symbol; inferred coverage instead adds "some timestamps inferred."
+Rolling and calendar ranges leave unresolved time empty rather than moving data
+to now. Calendar views use a persisted fixed UTC offset and provide Today,
+Yesterday, Last 2 Days, Last Week, Last Two Weeks, and All. Full timezone/DST
+rules remain future work.
 
-## Browser contract
+Time uncertainty and measurement availability are independent:
 
-The future same-origin web app should submit time when it connects:
+- an anchored minute can still have a sensor-coverage gap;
+- a fully measured minute can still have inferred wall time;
+- configured zero power has coverage and zero energy;
+- an absent channel is unavailable, not zero and not a sensor failure.
+
+## Browser time contract
+
+The embedded same-origin web app submits time when it connects:
 
 ```http
 POST /api/v1/time/anchor
-Authorization: Bearer <device token>
 Content-Type: application/json
 
 {"unix_ms":1783890123456,"utc_offset_minutes":-360}
 ```
 
 In JavaScript, use `Date.now()` and
-`-new Date().getTimezoneOffset()`. The offset is optional and must be within
-plus/minus 14 hours. The current model deliberately stores a fixed offset, not
-IANA timezone or DST rules.
+`-new Date().getTimezoneOffset()`. Offset is optional and must be within plus or
+minus 14 hours.
+
+## Real and Demo history views
+
+Real and Demo are separate logical datasets using the same format and query
+engine.
+
+- ADC and UART sources automatically record to Real.
+- Realtime simulation automatically records to Demo.
+- Settings -> History provides a segmented `Real | Demo` view filter.
+- The filter changes the file catalog and local Usage data being viewed; it
+  never installs, removes, copies, or reclassifies data.
+- The view defaults to Real after boot and Demo views are prominently labeled.
+- When recording and viewing differ, the UI shows both states.
+
+The Demo dataset contains protected session-zero fixture files plus normal
+recorded Demo sessions. Fixture time is pinned once to a recent complete-day
+window that does not overlap any resolved recorded Demo interval, rather than
+sliding to now on every boot. If recorded Demo time is unresolved, fixture
+anchoring waits. Queries never sum fixture and recorded coverage for the same
+interval. New Demo files appear normally when the Demo source runs and Demo
+data is viewed.
+
+Candidate firmware idempotently creates/updates only the protected fixture
+version. Firmware flash or OTA never removes or rewrites Real history. Demo
+reset removes recorded Demo sessions and restores its protected fixture set;
+Real reset affects only Real.
+
+## Measurement availability
+
+The Sensors screen shows finite observed engineering values even when they are
+outside calculation limits, clearly marked. Power and Usage consume only fresh,
+finite values within the bounds in
+[SENSOR_DATA_POLICY.md](SENSOR_DATA_POLICY.md):
+
+- voltage 0–120 V inclusive;
+- current -50–50 A inclusive;
+- direct duty 0–1 inclusive.
+
+Values are rejected from calculation, never clamped. History keeps valid energy
+and coverage independently for each channel/component. Source outage, stale
+input, invalid values, and partial channel configuration therefore produce
+honest per-channel gaps without discarding other valid channels.
 
 ## Storage summary
 
-- Directory: `/history/v3/`
-- Active/interrupted name: `h3-s0000000123-m0000000000.open`
-- Closed name: `h3-s0000000123-m0000000000-n0240.bin`
-- Row: eight floats / 32 bytes (three channel energies and five component energies)
-- Flash cadence: five rows / 160 bytes / approximately five minutes
-- Rotation: 240 rows / approximately four hours, and every new boot/session
-- Retention: maximum 200 measurement files
-- Anchors: `/history/v3/time-anchors.bin`
+- Directories: `/history/v1/real/` and `/history/v1/demo/`
+- Active/interrupted name: `h1-r-s0000000123-m0000000000.open` (or `h1-d-...`)
+- Closed name: `h1-r-s0000000123-m0000000000-n0240.bin`
+- Row: 56 bytes containing energy, per-channel/component coverage, configured
+  mask, and minute quality flags
+- Flash cadence: five rows / 280 bytes / approximately five minutes
+- Rotation: 240 rows / approximately four hours and every new boot/session
+- Retention: maximum 200 files independently per dataset
+- Anchors: bounded V1 ledger keyed by nonzero boot session, plus fixed Demo-fixture metadata
 
-A stale `.open` file remains graphable after reboot. Its complete row count is
-`floor(fileSize / 32)`; any torn trailing bytes are ignored. Closed-file counts
-are obtained from the filename and checked against size. The current active
-file additionally exposes pending PSRAM rows.
+A stale `.open` file remains graphable after reboot. Complete rows are retained
+and torn trailing bytes are ignored. The zero-to-five rows still in RAM at
+power loss are absent according to the current durability policy.
 
-In Demo mode the device seeds ten four-hour synthetic segments across three local days,
-marks one historical day inferred. This keeps Today, Last Two Weeks, and All
-visually useful on a new device and exercises the small inference disclosure.
+## Catalog, query, and reset
 
-The authenticated catalog endpoint reads filenames and sizes, not row bodies:
+Settings -> History lists only the selected dataset. The catalog is derived
+from strict filenames, sizes, anchor metadata, and current RAM; it does not scan
+row bodies. New files update the catalog incrementally and appear without a
+reboot.
 
-```http
-GET /api/v1/history/files?offset=0&limit=25
-```
+The browser catalog/query API accepts `dataset=real|demo`, returns the selected
+dataset, and defaults omitted values to Real. Queries seek directly to required
+rows and return time coverage plus per-channel/component measurement coverage.
 
-Settings -> History uses the same bounded catalog and lists files newest first.
-Its summary reports recorded minutes as days/hours/minutes, file count/cap, and
-storage in MB. Each file is a compact two-line session/duration entry; cleanly
-closed files have a check mark and directly anchored files include local start
-and end times.
-Usage Data reset removes recorded V3 segments, anchor-ledger files, and pending rows;
-the synthetic Demo segments are retained.
-Development V1/V2 data is not migrated.
+Reset is dataset-scoped. Real reset cannot touch Demo; Demo reset cannot touch
+Real. Factory/development reset may clear both and then recreate only protected
+Demo fixtures after explicit confirmation.
 
-## Query behavior
+## Verification status
 
-Usage queries resolve catalog intervals first, discard non-overlapping files,
-calculate row offsets arithmetically, and seek directly to the required 32-byte
-records. Direct anchors use exact positions. For an accepted bounded block,
-spare time is distributed evenly across its reboot boundaries for a stable
-estimate while remaining explicit uncertainty. Energy is split proportionally
-only across a query boundary.
-
-## Verified and remaining
-
-Verified on the attached ESP32-S3:
-
-- clean build and USB flash;
-- stable construction of the complete Settings UI;
-- authenticated info and history catalog requests, including a 50-file page;
-- file-oriented History and memory Debug screens;
-- an actual five-row/160-byte flush into the active session file;
-- stable uptime after the memory corrections.
-
-Still requiring longer-running/destructive tests:
-
-- power-loss recovery during/around a five-minute append;
-- stale `.open` behavior across repeated boots;
-- 240-row close/rename and 200-file retention deletion;
-- bounded inference across intentionally anchored/unanchored sessions;
-- multi-day calendar totals against independently known energy.
+This V1 candidate is not implemented yet. The current alpha demonstrated basic
+build, flash append, catalog, UI, and query feasibility, but candidate V1 must
+pass [HISTORY_TEST_PLAN.md](HISTORY_TEST_PLAN.md), including tenant isolation,
+partial coverage, interruption recovery, natural rotation, retention, and
+multi-day accuracy.

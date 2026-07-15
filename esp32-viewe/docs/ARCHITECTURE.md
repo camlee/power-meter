@@ -7,7 +7,8 @@ ESP32-S3 touch-display module and is an **offline-first solar power meter**:
 live, accurate on-device measurements are the primary product; Wi-Fi adds
 configuration, synchronization, remote views, and future peer features.
 
-The same firmware should support two roles selected by configuration:
+The current firmware is a meter/display. Its service boundaries should permit
+two roles in a future multi-device phase:
 
 - **Meter** — reads sensors, persists measurements, and presents the local UI.
 - **Peer/display** — has no attached sensors; it can keep/display time and,
@@ -23,11 +24,13 @@ There are three independent channels:
 | --- | --- | --- |
 | `In` | Solar-panel input to the battery system | Production / charging input |
 | `Out` | Battery-system load output | Consumption / discharge output |
-| `Aux` | Reserved independent measurement | Excluded |
+| `Aux` | Reserved independent measurement | Excluded from net battery power |
 
-Each channel has a voltage and current input, for six ESP32 ADC inputs total:
-GPIO 5, 6, 7, 8, 9, and 10. The exact GPIO-to-channel/polarity mapping must be
-defined in one central configuration before real hardware is enabled.
+The final local ADC target has a voltage and current input for each channel, for
+six inputs on provisional GPIO 5 through 10. Sources and devices may provide
+only a subset of the logical channels. Presence is explicit configuration/data;
+a floating ADC value is not attachment detection. The exact final pin/polarity
+map is part of the future on-site hardware-integration milestone.
 
 Initial nominal transfer functions, applied to calibrated ADC input voltage in
 volts, are:
@@ -46,10 +49,10 @@ hardware validation will establish per-channel offsets and gains.
 ## Layering
 
 ```text
-Physical ADC inputs
+Demo / ADC / Uno UART sources
         |
         v
-SensorSource implementations --> sensors (sampling, buffers, derived values)
+Sensor source contract -------> sensors (validation, buffers, derived values)
         |                                |
         |                                +--> live UI
         v
@@ -57,31 +60,42 @@ Measurement/energy aggregation --> persistent history --> historical UI/API
         |
         +--> clock/timeline reconciliation
 
-Network manager --> Wi-Fi UI, NTP, browser/peer time sources, future API/OTA
+Network services --> Wi-Fi UI, NTP/browser time, web app/API, OTA, remote display
 ```
 
 ### 1. Sensor acquisition
 
-`sensors/` owns sampling and exposes thread-safe readings. `SensorSource` is
-the hardware boundary: its implementations only return raw voltage/current;
-the `sensors` service derives power once and owns short in-memory histories.
+`sensors/` owns acquisition and exposes thread-safe normalized readings.
+`SensorSource` is the acquisition boundary. A source returns channel presence,
+health, timestamps, voltage/current, and optionally direct duty. ADC values are
+raw inputs to ESP32 calibration; Demo and UART values are already engineering
+units. The service validates values, applies calibration exactly once, derives
+power once, and owns short in-memory histories.
 
-The current simulated source remains valuable for UI and storage development.
-The production ESP32 ADC source is selected from the central channel
-configuration when simulation is disabled.
+Realtime Demo remains valuable for exercising the complete live/history path.
+The ESP32 ADC source is the final local target. The interim Arduino Uno UART
+source provides calibrated `In`/`Out` readings and duty while `Aux` is absent.
+One UART frame supplies a coherent multi-channel snapshot, so its receiver is a
+shared frame source rather than three independent serial readers.
 
 Requirements for the production source:
 
 - fixed channel configuration and a clear channel/pin table;
 - calibrated millivolt reads, suitable attenuation, and bounded filtering;
 - per-channel persisted offset/gain values with safe defaults;
-- explicit handling of unavailable/invalid readings, rather than treating a
-  failing sensor as valid zero power;
+- independent channel presence and explicit waiting/invalid/stale states;
+- finite/plausibility validation for every source, including the local ADC,
+  while retaining finite raw observations on Sensors for diagnosis;
+- no integration across an unavailable interval and no indefinite reuse of a
+  stale last-good value;
 - no blocking work while holding the shared sensor-history mutex.
 
-`In - Out` is net battery power: positive charges the battery, negative
-discharges it. `Aux` remains independent until a future configuration model
-gives it a defined system role.
+`In - Out` is net battery power only when both inputs are valid: positive
+charges the battery and negative discharges it. Derived metrics that lack their
+required channels are unavailable, not zero. Values are never clamped into the
+calculation range because that would fabricate power/energy. `Aux` remains
+independent. See `SENSOR_DATA_POLICY.md` for states, limits, coverage, and
+calibration implications.
 
 ### 2. UI
 
@@ -93,7 +107,7 @@ Current top-level screens are:
 
 - **Sensors:** raw per-sensor voltage/current/power and short trend charts.
 - **Power:** derived battery and solar/PWM-related metrics.
-- **Usage:** long-term history (currently provisional).
+- **Usage:** rolling and calendar history with gaps/time uncertainty.
 - **Settings:** nested configuration and diagnostics pages:
   - **Wi-Fi:** station scan/connect, station IP/RSSI, plus local AP control
     and its gateway IP;
@@ -108,10 +122,11 @@ asynchronous and must not stall sampling or rendering.
 
 ### 3. Energy and durable history
 
-Energy is integrated from sample power over elapsed monotonic time. History V3
-stores one fixed 32-byte energy row per complete monotonic minute. Session and
-minute identity live in the segment filename, avoiding repeated metadata in
-every row.
+Energy is integrated from eligible sample power over elapsed monotonic time.
+The disposable alpha format called V3 is being replaced without migration by
+candidate History V1. Each fixed 56-byte minute row stores channel/component
+energy, valid coverage, configured-channel mask, and quality flags. Dataset,
+session, and minute identity live in segment paths/names.
 
 The persistent format must distinguish two concepts:
 
@@ -120,24 +135,24 @@ The persistent format must distinguish two concepts:
 - **Wall-clock time:** optional metadata that can be attached or revised after
   NTP, a browser, or a peer supplies a trustworthy time anchor.
 
-This permits continuous ordered history when wall time is absent, represents
-outages as gaps, and later maps unsynchronized records into an honest time
-window without inventing a precise timestamp.
+This permits continuous ordered history when wall time is absent, distinguishes
+measured zero from partial/missing coverage, and later maps unsynchronized
+records into an honest time window without inventing a precise timestamp.
 
-The clock-independent API supports rolling and calendar buckets. Five rows are
-buffered in PSRAM and appended as one 160-byte write. Each boot begins a new
-`.open` session segment; a segment closes to `.bin` after 240 records (about
-four hours). Stale `.open` files remain readable after an abrupt reboot, with
-only incomplete trailing bytes ignored. A 200-measurement-file cap bounds
-directory and retention work; under normal six-file/day operation it holds
-about 33 days, while frequent reboots intentionally shorten that window.
+Real and Demo are logical tenants of the same engine. ADC/UART route to Real;
+realtime simulation routes to Demo. The Settings -> History segmented control
+is a view filter only. Protected Demo fixture files use reserved session zero
+and fixed past time; they coexist with ordinary recorded Demo sessions without
+sliding or overlap. Seeding/versioning never touches Real.
 
-The small `/history/v3/time-anchors.bin` ledger retains at most one useful
-anchor per session and is loaded as a bounded in-memory table. The filename
-catalog is built once at boot and maintained incrementally as storage changes.
-Calendar queries resolve only candidate intervals and seek directly to
-overlapping 32-byte rows. See `HISTORY_STORAGE_V3.md` for the exact
-format, recovery, inference, and query rules.
+Five rows are buffered in PSRAM and appended as one 280-byte write. Segments
+close after 240 records (about four hours). Stale `.open` files retain complete
+rows and ignore a torn tail. Independent 200-file caps prevent Demo activity
+from evicting Real history. The bounded anchor ledger remains device-wide and
+keys normal entries by globally unique boot session; catalogs and queries
+always select one measurement dataset and seek directly to overlapping rows.
+See `HISTORY_STORAGE_V1.md` for the candidate format,
+fixture, recovery, inference, retention, and reset rules.
 
 ### 4. Time service
 
@@ -174,23 +189,26 @@ warning symbol.
 and NTP reachability. It must be initialized from startup and ticked by a
 well-defined non-UI owner; UI screens issue commands and display state.
 
-Future capabilities build on an authenticated local service layer:
+The implemented local service layer includes:
 
-- browser API and realtime web app;
-- data export/sync between devices;
-- meter/peer discovery and time sharing;
-- OTA update delivery and device diagnostics;
-- optional collaborative features such as a shared drawing surface.
+- a realtime/history browser API and embedded web application;
+- browser time contribution;
+- signed OTA delivery and diagnostics;
+- remote display capture and input on a trusted local network.
+
+Browser calibration/settings/storage pages remain incremental product backlog.
+Data export and synchronization between devices remain future work.
 
 Mesh networking is a future architectural option, not a near-term dependency;
 the first network contract should work over ordinary Wi-Fi AP/station mode.
 
 ## Configuration and persistence
 
-Configuration belongs in NVS/Preferences and is versioned. It includes device
-role, sensor channel mapping, calibration values, Wi-Fi/AP settings, and future
-peer/service settings. Sensor calibration must be editable from the device UI
-and ultimately importable/exportable through the web interface.
+Configuration belongs in NVS/Preferences and is versioned. It includes sensor
+source mode, channel presence/mapping, calibration values, device identity, and
+Wi-Fi/AP settings. The current persisted Demo/Real boolean must migrate to a
+versioned mode enum before UART is added while preserving existing settings.
+Future peer/service settings are out of the current phase.
 
 Secrets need an explicit security policy before remote access is introduced.
 The current plain NVS credential storage is acceptable only as a local-device
@@ -212,26 +230,31 @@ starting point; it is not a sufficient design for exposed remote services.
 - A sensor failure, clock loss, Wi-Fi loss, or peer loss degrades a feature but
   never prevents local measurement/UI operation.
 
-## Remaining implementation gaps
+## Active implementation gaps
 
 These are documented design gaps, not accepted final behavior:
 
-- simulation is the default until physical hardware is available; the ADC
-  source and provisional pin/channel configuration are available but untested;
-- physical ADC conversion and calibration still require validation against the
-  installed electrical hardware;
-- session-aware history/time needs longer-running recovery and retention testing
-  before its data is treated as production-durable;
-- the full meter data API and browser application are not yet implemented;
-- role configuration and peer time/data synchronization remain future work.
+- Sensor readings do not yet carry production-ready channel presence,
+  validity/staleness, provenance, or error diagnostics through every consumer.
+- Candidate History V1 tenant isolation, per-channel coverage, protected Demo
+  fixtures, and dataset-scoped reset/retention are designed but not implemented.
+- History/time needs deterministic recovery/query tests, accelerated retention
+  tests, and real rotation/multi-day verification before it is production-durable.
+- The Arduino Uno UART source and its versioned protocol are specified but not
+  implemented.
+- Physical ADC conversion/calibration accuracy remains a separate future
+  on-site integration milestone.
+- Role configuration and peer synchronization are explicitly out of scope.
 
 ## Development and verification
 
 PlatformIO is the canonical local build path: `pio run -d esp32-viewe`.
 The currently checked configuration builds successfully with a 3 MB OTA slot.
 
-Development should keep simulation as a selectable mode, add serial/API
-diagnostics for every service, and add a hardware test screen for raw ADC
-millivolts plus converted readings. Future OTA and remote verification should
-be layered only after the local build, flash, serial log, and recovery paths
-are dependable.
+Development keeps realtime simulation selectable and routes it through the same
+validation/history path as physical sources. Source health must be observable
+through local and web diagnostics. Raw ADC millivolts plus converted readings
+remain available for the future hardware-integration procedure. See
+`SCOPE_AND_ROADMAP.md`, `SENSOR_DATA_POLICY.md`, `HISTORY_STORAGE_V1.md`,
+`ARDUINO_UART_SENSOR.md`, and `HISTORY_TEST_PLAN.md` for the active delivery
+sequence and acceptance work.

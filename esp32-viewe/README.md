@@ -131,7 +131,10 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 - `src/sensors/`: sensor acquisition, simulated source, and ESP32 ADC source
 - `src/sensors/sensor_config.h`: source selection and provisional pin mapping
 - `src/data/`: minute-level historical storage
-- `docs/HISTORY_STORAGE_V3.md`: agreed segmented history/anchor format and query plan
+- `docs/HISTORY_STORAGE_V1.md`: candidate segmented history/tenant/coverage contract
+- `docs/HISTORY_TEST_PLAN.md`: deterministic, accelerated, interruption, and soak verification
+- `docs/SENSOR_DATA_POLICY.md`: raw observation, calculation limits, null/stale, and coverage policy
+- `docs/ARDUINO_UART_SENSOR.md`: interim Uno wiring and versioned UART protocol
 - `include/esp/`: ESP Display Panel, ESP utility, and LVGL configuration headers
 
 ## Remote display and control
@@ -177,8 +180,8 @@ curl -X POST -H 'Content-Type: application/json' \
 
 `unix_ms` is UTC milliseconds since the Unix epoch. `utc_offset_minutes` is
 local time minus UTC (Denver daylight time is `-360`); it is optional and, when
-present, becomes the meter's persisted fixed offset. The future web app should
-send `Date.now()` and negate JavaScript's `Date#getTimezoneOffset()` result.
+present, becomes the meter's persisted fixed offset. The embedded web app sends
+`Date.now()` and negates JavaScript's `Date#getTimezoneOffset()` result.
 
 History-file diagnostics are exposed without scanning measurement rows:
 
@@ -206,7 +209,7 @@ particular:
 
 - never scan all historical measurement records during boot or normal UI
   refresh;
-- keep directory listings bounded (the planned history cap is 200 segment
+- keep directory listings bounded (the history cap is 200 segment
   files);
 - avoid large derived indexes when the filesystem can be the index;
 - make expensive per-file inspection an explicit user/API operation;
