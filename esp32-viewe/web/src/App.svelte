@@ -110,6 +110,11 @@
   let setupError = '';
   let setupMessage = '';
   let setupBusy = false;
+  $: setupIsDirty = !!setup && (
+    setupHostname !== setup.hostname || setupSensorMode !== setup.sensor_mode ||
+    setupAppearance !== setup.appearance || resetSetup || resetWifi ||
+    resetCalibration || resetUsage
+  );
 
   // On-device diagnostics are refreshed only while Debug is visible.
   let debugStatus = null;
@@ -421,11 +426,6 @@
     } catch (err) {
       setupError = describeError(err, 'load setup');
     }
-  }
-
-  function setupDirty() {
-    return !!setup && (setupHostname !== setup.hostname || setupSensorMode !== setup.sensor_mode ||
-      setupAppearance !== setup.appearance || resetSetup || resetWifi || resetCalibration || resetUsage);
   }
 
   function validHostname() {
@@ -949,8 +949,8 @@
 
           <p class="save-warning">Saving applies all selected changes and restarts the device.</p>
           <div class="form-actions">
-            <button type="button" class="secondary" disabled={!setupDirty() || setupBusy} on:click={() => loadSetupDraft(setup)}>Discard</button>
-            <button type="submit" class="primary" disabled={!setupDirty() || setupBusy}>{setupBusy ? 'Applying…' : 'Save'}</button>
+            <button type="button" class="secondary" disabled={!setupIsDirty || setupBusy} on:click={() => loadSetupDraft(setup)}>Discard</button>
+            <button type="submit" class="primary" disabled={!setupIsDirty || setupBusy}>{setupBusy ? 'Applying…' : 'Save'}</button>
           </div>
         </form>
       {:else if !setupMessage}
@@ -1295,7 +1295,7 @@
 
   button:disabled {
     opacity: 0.55;
-    cursor: wait;
+    cursor: default;
   }
 
   .main-nav button,
