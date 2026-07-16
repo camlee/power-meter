@@ -156,6 +156,15 @@ size_t getCalendarPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size
                                          CalendarRange range, uint16_t bucketMinutes,
                                          QueryStatus* status = nullptr);
 
+// Internal shared-model query for feature-specific wall-clock aggregation
+// (for example energy cycles). Browser endpoints should expose their feature
+// model rather than accepting arbitrary timestamps from clients.
+size_t getTimePowerBuckets(PowerBucket* out, size_t maxBuckets,
+                           int64_t startUnixMs, int64_t endUnixMs,
+                           uint16_t bucketMinutes, QueryStatus* status = nullptr);
+size_t getTimePowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
+                                     int64_t startUnixMs, int64_t endUnixMs,
+                                     uint16_t bucketMinutes, QueryStatus* status = nullptr);
 size_t listFiles(HistoryFileInfo* out, size_t limit, size_t offset = 0,
                  size_t* total = nullptr, StorageStats* stats = nullptr);
 size_t listFilesForDataset(Dataset dataset, HistoryFileInfo* out, size_t limit,

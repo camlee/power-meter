@@ -131,6 +131,35 @@ function parseHistory(buffer) {
   return { flags, startUnixMs, endUnixMs, bucketMinutes, buckets };
 }
 
+export async function getCycles() {
+  const start = await fetch('/api/v1/cycles', { cache: 'no-store' });
+  if (start.status !== 202) throw new Error(`cycles ${start.status}`);
+  const { job } = await start.json();
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    const response = await fetch(`/api/v1/cycles?job=${job}`, { cache: 'no-store' });
+    if (response.status === 202) continue;
+    if (!response.ok) throw new Error(`cycles ${response.status}`);
+    return response.json();
+  }
+  throw new Error('cycle query timed out');
+}
+
+export async function saveCycleEndHour(endHour) {
+  const response = await fetch('/api/v1/cycles', {
+    method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ end_hour: endHour })
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(result.error || `cycles ${response.status}`);
+    error.status = response.status;
+    error.userMessage = result.error;
+    throw error;
+  }
+  return result;
+}
+
 export async function getHistory(range = 'today', bucketMinutes = 30) {
   const params = new URLSearchParams({ range, bucket_minutes: String(bucketMinutes) });
   const start = await fetch(`/api/v1/history/query?${params}`, { cache: 'no-store' });

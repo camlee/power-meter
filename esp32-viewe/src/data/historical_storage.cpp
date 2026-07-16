@@ -1077,6 +1077,27 @@ size_t getCalendarPowerBuckets(PowerBucket* out, size_t maxBuckets,
                                              range, bucketMinutes, status);
 }
 
+size_t getTimePowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
+                                     int64_t startUnixMs, int64_t endUnixMs,
+                                     uint16_t bucketMinutes, QueryStatus* status) {
+    Lock lock;
+    if (status) *status = {};
+    if (!lock || !ready || !out || !maxBuckets || !bucketMinutes ||
+        endUnixMs <= startUnixMs || !time_service::hasCurrentTime()) return 0;
+    int64_t nowMs = 0;
+    if (!time_service::resolveUnixTimeMs(time_service::currentSessionId(),
+            time_service::monotonicUs(), nowMs)) return 0;
+    return queryTimeBuckets(dataset, out, maxBuckets, startUnixMs, endUnixMs,
+                            nowMs, bucketMinutes, status);
+}
+
+size_t getTimePowerBuckets(PowerBucket* out, size_t maxBuckets,
+                           int64_t startUnixMs, int64_t endUnixMs,
+                           uint16_t bucketMinutes, QueryStatus* status) {
+    return getTimePowerBucketsForDataset(activeDataset(), out, maxBuckets,
+                                         startUnixMs, endUnixMs, bucketMinutes, status);
+}
+
 size_t listFilesForDataset(Dataset dataset, HistoryFileInfo* out, size_t limit,
                            size_t offset, size_t* total, StorageStats* stats) {
     Lock lock;

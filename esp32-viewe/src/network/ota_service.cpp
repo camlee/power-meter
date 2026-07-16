@@ -22,6 +22,7 @@
 #include "build_time.h"
 #include "lvgl_v8_port.h"
 #include "data/historical_storage.h"
+#include "data/energy_cycle.h"
 #include "data/history_query_service.h"
 #include "device/device_identity.h"
 #include "device/device_state.h"
@@ -539,6 +540,8 @@ bool jsonUnsigned(const String& json, const char* name, uint32_t& value) {
     int colon = json.indexOf(':', keyAt + key.length());
     if (colon < 0) return false;
     int start = colon + 1;
+    while (start < static_cast<int>(json.length()) &&
+           isspace(static_cast<unsigned char>(json[start]))) ++start;
     int end = start;
     while (end < static_cast<int>(json.length()) && isdigit(static_cast<unsigned char>(json[end]))) ++end;
     if (end == start || (end - start) > 10) return false;
@@ -945,6 +948,80 @@ void browserTimeAnchor() {
                 ",\"offset_updated\":" + (offsetProvided ? "true" : "false") + "}");
 }
 
+void webCycles() {
+    if (server.method() == HTTP_POST) {
+        uint32_t hour = 0;
+        if (!jsonUnsigned(server.arg("plain"), "end_hour", hour) || hour >= 24) {
+            server.send(400, "application/json",
+                        "{\"ok\":false,\"error\":\"end_hour must be an integer from 0 to 23\"}");
+            return;
+        }
+        if (!energy_cycle::setEndHour(static_cast<uint8_t>(hour))) {
+            server.send(503, "application/json",
+                        "{\"ok\":false,\"error\":\"cycle end time could not be persisted\"}");
+            return;
+        }
+        server.sendHeader("Cache-Control", "no-store");
+        server.send(200, "application/json",
+                    String("{\"ok\":true,\"end_hour\":") + hour + "}");
+        return;
+    }
+
+    if (!server.hasArg("job")) {
+        const uint32_t job = history_query_service::requestCycles();
+        if (!job) {
+            server.send(503, "application/json", "{\"error\":\"history worker unavailable\"}");
+            return;
+        }
+        server.sendHeader("Cache-Control", "no-store");
+        server.send(202, "application/json", String("{\"job\":") + job + "}");
+        return;
+    }
+
+    const uint32_t job = static_cast<uint32_t>(server.arg("job").toInt());
+    auto* summaries = static_cast<energy_cycle::Summary*>(heap_caps_calloc(
+        energy_cycle::kRecentCycleCount, sizeof(energy_cycle::Summary),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!summaries) {
+        server.send(503, "application/json", "{\"error\":\"cycle response buffer unavailable\"}");
+        return;
+    }
+    size_t count = 0;
+    if (!history_query_service::takeCycles(job, summaries, energy_cycle::kRecentCycleCount, count)) {
+        heap_caps_free(summaries);
+        server.sendHeader("Cache-Control", "no-store");
+        server.send(202, "application/json", "{\"state\":\"pending\"}");
+        return;
+    }
+
+    String response;
+    response.reserve(1800);
+    response = String("{\"api_version\":1,\"end_hour\":") + energy_cycle::endHour() +
+        ",\"efficiency_percent\":80,\"utc_offset_minutes\":" +
+        time_service::utcOffsetMinutes() + ",\"cycles\":[";
+    for (size_t i = 0; i < count; ++i) {
+        const auto& summary = summaries[i];
+        if (i) response += ',';
+        response += String("{\"start_unix_ms\":") + summary.startUnixMs +
+            ",\"end_unix_ms\":" + summary.endUnixMs +
+            ",\"expected_ms\":" + summary.expectedMs +
+            ",\"valid_coverage_ms\":" + summary.validCoverageMs +
+            ",\"charged_wh\":";
+        response += summary.chargeAvailable ? String(summary.chargeWh, 2) : "null";
+        response += ",\"used_wh\":";
+        response += summary.useAvailable ? String(summary.useWh, 2) : "null";
+        response += ",\"net_wh\":";
+        response += summary.netAvailable ? String(summary.netWh, 2) : "null";
+        response += String(",\"current\":") + (summary.current ? "true" : "false") +
+            ",\"incomplete\":" + (summary.incomplete ? "true" : "false") +
+            ",\"quality_flags\":" + summary.qualityFlags + "}";
+    }
+    response += "]}";
+    heap_caps_free(summaries);
+    server.sendHeader("Cache-Control", "no-store");
+    server.send(200, "application/json", response);
+}
+
 void historyFiles() {
     if (!authorised()) {
         server.send(401, "application/json", "{\"error\":\"unauthorised\"}");
@@ -1231,6 +1308,8 @@ void begin() {
     server.on("/api/v1/time/anchor", HTTP_POST, browserTimeAnchor);
     server.on("/api/v1/history/files", HTTP_GET, historyFiles);
     server.on("/api/v1/history/query", HTTP_GET, webHistoryQuery);
+    server.on("/api/v1/cycles", HTTP_GET, webCycles);
+    server.on("/api/v1/cycles", HTTP_POST, webCycles);
     server.on("/api/v1/web/status", HTTP_GET, webStatus);
     server.on("/api/v1/sensors", HTTP_GET, webSensors);
     server.on("/api/v1/setup", HTTP_GET, webSetup);

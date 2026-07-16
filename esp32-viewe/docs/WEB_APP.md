@@ -4,10 +4,14 @@
 
 The embedded web-application milestone is complete. The normal firmware image
 contains a Svelte 5 single-page application with live power, per-channel sensor
-observations, browser time contribution, rolling/calendar history, device
-information and diagnostics, device setup, independent Web appearance, and
+observations, browser time contribution, rolling/calendar history, daily
+energy-cycle balance, device information and diagnostics, device setup,
+independent Web appearance, and
 remote-display control. It is a useful product surface, not a requirement to
 duplicate every LVGL page.
+
+The browser and on-device Cycle views are complete for the current product
+scope and consume the same recent-cycle summary model.
 
 Calibration, storage browsing/export, and further appearance refinements
 remain incremental backlog to build as needed.
@@ -109,6 +113,9 @@ GET  /api/v1/display/...      local-LAN remote display control
 WS   ws://<meter>:81/api/v1/live
 GET  /api/v1/history/query?range=today&bucket_minutes=30
 GET  /api/v1/history/query?job=<id>
+GET  /api/v1/cycles
+GET  /api/v1/cycles?job=<id>
+POST /api/v1/cycles              {"end_hour":20}
 ```
 
 The WebSocket is on port 81 only for this first compatibility slice: port 80
@@ -155,6 +162,21 @@ mistaking an ordinary reconnect for a reboot.
 | 20 | `u32` | boot/session ID |
 | 24 | `f64` | Unix milliseconds, or NaN before anchoring |
 | 32 | `f32 × 8` | In V/A/W, Out V/A/W, Aux W, net battery W |
+
+Cycle queries use the same asynchronous history worker pattern: the first GET
+returns a job ID and polling returns the bounded recent window through the
+current cycle. The persisted
+`end_hour` is shared by LVGL and Web, is validated from 0 through 23, and can
+be changed without restarting. Each summary contains charged, used, and net Wh,
+coverage, quality, current/incomplete flags, and UTC interval bounds. Charge is
+solar input adjusted by the configured model efficiency. The Web Cycle table
+lists the most recent cycle first. Coverage that is too sparse is exposed as
+unavailable; usable partial coverage remains visible with an incomplete-data
+warning.
+
+Cycle calendar boundaries intentionally use the device's current persisted
+fixed UTC offset. They remain fixed 24-hour intervals and do not attempt to
+reconstruct historic daylight-saving transitions; see `ARCHITECTURE.md`.
 
 History uses a separate magic/type and an explicitly documented compact bucket
 schema. The two-step asynchronous query starts a bounded history worker job,
@@ -234,7 +256,13 @@ manual-refresh only. Queries remain asynchronous and hidden views do no work.
 
 ## Web backlog
 
-1. Add explicit raw-file export UI.
-2. Expand Setup with additional device metadata when it becomes useful.
-3. Migrate port-80 OTA/static routes to ESP-IDF HTTPD when preserving the
+1. Replace the shared history worker's newest-request-wins result slot with job
+   states that distinguish pending, completed, and superseded work. Concurrent
+   LVGL/browser queries must not leave a client polling a discarded job forever.
+2. Investigate and reduce the cost of rebuilding Cycle summaries from raw
+   minute history. Measure storage-lock hold time and sampling impact, then
+   consider cached or incrementally maintained cycle aggregates.
+3. Add explicit raw-file export UI.
+4. Expand Setup with additional device metadata when it becomes useful.
+5. Migrate port-80 OTA/static routes to ESP-IDF HTTPD when preserving the
    existing updater semantics has dedicated verification coverage.

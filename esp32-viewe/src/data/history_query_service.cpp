@@ -12,7 +12,7 @@
 namespace history_query_service {
 namespace {
 
-enum class JobKind : uint8_t { None, Usage, Files };
+enum class JobKind : uint8_t { None, Usage, Cycles, Files };
 
 struct Job {
     JobKind kind = JobKind::None;
@@ -25,6 +25,7 @@ struct Job {
 SemaphoreHandle_t mutex = nullptr;
 TaskHandle_t task = nullptr;
 historical_storage::PowerBucket* usageBuffer = nullptr;
+energy_cycle::Summary* cycleBuffer = nullptr;
 historical_storage::HistoryFileInfo* filesBuffer = nullptr;
 Job queued{};
 uint32_t nextJobId = 0;
@@ -34,6 +35,7 @@ JobKind completedKind = JobKind::None;
 bool isBusy = false;
 size_t usageCount = 0;
 historical_storage::QueryStatus usageStatus{};
+size_t cycleCount = 0;
 size_t filesCount = 0;
 size_t filesTotal = 0;
 historical_storage::StorageStats filesStats{};
@@ -67,6 +69,16 @@ void runJob(const Job& job, Timing& timing) {
         completedJobId = job.id;
         timing.lastRecordsRead = status.recordsRead;
         timing.lastFilesRead = status.filesRead;
+    } else if (job.kind == JobKind::Cycles) {
+        const size_t count = energy_cycle::query(
+            cycleBuffer, energy_cycle::kRecentCycleCount);
+        Lock lock;
+        if (!lock || requestedJobId != job.id) return;
+        cycleCount = count;
+        completedKind = JobKind::Cycles;
+        completedJobId = job.id;
+        timing.lastRecordsRead = 0;
+        timing.lastFilesRead = 0;
     } else if (job.kind == JobKind::Files) {
         historical_storage::StorageStats stats{};
         size_t total = 0;
@@ -84,7 +96,7 @@ void runJob(const Job& job, Timing& timing) {
         timing.lastFilesRead = static_cast<uint16_t>(count);
     }
     timing.lastDurationMs = millis() - started;
-    timing.lastWasUsage = job.kind == JobKind::Usage;
+    timing.lastWasUsage = job.kind == JobKind::Usage || job.kind == JobKind::Cycles;
 }
 
 void taskFn(void*) {
@@ -109,8 +121,10 @@ void taskFn(void*) {
                 if (lock && requestedJobId == job.id) {
                     timing.maxDurationMs = std::max(lastTiming.maxDurationMs, timing.lastDurationMs);
                     lastTiming = timing;
+                    const char* kindName = job.kind == JobKind::Usage ? "usage" :
+                                           job.kind == JobKind::Cycles ? "cycles" : "files";
                     Serial.printf("history_query: %s %lu ms, %u files, %lu rows\n",
-                                  timing.lastWasUsage ? "usage" : "files",
+                                  kindName,
                                   static_cast<unsigned long>(timing.lastDurationMs),
                                   timing.lastFilesRead,
                                   static_cast<unsigned long>(timing.lastRecordsRead));
@@ -142,9 +156,12 @@ bool init() {
     if (!mutex) return false;
     if (!usageBuffer) usageBuffer = static_cast<historical_storage::PowerBucket*>(heap_caps_calloc(
         kMaxUsageBuckets, sizeof(historical_storage::PowerBucket), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!cycleBuffer) cycleBuffer = static_cast<energy_cycle::Summary*>(heap_caps_calloc(
+        energy_cycle::kRecentCycleCount, sizeof(energy_cycle::Summary),
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
     if (!filesBuffer) filesBuffer = static_cast<historical_storage::HistoryFileInfo*>(heap_caps_calloc(
         kMaxListedFiles, sizeof(historical_storage::HistoryFileInfo), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!usageBuffer || !filesBuffer) {
+    if (!usageBuffer || !cycleBuffer || !filesBuffer) {
         Serial.println("history_query: PSRAM allocation failed");
         return false;
     }
@@ -158,6 +175,12 @@ uint32_t requestUsage(const UsageRequest& request) {
     Job job{};
     job.kind = JobKind::Usage;
     job.usage = request;
+    return enqueue(job);
+}
+
+uint32_t requestCycles() {
+    Job job{};
+    job.kind = JobKind::Cycles;
     return enqueue(job);
 }
 
@@ -180,6 +203,18 @@ bool takeUsage(uint32_t jobId, historical_storage::PowerBucket* out, size_t maxB
     count = std::min(usageCount, maxBuckets);
     memcpy(out, usageBuffer, count * sizeof(*out));
     status = usageStatus;
+    if (timing) *timing = lastTiming;
+    completedJobId = 0;
+    completedKind = JobKind::None;
+    return true;
+}
+
+bool takeCycles(uint32_t jobId, energy_cycle::Summary* out, size_t maxSummaries,
+                size_t& count, Timing* timing) {
+    Lock lock;
+    if (!lock || !out || completedKind != JobKind::Cycles || completedJobId != jobId) return false;
+    count = std::min(cycleCount, maxSummaries);
+    memcpy(out, cycleBuffer, count * sizeof(*out));
     if (timing) *timing = lastTiming;
     completedJobId = 0;
     completedKind = JobKind::None;

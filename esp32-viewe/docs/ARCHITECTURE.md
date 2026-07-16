@@ -109,6 +109,9 @@ Current top-level screens are:
 - **Sensors:** raw per-sensor voltage/current/power and short trend charts.
 - **Power:** derived battery and solar/PWM-related metrics.
 - **Usage:** rolling and calendar history with gaps/time uncertainty.
+- **Cycle:** daily solar-cycle energy balances using a persisted local cycle-end
+  hour, charging efficiency, a recent net summary, and explicit incomplete-data
+  handling shared with the browser view.
 - **Settings:** nested configuration and diagnostics pages:
   - **Wi-Fi:** station scan/connect, station IP/RSSI, plus local AP control
     and its gateway IP;
@@ -181,6 +184,12 @@ avoids pretending that a browser's current offset contains complete timezone
 rules. Full IANA timezone and DST-transition support can be added later without
 changing the UTC anchors or raw measurement records.
 
+Cycle boundaries follow that same deliberate fixed-offset model. They are
+contiguous 24-hour intervals calculated with the currently configured offset;
+they do not model 23/25-hour daylight-saving transition days or retain historic
+offset rules. Changing the configured offset can therefore shift how older raw
+measurements are grouped into local cycles without changing their UTC anchors.
+
 An unanchored boot block may be reconciled when anchors bound both sides. Its
 total unexplained downtime is explicit timestamp uncertainty and the block is
 shown only where that uncertainty fits the selected Usage bucket, retaining
@@ -197,9 +206,10 @@ well-defined non-UI owner; UI screens issue commands and display state.
 
 The implemented local service layer includes:
 
+- a shared asynchronous energy-cycle summary model used by LVGL and Web;
 - realtime power/history plus raw sensor-diagnostic browser APIs;
-- an embedded web application with Power, Usage, Sensors, read-only Setup, and
-  remote-display views;
+- an embedded web application with Power, Usage, Cycle, Sensors, read-only
+  Setup, and remote-display views;
 - browser time contribution;
 - signed OTA delivery and diagnostics;
 - remote display capture and input on a trusted local network.

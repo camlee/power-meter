@@ -38,7 +38,8 @@ Wi-Fi must never be required for sensing, energy accounting, or retention.
   uncertainty where wall time is unavailable.
 - Provide local calibration, Wi-Fi, storage, time/status, setup, and diagnostics.
 - Serve a useful local web application with live readings, history, browser
-  time contribution, device information, and remote-display control.
+  time contribution, cycle summaries, device information, and remote-display
+  control.
 - Add browser calibration, settings writes, and storage features as they become useful;
   they are product backlog, not blockers for the completed web-app milestone.
 
@@ -73,9 +74,10 @@ accuracy is deliberately tracked in a later on-site milestone.
 | 5. OTA and remote display | Verified for current workflow | Continue regression coverage as related services change. |
 
 The current ESP32 firmware, Arduino firmware, and embedded web app build
-successfully. Candidate History V1, live and historical browser views, Wi-Fi/AP setup,
-browser/NTP time anchors, local calibration, signed OTA, diagnostics, and
-remote display control are in place.
+successfully. Candidate History V1, live, historical, and Cycle browser views,
+Wi-Fi/AP setup, browser/NTP time anchors, local calibration, signed OTA,
+diagnostics, and remote display control are in place. The shared on-device and
+browser Cycle view is complete for the current scope.
 
 ### Roadmap checkpoint — 2026-07-15
 

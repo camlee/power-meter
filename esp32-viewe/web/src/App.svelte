@@ -5,6 +5,7 @@
   import {
     anchorTime,
     getDebug,
+    getCycles,
     getHistory,
     getRemoteScreenshot,
     getSensors,
@@ -12,6 +13,7 @@
     getStatus,
     openLiveSocket,
     sendRemotePointer,
+    saveCycleEndHour,
     saveSetup,
   } from './lib/api.js';
 
@@ -23,6 +25,8 @@
   const STATUS_POLL_MS = 10_000;
   const SENSOR_POLL_MS = 1_000;
   const DEBUG_POLL_MS = 1_000;
+  const CYCLE_REFRESH_MS = 5 * 60_000;
+  const cycleHours = Array.from({ length: 24 }, (_, hour) => ({ hour, label: hourLabel(hour) }));
 
   // Cap on how many live-chart points we keep in memory.
   const MAX_LIVE_POINTS = 600;
@@ -67,6 +71,7 @@
     overview: '/',
     remote: '/remote',
     history: '/history',
+    cycle: '/cycle',
     sensors: '/sensors',
     setup: '/setup',
     info: '/info',
@@ -138,6 +143,21 @@
   let historyRange = historyRanges[0];
   let historyFetchedAt = 0;
   let historyRefreshTimer;
+
+  // Energy cycle view.
+  let cycles = null;
+  let cycleError = '';
+  let cycleBusy = false;
+  let cycleEndHour = 20;
+  let cycleFetchedAt = 0;
+  let cycleRefreshTimer;
+  $: cycleSummaries = cycles?.cycles || [];
+  $: displayedCycles = [...cycleSummaries].reverse();
+  $: currentCycle = cycleSummaries.find((cycle) => cycle.current) || null;
+  $: netWindow = cycleSummaries.slice(-7);
+  $: sevenDayNet = netWindow.length === 7 && netWindow.every((cycle) => Number.isFinite(cycle.net_wh))
+    ? netWindow.reduce((total, cycle) => total + cycle.net_wh, 0)
+    : null;
 
   // Remote view.
   let remoteImage = '';
@@ -217,6 +237,25 @@
     return Number.isFinite(value) ? `${value.toFixed(digits)} ${unit}` : '—';
   }
 
+  function hourLabel(hour) {
+    const normalized = hour % 12 || 12;
+    return `${normalized}:00 ${hour < 12 ? 'AM' : 'PM'}`;
+  }
+
+  function formatCycleEnergy(value, unit = false, signed = unit) {
+    return Number.isFinite(value) ? `${value >= 0 && signed ? '+' : ''}${Math.round(value)}${unit ? ' Wh' : ''}` : '—';
+  }
+
+  function cycleNetClass(value) {
+    return Number.isFinite(value) ? (value > 0 ? 'positive' : value < 0 ? 'negative' : 'neutral') : 'unavailable';
+  }
+
+  function cycleDay(cycle) {
+    if (cycle.current) return 'Today';
+    const shifted = cycle.end_unix_ms - 1 + (cycles?.utc_offset_minutes || 0) * 60_000;
+    return new Intl.DateTimeFormat(undefined, { weekday: 'short', timeZone: 'UTC' }).format(new Date(shifted));
+  }
+
   function formatPercent(value) {
     return Number.isFinite(value) ? `${(value * 100).toFixed(0)}%` : '—';
   }
@@ -281,6 +320,7 @@
   function enterRoute(next) {
     route = next;
     clearTimeout(historyRefreshTimer);
+    clearTimeout(cycleRefreshTimer);
 
     if (next === 'history') {
       if (!history) {
@@ -290,6 +330,11 @@
         // that data is stale enough to warrant an immediate refresh.
         scheduleHistoryRefresh();
       }
+    }
+
+    if (next === 'cycle') {
+      if (!cycles) refreshCycles();
+      else scheduleCycleRefresh();
     }
 
     if (next === 'remote') {
@@ -550,6 +595,51 @@
   }
 
   // ---------------------------------------------------------------------
+  // Energy cycles
+  // ---------------------------------------------------------------------
+
+  async function refreshCycles({ silent = false } = {}) {
+    clearTimeout(cycleRefreshTimer);
+    if (!silent) cycleBusy = true;
+    try {
+      cycles = await getCycles();
+      cycleEndHour = cycles.end_hour;
+      cycleFetchedAt = Date.now();
+      cycleError = '';
+      cycleBusy = false;
+      scheduleCycleRefresh();
+    } catch (err) {
+      cycleError = describeError(err, 'load energy cycles');
+      cycleBusy = false;
+      if (!destroyed && route === 'cycle' && !document.hidden) {
+        cycleRefreshTimer = setTimeout(() => refreshCycles({ silent: true }), 30_000);
+      }
+    }
+  }
+
+  function scheduleCycleRefresh() {
+    clearTimeout(cycleRefreshTimer);
+    if (destroyed || route !== 'cycle' || document.hidden) return;
+    const elapsed = Date.now() - cycleFetchedAt;
+    cycleRefreshTimer = setTimeout(() => refreshCycles({ silent: true }),
+      Math.max(0, CYCLE_REFRESH_MS - elapsed));
+  }
+
+  async function selectCycleEnd(event) {
+    const nextHour = Number(event.currentTarget.value);
+    if (!Number.isInteger(nextHour) || nextHour < 0 || nextHour > 23) return;
+    cycleBusy = true;
+    try {
+      await saveCycleEndHour(nextHour);
+      cycleEndHour = nextHour;
+      await refreshCycles({ silent: true });
+    } catch (err) {
+      cycleError = describeError(err, 'save cycle end time');
+      cycleBusy = false;
+    }
+  }
+
+  // ---------------------------------------------------------------------
   // History
   // ---------------------------------------------------------------------
 
@@ -694,6 +784,7 @@
       pauseLive();
       // Don't keep polling history/remote in the background either.
       clearTimeout(historyRefreshTimer);
+      clearTimeout(cycleRefreshTimer);
       clearInterval(sensorPollTimer);
       clearInterval(debugPollTimer);
       return;
@@ -706,6 +797,7 @@
     refreshStatus();
 
     if (route === 'history') scheduleHistoryRefresh();
+    if (route === 'cycle') scheduleCycleRefresh();
     if (route === 'remote') refreshRemote();
     if (route === 'sensors' || route === 'setup') {
       refreshSensors();
@@ -740,6 +832,7 @@
       clearTimeout(reconnectTimer);
       clearTimeout(remoteRefreshTimer);
       clearTimeout(historyRefreshTimer);
+      clearTimeout(cycleRefreshTimer);
       socket?.close();
       if (remoteImage) URL.revokeObjectURL(remoteImage);
       colorSchemeMedia?.removeEventListener?.('change', colorSchemeChanged);
@@ -781,6 +874,7 @@
     <button class:active={route === 'sensors'} on:click={() => navigate('sensors')}>Sensors</button>
     <button class:active={route === 'overview'} on:click={() => navigate('overview')}>Power</button>
     <button class:active={route === 'history'} on:click={() => navigate('history')}>Usage</button>
+    <button class:active={route === 'cycle'} on:click={() => navigate('cycle')}>Cycle</button>
     <button class:active={SETTINGS_ROUTES.includes(route)} on:click={() => navigate('setup')}>Settings</button>
   </nav>
 
@@ -928,6 +1022,58 @@
         {/each}
       </div>
       {#if !sensorStatus && !sensorStatusError}<p class="empty">Loading sensors…</p>{/if}
+    </section>
+  {:else if route === 'cycle'}
+    <section class="cycle-view">
+      <div class="cycle-heading">
+        <h2>Energy Balance</h2>
+        <label>
+          <span class="sr-only">Cycle end time</span>
+          <select value={cycleEndHour} on:change={selectCycleEnd} disabled={cycleBusy}>
+            {#each cycleHours as option}
+              <option value={option.hour}>{option.label}</option>
+            {/each}
+          </select>
+        </label>
+      </div>
+      <p class="cycle-efficiency">Assuming 80% charge efficiency</p>
+
+      {#if cycleError}<p class="error" role="alert">{cycleError}</p>{/if}
+      {#if cycleBusy}<span class="progress" role="status" aria-label="Loading energy cycles"></span>{/if}
+
+      <div class="cycle-summaries">
+        <article>
+          <span>7-DAY NET</span>
+          <strong class={cycleNetClass(sevenDayNet)}>{formatCycleEnergy(sevenDayNet, true)}</strong>
+        </article>
+        <article>
+          <span>TODAY SO FAR</span>
+          <strong class={cycleNetClass(currentCycle?.net_wh)}>{formatCycleEnergy(currentCycle?.net_wh, true)}</strong>
+        </article>
+      </div>
+
+      {#if displayedCycles.length}
+        <div class="cycle-table-wrap">
+          <table class="cycle-table">
+            <thead><tr><th>Day</th><th>Charged</th><th>Used</th><th>Net</th></tr></thead>
+            <tbody>
+              {#each displayedCycles as cycle}
+                <tr>
+                  <th scope="row"><span>{cycleDay(cycle)}</span><span class="cycle-warning" aria-label={cycle.incomplete ? 'Incomplete data' : ''}>{cycle.incomplete ? '⚠' : ''}</span></th>
+                  <td>{formatCycleEnergy(cycle.charged_wh)}</td>
+                  <td>{formatCycleEnergy(cycle.used_wh)}</td>
+                  <td class={cycleNetClass(cycle.net_wh)}>{formatCycleEnergy(cycle.net_wh, false, true)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        {#if displayedCycles.some((cycle) => cycle.incomplete)}
+          <p class="cycle-incomplete">⚠ Incomplete Data</p>
+        {/if}
+      {:else if !cycleBusy}
+        <p class="empty">No cycle data available.</p>
+      {/if}
     </section>
   {:else if route === 'history'}
     <section class="history-view">
@@ -1186,6 +1332,7 @@
 
   .live-view,
   .history-view,
+  .cycle-view,
   .remote-view,
   .setup-view,
   .sensors-view,
@@ -1224,6 +1371,121 @@
   .chart-legend .surplus { background: var(--surplus); }
   .chart-legend .battery { background: var(--battery); }
   .chart-legend .load { background: var(--load); }
+
+  .cycle-view {
+    width: 100%;
+    max-width: 48rem;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .cycle-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .cycle-heading h2 { margin: 0; font-size: 1.25rem; }
+
+  .cycle-heading select {
+    min-width: 7.5rem;
+    padding: 0.45rem 1.8rem 0.45rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    background: var(--surface);
+    color: var(--text);
+    font: 600 0.9rem inherit;
+  }
+
+  .cycle-efficiency {
+    margin-top: 0.12rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .cycle-summaries {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.65rem;
+    margin: 1rem 0 0.8rem;
+  }
+
+  .cycle-summaries article {
+    padding: 0.7rem;
+    text-align: center;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    background: var(--surface);
+  }
+
+  .cycle-summaries span {
+    display: block;
+    color: var(--muted);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+  }
+
+  .cycle-summaries strong {
+    display: block;
+    margin-top: 0.15rem;
+    font-size: clamp(1.35rem, 5vw, 2rem);
+    font-weight: 500;
+  }
+
+  .cycle-table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+  }
+
+  .cycle-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .cycle-table th,
+  .cycle-table td {
+    padding: 0.72rem 0.85rem;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .cycle-table thead th {
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-weight: 700;
+  }
+
+  .cycle-table th:first-child { text-align: left; }
+  .cycle-table tbody th { font-size: 1.02rem; font-weight: 500; }
+  .cycle-table tbody tr:nth-child(odd) { background: var(--surface); }
+
+  .cycle-table tbody th {
+    display: grid;
+    grid-template-columns: 4.2rem 1rem;
+    align-items: center;
+  }
+
+  .cycle-warning {
+    color: var(--muted);
+    font-size: 0.65rem;
+    text-align: center;
+  }
+
+  .positive { color: var(--charge); }
+  .negative { color: var(--battery); }
+  .neutral { color: var(--text); }
+  .unavailable { color: var(--muted); }
+
+  .cycle-incomplete {
+    margin-top: 0.65rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+    text-align: center;
+  }
 
   .history-controls {
     display: flex;
