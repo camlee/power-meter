@@ -33,11 +33,11 @@ void calendarLabel(char* out, size_t size, int64_t unixMs, uint32_t durationMinu
         return;
     }
     const int hour = local.tm_hour % 12 ? local.tm_hour % 12 : 12;
-    if (durationMinutes <= 90) {
-        lv_snprintf(out, size, "%d:%02d %s", hour, local.tm_min,
-                    local.tm_hour < 12 ? "AM" : "PM");
+    const char* meridiem = local.tm_hour < 12 ? "AM" : "PM";
+    if (local.tm_min != 0) {
+        lv_snprintf(out, size, "%d:%02d", hour, local.tm_min);
     } else {
-        lv_snprintf(out, size, "%d %s", hour, local.tm_hour < 12 ? "AM" : "PM");
+        lv_snprintf(out, size, "%d%s", hour, meridiem);
     }
 }
 int yFor(const State& state, int top, int height, float value) {
@@ -74,7 +74,10 @@ void drawCb(lv_event_t* event) {
 
     const uint32_t tickMinutes = state->data.tickMinutes ? state->data.tickMinutes : state->data.durationMinutes;
     if (tickMinutes && state->data.durationMinutes) {
-        const int minLabelSpacing = 38;
+        constexpr int minLabelSpacing = 38;
+        constexpr int labelGap = 4;
+        const int plotSpan = right - left;
+        int previousLabelRight = a.x1 - labelGap;
         if (state->data.axisStartUnixMs) {
             const int64_t minuteMs = 60000LL;
             const int64_t tickMs = static_cast<int64_t>(tickMinutes) * minuteMs;
@@ -86,14 +89,14 @@ void drawCb(lv_event_t* event) {
             const int64_t firstTick = firstLocalTick - offsetMs;
             const uint32_t tickCount = firstTick <= axisEnd
                 ? static_cast<uint32_t>((axisEnd - firstTick) / tickMs) + 1 : 0;
-            const int tickPixels = static_cast<int>((static_cast<int64_t>(width) * tickMs) / durationMs);
+            const int tickPixels = static_cast<int>((static_cast<int64_t>(plotSpan) * tickMs) / durationMs);
             const uint32_t labelEvery = tickPixels > 0
                 ? static_cast<uint32_t>((minLabelSpacing + tickPixels - 1) / tickPixels) : 1;
             for (uint32_t tick = 0; tick < tickCount; ++tick) {
                 const int64_t tickUnixMs = firstTick + static_cast<int64_t>(tick) * tickMs;
                 if (tick % labelEvery != 0) continue;
                 const int x = left + static_cast<int>(
-                    static_cast<int64_t>(width) * (tickUnixMs - state->data.axisStartUnixMs) / durationMs);
+                    static_cast<int64_t>(plotSpan) * (tickUnixMs - state->data.axisStartUnixMs) / durationMs);
                 lv_point_t p1{(lv_coord_t)x, (lv_coord_t)top}, p2{(lv_coord_t)x, (lv_coord_t)bottom};
                 line.width = 1;
                 lv_draw_line(ctx, &line, &p1, &p2);
@@ -102,20 +105,28 @@ void drawCb(lv_event_t* event) {
                               state->data.utcOffsetMinutes);
                 const int labelWidth = lv_txt_get_width(label, strlen(label), &lv_font_montserrat_14, 0,
                                                         LV_TEXT_FLAG_NONE);
-                const int labelX = std::max(a.x1 + 1, std::min(x - labelWidth / 2, right - labelWidth));
+                const int labelX = std::max(a.x1 + 1, std::min(x - labelWidth / 2,
+                                                               right - labelWidth + 1));
+                if (labelX < previousLabelRight + labelGap) continue;
                 drawLabel(ctx, label, labelX, bottom + 5, lv_palette_main(LV_PALETTE_GREY));
+                previousLabelRight = labelX + labelWidth;
             }
         } else {
             const uint32_t tickCount = state->data.durationMinutes / tickMinutes;
             if (tickCount) for (uint32_t tick = 0; tick <= tickCount; ++tick) {
-                const int x = left + static_cast<int>(static_cast<int64_t>(width) * tick / tickCount);
+                const int x = left + static_cast<int>(static_cast<int64_t>(plotSpan) * tick / tickCount);
                 lv_point_t p1{(lv_coord_t)x, (lv_coord_t)top}, p2{(lv_coord_t)x, (lv_coord_t)bottom};
                 line.width = 1;
                 lv_draw_line(ctx, &line, &p1, &p2);
                 char label[12];
                 relativeLabel(label, sizeof(label), state->data.durationMinutes - tick * tickMinutes);
-                drawLabel(ctx, label, tick == tickCount ? right - 34 : x - 12, bottom + 5,
-                          lv_palette_main(LV_PALETTE_GREY));
+                const int labelWidth = lv_txt_get_width(label, strlen(label), &lv_font_montserrat_14, 0,
+                                                        LV_TEXT_FLAG_NONE);
+                const int labelX = std::max(a.x1 + 1, std::min(x - labelWidth / 2,
+                                                               right - labelWidth + 1));
+                if (labelX < previousLabelRight + labelGap) continue;
+                drawLabel(ctx, label, labelX, bottom + 5, lv_palette_main(LV_PALETTE_GREY));
+                previousLabelRight = labelX + labelWidth;
             }
         }
     }
