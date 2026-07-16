@@ -2,6 +2,9 @@
   import { onMount } from 'svelte';
 
   export let buckets = [];
+  export let startUnixMs = 0;
+  export let endUnixMs = 0;
+  export let tickMinutes = 0;
 
   // ---------------------------------------------------------------------
   // Constants
@@ -9,10 +12,9 @@
 
   const MOBILE_BREAKPOINT_PX = 460;
   const BAR_INSET_RATIO = 0.2; // fraction of bucket width left as gap between bars
-  const MAX_TIME_LABELS = 6;
+  const MIN_TIME_LABEL_SPACING_PX = 38;
   const CHART_FONT = '11px system-ui, sans-serif';
-
-  const timeLabelFormatter = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+  const WEEKDAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
   // ---------------------------------------------------------------------
   // State
@@ -41,18 +43,35 @@
 
   // Nice round step for the y-axis (watts), e.g. 1/2/5/10/20/50/100...
   function niceStep(span) {
-    const magnitude = 10 ** Math.floor(Math.log10(Math.max(span, 1)));
+    const magnitude = 10 ** Math.floor(Math.log10(Math.max(span, Number.EPSILON)));
     const normalized = span / magnitude;
-    const base = normalized <= 1.5 ? 1 : normalized <= 3 ? 2 : normalized <= 7 ? 5 : 10;
+    const base = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
     return base * magnitude;
   }
 
   function formatValueLabel(value) {
-    return Math.abs(value) >= 100 ? `${Math.round(value)}` : `${Math.round(value * 10) / 10}`;
+    return `${Math.round(value)} W`;
   }
 
   function computePadding(mobile) {
-    return { left: mobile ? 38 : 47, right: 10, top: 16, bottom: 29 };
+    return { left: mobile ? 43 : 48, right: 10, top: 16, bottom: 29 };
+  }
+
+  function automaticTickMinutes(durationMinutes) {
+    const choices = [15, 30, 60, 120, 240, 360, 720, 1440, 2880, 4320, 10080];
+    const target = Math.ceil(durationMinutes / 7);
+    return choices.find((choice) => choice >= target) ?? choices[choices.length - 1];
+  }
+
+  // Use weekdays for multi-day views; shorter views have room for a complete
+  // local time such as "3:00 PM" or "3:30 PM".
+  function formatTimeLabel(unixMs, durationMinutes, intervalMinutes) {
+    const date = new Date(unixMs);
+    if (durationMinutes > 2 * 1440 && intervalMinutes >= 1440) return WEEKDAYS[date.getDay()];
+    const hour24 = date.getHours();
+    const hour = hour24 % 12 || 12;
+    const minutes = String(date.getMinutes()).padStart(2, '0');
+    return `${hour}:${minutes} ${hour24 < 12 ? 'AM' : 'PM'}`;
   }
 
   // ---------------------------------------------------------------------
@@ -72,7 +91,7 @@
       low = Math.min(low, -sumFinite(bucket.batteryUsage, bucket.panelUsage));
     });
 
-    const step = niceStep((high - low || 1) / 4);
+    const step = niceStep(Math.max(high - low, 1) / 6);
     return {
       low: Math.min(-step, Math.floor(low / step) * step),
       high: Math.max(step, Math.ceil(high / step) * step),
@@ -136,32 +155,41 @@
     });
   }
 
-  function drawTimeLabels(ctx, plot, buckets, bucketWidth, colors) {
-    ctx.textAlign = 'center';
+  function drawTimeLabels(ctx, plot, colors) {
+    const durationMinutes = Math.max(1, Math.round((endUnixMs - startUnixMs) / 60_000));
+    const intervalMinutes = tickMinutes || automaticTickMinutes(durationMinutes);
+    const intervalMs = intervalMinutes * 60_000;
+    if (!Number.isFinite(startUnixMs) || !Number.isFinite(endUnixMs) ||
+        endUnixMs <= startUnixMs || intervalMs <= 0) return;
+
+    // Align ticks to local clock boundaries, as the fixed-offset device does.
+    const localOffsetMs = -new Date(startUnixMs).getTimezoneOffset() * 60_000;
+    const firstTick = Math.ceil((startUnixMs + localOffsetMs) / intervalMs) * intervalMs - localOffsetMs;
+    const tickPixels = plot.width * intervalMs / Math.max(1, endUnixMs - startUnixMs);
+    const labelEvery = Math.max(1, Math.ceil(MIN_TIME_LABEL_SPACING_PX / Math.max(1, tickPixels)));
+    let previousLabelRight = -Infinity;
+
     ctx.textBaseline = 'top';
     ctx.fillStyle = colors.muted;
+    for (let tick = firstTick, index = 0; tick <= endUnixMs; tick += intervalMs, index += 1) {
+      if (index % labelEvery) continue;
+      const x = plot.left + plot.width * (tick - startUnixMs) / (endUnixMs - startUnixMs);
 
-    const shown = Math.min(MAX_TIME_LABELS, buckets.length);
-    for (let i = 0; i < shown; i += 1) {
-      const bucketIndex = Math.round((i * (buckets.length - 1)) / Math.max(1, shown - 1));
-      const stamp = buckets[bucketIndex]?.unixMs;
-      if (!Number.isFinite(stamp) || stamp <= 0) continue;
+      ctx.strokeStyle = colors.grid;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(x, plot.top);
+      ctx.lineTo(x, plot.top + plot.height);
+      ctx.stroke();
 
-      const text = timeLabelFormatter.format(new Date(stamp));
-      const x = plot.left + (bucketIndex + 0.5) * bucketWidth;
-      ctx.fillText(text, x, plot.top + plot.height + 8);
+      const text = formatTimeLabel(tick, durationMinutes, intervalMinutes);
+      const textWidth = ctx.measureText(text).width;
+      const labelX = Math.max(1, Math.min(x - textWidth / 2, plot.left + plot.width - textWidth));
+      if (labelX < previousLabelRight + 4) continue;
+      ctx.textAlign = 'left';
+      ctx.fillText(text, labelX, plot.top + plot.height + 8);
+      previousLabelRight = labelX + textWidth;
     }
-  }
-
-  function drawAxisTitle(ctx, plot, colors) {
-    ctx.save();
-    ctx.translate(11, plot.top + plot.height / 2);
-    ctx.rotate(-Math.PI / 2);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillStyle = colors.muted;
-    ctx.fillText('Average power [W]', 0, 0);
-    ctx.restore();
   }
 
   function drawMessage(ctx, width, height, colors, text) {
@@ -214,10 +242,8 @@
 
     const bucketWidth = plot.width / buckets.length;
     const barWidth = Math.max(1, bucketWidth - Math.max(1, bucketWidth * BAR_INSET_RATIO));
+    drawTimeLabels(ctx, plot, colors);
     drawBars(ctx, plot, coveredBuckets, bucketWidth, barWidth, valueToY, colors);
-
-    drawTimeLabels(ctx, plot, buckets, bucketWidth, colors);
-    drawAxisTitle(ctx, plot, colors);
 
     if (!coveredBuckets.length) {
       drawMessage(ctx, width, height, colors, 'No data available for this period.');
@@ -228,7 +254,7 @@
   // Lifecycle
   // ---------------------------------------------------------------------
 
-  $: buckets, draw();
+  $: buckets, startUnixMs, endUnixMs, tickMinutes, draw();
 
   onMount(() => {
     const observer = new ResizeObserver(draw);
@@ -245,8 +271,10 @@
 
 <style>
   canvas {
+    flex: 1;
     width: 100%;
-    height: clamp(20rem, calc(100dvh - 10rem), 42rem);
+    height: auto;
+    min-height: 0;
     display: block;
   }
 </style>

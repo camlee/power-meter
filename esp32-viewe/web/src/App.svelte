@@ -48,14 +48,14 @@
   // The all-history bucket is selected by the firmware and learned from the
   // response. Yesterday is complete and therefore manual-refresh only.
   const historyRanges = [
-    { id: 'last1hour', label: 'Last 1 Hour', minutes: 2, refreshMs: 2 * 60_000 },
-    { id: 'last6hours', label: 'Last 6 Hours', minutes: 15, refreshMs: 15 * 60_000 },
-    { id: 'last24hours', label: 'Last 24 Hours', minutes: 30, refreshMs: 30 * 60_000 },
-    { id: 'today', label: 'Today', minutes: 30, refreshMs: 30 * 60_000 },
-    { id: 'yesterday', label: 'Yesterday', minutes: 30, refreshMs: null },
-    { id: 'last2days', label: 'Last 2 Days', minutes: 60, refreshMs: 60 * 60_000 },
-    { id: 'lastweek', label: 'Last Week', minutes: 240, refreshMs: 240 * 60_000 },
-    { id: 'all', label: 'All', minutes: 0, refreshMs: null },
+    { id: 'last1hour', label: 'Last 1 Hour', minutes: 2, tickMinutes: 15, refreshMs: 2 * 60_000 },
+    { id: 'last6hours', label: 'Last 6 Hours', minutes: 15, tickMinutes: 60, refreshMs: 15 * 60_000 },
+    { id: 'last24hours', label: 'Last 24 Hours', minutes: 30, tickMinutes: 180, refreshMs: 30 * 60_000 },
+    { id: 'today', label: 'Today', minutes: 30, tickMinutes: 180, refreshMs: 30 * 60_000 },
+    { id: 'yesterday', label: 'Yesterday', minutes: 30, tickMinutes: 180, refreshMs: null },
+    { id: 'last2days', label: 'Last 2 Days', minutes: 60, tickMinutes: 360, refreshMs: 60 * 60_000 },
+    { id: 'lastweek', label: 'Last Week', minutes: 240, tickMinutes: 1440, refreshMs: 240 * 60_000 },
+    { id: 'all', label: 'All', minutes: 0, tickMinutes: 0, refreshMs: null },
   ];
 
   // Route <-> path mapping. Declared here (not down in the "Routing"
@@ -955,7 +955,12 @@
       </p>
 
       {#if history}
-        <HistoryChart buckets={history.buckets} />
+        <HistoryChart
+          buckets={history.buckets}
+          startUnixMs={history.startUnixMs}
+          endUnixMs={history.endUnixMs}
+          tickMinutes={historyRange.tickMinutes}
+        />
         {#if history.flags & 1}
           <p class="note">Some intervals have incomplete coverage.</p>
         {/if}
@@ -1021,13 +1026,14 @@
   :global(html),
   :global(body),
   :global(#app) {
-    min-width: 100%;
-    min-height: 100%;
+    width: 100%;
+    height: 100%;
     background-color: var(--background);
   }
 
   :global(body) {
     margin: 0;
+    overflow: hidden;
     color: var(--text);
     font: 16px/1.4 system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
   }
@@ -1041,9 +1047,14 @@
   main {
     width: 100%;
     max-width: 80rem;
-    min-height: 100dvh;
+    height: 100vh;
+    height: 100dvh;
+    min-height: 0;
     margin: auto;
     padding: 0.5rem 0.75rem;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
   }
 
   h1, p {
@@ -1179,13 +1190,17 @@
   .setup-view,
   .sensors-view,
   .table-view {
+    flex: 1;
+    min-height: 0;
     margin-top: 0.55rem;
+    overflow-y: auto;
   }
 
-  .live-view {
-    min-height: calc(100dvh - 6.4rem);
+  .live-view,
+  .history-view {
     display: flex;
     flex-direction: column;
+    overflow: hidden;
   }
 
   .chart-legend {
@@ -1270,7 +1285,7 @@
   .remote-view {
     position: relative;
     display: flex;
-    min-height: calc(100dvh - 6.4rem);
+    overflow: hidden;
     align-items: center;
     justify-content: center;
   }
@@ -1531,11 +1546,6 @@
       margin-right: -0.5rem;
       padding-left: 0.5rem;
       padding-right: 0.5rem;
-    }
-
-    .live-view,
-    .remote-view {
-      min-height: calc(100dvh - 6.1rem);
     }
 
     .remote {

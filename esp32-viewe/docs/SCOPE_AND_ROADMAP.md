@@ -77,6 +77,32 @@ successfully. Candidate History V1, live and historical browser views, Wi-Fi/AP 
 browser/NTP time anchors, local calibration, signed OTA, diagnostics, and
 remote display control are in place.
 
+### Roadmap checkpoint — 2026-07-15
+
+The branch is feature-rich enough for the current proof of concept. The main
+remaining risk is no longer a missing product surface; it is unverified behavior
+in the two foundational data paths.
+
+Local release gates currently pass: the ESP32 PlatformIO build, embedded web
+asset build/verification, deterministic Demo-profile check, OTA crypto test,
+and both UART protocol/parser native suites. Those native suites cover only the
+UART wire contract (8 test cases total). There is not yet an automated sensor
+state-transition suite or a deterministic History V1 format/recovery/query
+harness.
+
+**Highest-value next implementation:** create the deterministic History V1 host
+test harness described in `HISTORY_TEST_PLAN.md`, starting with strict filename
+parsing, torn/stale `.open` recovery, exact 240-row rotation, tenant-local
+retention, and known-energy query totals. This reduces the largest data-loss and
+false-accounting risk and gives safe regression coverage before more UI or web
+backlog work. Keep the harness independent of production LittleFS data and make
+the storage/query logic testable rather than duplicating it in tests.
+
+After that first history slice, persist per-source local channel-enable masks
+and add the focused startup/partial/invalid/stale/recovery tests. Then complete
+the accelerated, interruption, and real-duration history checks; physical UART
+and ADC accuracy remain the later on-site milestone.
+
 ## Active software milestones
 
 ### A. Production sensor data contract
