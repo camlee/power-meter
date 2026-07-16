@@ -27,18 +27,28 @@ lv_obj_t* activeIpLabel = nullptr;
 lv_obj_t* scanLabel = nullptr;
 lv_obj_t* scanBtn = nullptr;
 lv_obj_t* scanBtnLabel = nullptr;
+lv_obj_t* savedBtn = nullptr;
 lv_obj_t* networkList = nullptr;
 lv_timer_t* pollTimer = nullptr;
 
 lv_obj_t* pwdOverlay = nullptr;
 lv_obj_t* pwdTextarea = nullptr;
+lv_obj_t* savedOverlay = nullptr;
+lv_obj_t* savedList = nullptr;
+lv_obj_t* forgetConfirm = nullptr;
 
 char pendingSsid[33] = "";
+char pendingForgetSsid[33] = "";
 NetworkState lastState = NetworkState::Disconnected;
+uint32_t lastScanGeneration = 0;
 
 struct NetworkInfo {
     char ssid[33];
     bool secured;
+};
+
+struct SavedNetworkInfo {
+    char ssid[33];
 };
 
 // ---- Access point mode ----
@@ -99,30 +109,60 @@ void updateListConnectionIcons() {
 
 void refreshConnectionLabel() {
     NetworkState st = network_manager::getState();
+    ConnectionPhase phase = network_manager::getConnectionPhase();
+    ConnectionFailure failure = network_manager::getConnectionFailure();
+    const char* ssid = network_manager::getCurrentSsid();
 
-    // Manage prominent active connection panel visibility
-    if (st == NetworkState::Disconnected || st == NetworkState::Scanning) {
+    if (st == NetworkState::Disconnected &&
+        (ssid[0] == '\0' || phase == ConnectionPhase::Idle)) {
         lv_obj_add_flag(activeConnPanel, LV_OBJ_FLAG_HIDDEN);
         return;
     }
 
     lv_obj_clear_flag(activeConnPanel, LV_OBJ_FLAG_HIDDEN);
 
-    if (st == NetworkState::ConnectingSta) {
-        lv_label_set_text_fmt(activeSsidLabel, "Connecting to %s...", network_manager::getCurrentSsid());
-        lv_label_set_text(activeStatusLabel, "Authenticating...");
+    lv_label_set_text(activeSsidLabel, ssid);
+    const ScanState scan = network_manager::getScanState();
+    if (st == NetworkState::Disconnected &&
+        (scan == ScanState::Starting || scan == ScanState::Running)) {
+        lv_label_set_text(activeStatusLabel, "Retry paused for scan");
+        lv_label_set_text(activeRssiLabel, "");
+        lv_label_set_text(activeIpLabel, "");
+        return;
+    }
+    if (st == NetworkState::ConnectingSta ||
+        phase == ConnectionPhase::LookingForNetwork) {
+        lv_label_set_text(activeStatusLabel,
+                          phase == ConnectionPhase::ObtainingIp
+                              ? "Obtaining IP address..."
+                              : "Looking for network...");
         lv_label_set_text(activeRssiLabel, "");
         lv_label_set_text(activeIpLabel, "");
     } else if (st == NetworkState::ConnectedStaLocal) {
-        lv_label_set_text(activeSsidLabel, network_manager::getCurrentSsid());
         lv_label_set_text(activeStatusLabel, LV_SYMBOL_WARNING " No Internet");
         lv_label_set_text_fmt(activeRssiLabel, "%d dBm", network_manager::getRssi());
         lv_label_set_text_fmt(activeIpLabel, "IP: %s", network_manager::getStaIpAddress());
     } else if (st == NetworkState::ConnectedStaInternet) {
-        lv_label_set_text(activeSsidLabel, network_manager::getCurrentSsid());
         lv_label_set_text(activeStatusLabel, LV_SYMBOL_OK " Internet Connected");
         lv_label_set_text_fmt(activeRssiLabel, "%d dBm", network_manager::getRssi());
         lv_label_set_text_fmt(activeIpLabel, "IP: %s", network_manager::getStaIpAddress());
+    } else if (phase == ConnectionPhase::RetryWaiting) {
+        const uint32_t seconds = network_manager::getReconnectSecondsRemaining();
+        const char* reason = "Connection failed";
+        if (failure == ConnectionFailure::NetworkNotFound) reason = "Not nearby";
+        else if (failure == ConnectionFailure::LinkLost) reason = "Connection lost";
+        else if (failure == ConnectionFailure::TimedOut) reason = "Connection timed out";
+        lv_label_set_text_fmt(activeStatusLabel, "%s - retry in %lus",
+                              reason, static_cast<unsigned long>(seconds));
+        lv_label_set_text(activeRssiLabel, "");
+        lv_label_set_text(activeIpLabel, "");
+    } else if (phase == ConnectionPhase::ActionRequired) {
+        lv_label_set_text(activeStatusLabel,
+                          failure == ConnectionFailure::AuthenticationFailed
+                              ? "Authentication failed"
+                              : "Network security changed");
+        lv_label_set_text(activeRssiLabel, "");
+        lv_label_set_text(activeIpLabel, "");
     }
 }
 
@@ -130,9 +170,11 @@ void setScanBusy(bool busy) {
     if (!scanBtn || !scanBtnLabel) return;
     if (busy) {
         lv_obj_add_state(scanBtn, LV_STATE_DISABLED);
+        if (savedBtn) lv_obj_add_state(savedBtn, LV_STATE_DISABLED);
         lv_label_set_text(scanBtnLabel, "Scanning...");
     } else {
         lv_obj_clear_state(scanBtn, LV_STATE_DISABLED);
+        if (savedBtn) lv_obj_clear_state(savedBtn, LV_STATE_DISABLED);
         lv_label_set_text(scanBtnLabel, hasScanned ? LV_SYMBOL_REFRESH " Rescan" : LV_SYMBOL_REFRESH " Scan");
     }
 }
@@ -219,6 +261,153 @@ void showPasswordPrompt(const char* ssid) {
     lv_obj_add_event_cb(keyboard, pwdKeyboardEventCb, LV_EVENT_ALL, nullptr);
 }
 
+void closeSavedOverlay() {
+    if (forgetConfirm) {
+        lv_obj_del(forgetConfirm);
+        forgetConfirm = nullptr;
+    }
+    if (savedOverlay) {
+        lv_obj_del(savedOverlay);
+        savedOverlay = nullptr;
+        savedList = nullptr;
+    }
+}
+
+void savedInfoDeleteCb(lv_event_t* event) {
+    void* info = lv_obj_get_user_data(lv_event_get_target(event));
+    if (info) free(info);
+}
+
+void rebuildSavedList();
+
+void savedConnectCb(lv_event_t* event) {
+    auto* info = static_cast<SavedNetworkInfo*>(lv_event_get_user_data(event));
+    if (!info) return;
+    if (network_manager::connectSavedNetwork(info->ssid)) {
+        closeSavedOverlay();
+        refreshConnectionLabel();
+    }
+}
+
+void forgetConfirmCb(lv_event_t* event) {
+    const char* action = lv_msgbox_get_active_btn_text(lv_event_get_current_target(event));
+    if (!action) return;
+    if (strcmp(action, "Forget") == 0) {
+        network_manager::forgetSavedNetwork(pendingForgetSsid);
+        rebuildSavedList();
+        refreshConnectionLabel();
+        updateListConnectionIcons();
+        updateTabLabels();
+    }
+    lv_obj_t* messageBox = lv_event_get_current_target(event);
+    forgetConfirm = nullptr;
+    lv_msgbox_close_async(messageBox);
+}
+
+void savedForgetCb(lv_event_t* event) {
+    auto* info = static_cast<SavedNetworkInfo*>(lv_event_get_user_data(event));
+    if (!info || forgetConfirm) return;
+    strncpy(pendingForgetSsid, info->ssid, sizeof(pendingForgetSsid) - 1);
+    pendingForgetSsid[sizeof(pendingForgetSsid) - 1] = '\0';
+    static const char* buttons[] = {"Forget", "Cancel", ""};
+    forgetConfirm = lv_msgbox_create(lv_layer_top(), "Forget network?",
+                                     pendingForgetSsid, buttons, false);
+    lv_obj_set_width(forgetConfirm, lv_pct(88));
+    lv_obj_add_event_cb(forgetConfirm, forgetConfirmCb,
+                        LV_EVENT_VALUE_CHANGED, nullptr);
+    lv_obj_center(forgetConfirm);
+}
+
+void rebuildSavedList() {
+    if (!savedList) return;
+    lv_obj_clean(savedList);
+    const int count = network_manager::getSavedNetworkCount();
+    if (count <= 0) {
+        lv_label_set_text(lv_label_create(savedList), "No saved networks");
+        return;
+    }
+
+    for (int i = 0; i < count; ++i) {
+        char ssid[33];
+        if (!network_manager::getSavedNetwork(i, ssid, sizeof(ssid))) continue;
+
+        auto* info = static_cast<SavedNetworkInfo*>(malloc(sizeof(SavedNetworkInfo)));
+        if (!info) continue;
+        strncpy(info->ssid, ssid, sizeof(info->ssid) - 1);
+        info->ssid[sizeof(info->ssid) - 1] = '\0';
+
+        lv_obj_t* row = lv_obj_create(savedList);
+        lv_obj_remove_style_all(row);
+        lv_obj_set_size(row, lv_pct(100), 44);
+        lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_style_pad_column(row, 4, 0);
+        lv_obj_set_user_data(row, info);
+        lv_obj_add_event_cb(row, savedInfoDeleteCb, LV_EVENT_DELETE, nullptr);
+
+        lv_obj_t* connectButton = lv_btn_create(row);
+        lv_obj_set_height(connectButton, 40);
+        lv_obj_set_flex_grow(connectButton, 1);
+        lv_obj_add_event_cb(connectButton, savedConnectCb,
+                            LV_EVENT_CLICKED, info);
+        lv_obj_t* label = lv_label_create(connectButton);
+        lv_label_set_text(label, ssid);
+        lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+        lv_obj_set_width(label, lv_pct(100));
+        lv_obj_center(label);
+
+        lv_obj_t* forgetButton = lv_btn_create(row);
+        lv_obj_set_size(forgetButton, 42, 40);
+        lv_obj_add_event_cb(forgetButton, savedForgetCb,
+                            LV_EVENT_CLICKED, info);
+        lv_obj_t* forgetLabel = lv_label_create(forgetButton);
+        lv_label_set_text(forgetLabel, LV_SYMBOL_TRASH);
+        lv_obj_center(forgetLabel);
+    }
+}
+
+void savedCloseCb(lv_event_t*) { closeSavedOverlay(); }
+
+void showSavedOverlay(lv_event_t*) {
+    if (savedOverlay) return;
+    savedOverlay = lv_obj_create(lv_layer_top());
+    lv_obj_remove_style_all(savedOverlay);
+    lv_obj_set_size(savedOverlay, lv_pct(100), lv_pct(100));
+    lv_obj_set_style_bg_color(savedOverlay, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(savedOverlay, LV_OPA_70, 0);
+    lv_obj_set_flex_flow(savedOverlay, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(savedOverlay, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* panel = lv_obj_create(savedOverlay);
+    ui_theme::styleCard(panel, 8);
+    lv_obj_set_size(panel, lv_pct(92), lv_pct(84));
+    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(panel, 6, 0);
+
+    lv_obj_t* titleRow = lv_obj_create(panel);
+    lv_obj_remove_style_all(titleRow);
+    lv_obj_set_size(titleRow, lv_pct(100), 36);
+    lv_obj_set_flex_flow(titleRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(titleRow, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* title = lv_label_create(titleRow);
+    lv_label_set_text(title, "Saved networks");
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
+    lv_obj_t* closeButton = lv_btn_create(titleRow);
+    lv_obj_set_size(closeButton, 38, 34);
+    lv_obj_add_event_cb(closeButton, savedCloseCb, LV_EVENT_CLICKED, nullptr);
+    lv_label_set_text(lv_label_create(closeButton), LV_SYMBOL_CLOSE);
+
+    savedList = lv_obj_create(panel);
+    lv_obj_set_width(savedList, lv_pct(100));
+    lv_obj_set_height(savedList, 0);
+    lv_obj_set_flex_grow(savedList, 1);
+    lv_obj_set_flex_flow(savedList, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_all(savedList, 2, 0);
+    lv_obj_set_style_pad_row(savedList, 2, 0);
+    rebuildSavedList();
+}
+
 void rowDeleteCb(lv_event_t* e) {
     void* info = lv_obj_get_user_data((lv_obj_t*)lv_event_get_target(e));
     if (info) free(info);
@@ -274,28 +463,43 @@ void rebuildListFromScan() {
 }
 
 void scanEventCb(lv_event_t*) {
+    if (!network_manager::scanNetworks()) {
+        lv_label_set_text(scanLabel, "Could not start scan.");
+        setScanBusy(false);
+        return;
+    }
     lv_obj_clean(networkList);
     lv_list_add_text(networkList, "Scanning...");
     setScanBusy(true);
-    lv_label_set_text(scanLabel, "Scanning for WiFi networks...");
-    network_manager::scanNetworks();
+    lv_label_set_text(scanLabel, "Scanning for networks...");
 }
 
 void pollCb(lv_timer_t* timer) {
     if (timer && timer->user_data && !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
     NetworkState currentState = network_manager::getState();
+    const ScanState currentScanState = network_manager::getScanState();
+    const uint32_t scanGeneration = network_manager::getScanGeneration();
+
+    setScanBusy(currentScanState == ScanState::Starting ||
+                currentScanState == ScanState::Running);
+    if (scanGeneration != lastScanGeneration) {
+        lastScanGeneration = scanGeneration;
+        if (currentScanState == ScanState::Succeeded) {
+            rebuildListFromScan();
+        } else if (currentScanState == ScanState::Failed) {
+            lv_obj_clean(networkList);
+            lv_list_add_text(networkList, "Scan failed");
+            lv_label_set_text(scanLabel, "Scan failed. Try again.");
+            setScanBusy(false);
+        }
+    }
 
     if (currentState != lastState) {
-        if (lastState == NetworkState::Scanning) {
-            rebuildListFromScan();
-        }
         lastState = currentState;
-        refreshConnectionLabel();
         updateListConnectionIcons();
         updateTabLabels();
-    } else if (currentState == NetworkState::ConnectedStaLocal || currentState == NetworkState::ConnectedStaInternet) {
-        refreshConnectionLabel();
     }
+    refreshConnectionLabel();
 }
 
 // ============================================================
@@ -451,8 +655,12 @@ lv_obj_t* create(lv_obj_t* parent) {
 
     activeSsidLabel = lv_label_create(activeConnPanel);
     lv_obj_set_style_text_font(activeSsidLabel, &lv_font_montserrat_18, 0); // Larger font if available
+    lv_obj_set_width(activeSsidLabel, lv_pct(100));
+    lv_label_set_long_mode(activeSsidLabel, LV_LABEL_LONG_DOT);
 
     activeStatusLabel = lv_label_create(activeConnPanel);
+    lv_obj_set_width(activeStatusLabel, lv_pct(100));
+    lv_label_set_long_mode(activeStatusLabel, LV_LABEL_LONG_WRAP);
     lv_obj_t* activeDetailsRow = lv_obj_create(activeConnPanel);
     lv_obj_remove_style_all(activeDetailsRow);
     lv_obj_set_size(activeDetailsRow, lv_pct(100), LV_SIZE_CONTENT);
@@ -480,14 +688,27 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_pad_row(networkList, 0, 0);
     lv_list_add_text(networkList, "No networks yet");
 
-    // 4. Scan Button (Moved to bottom)
-    scanBtn = lv_btn_create(clientPanel);
-    lv_obj_set_width(scanBtn, lv_pct(100));
+    // 4. Station actions
+    lv_obj_t* stationActions = lv_obj_create(clientPanel);
+    lv_obj_remove_style_all(stationActions);
+    lv_obj_set_size(stationActions, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(stationActions, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(stationActions, 4, 0);
+
+    scanBtn = lv_btn_create(stationActions);
+    lv_obj_set_flex_grow(scanBtn, 1);
     lv_obj_add_event_cb(scanBtn, scanEventCb, LV_EVENT_CLICKED, nullptr);
     ui_theme::stylePrimaryButton(scanBtn);
     scanBtnLabel = lv_label_create(scanBtn);
     lv_label_set_text(scanBtnLabel, LV_SYMBOL_REFRESH " Scan");
     lv_obj_center(scanBtnLabel);
+
+    savedBtn = lv_btn_create(stationActions);
+    lv_obj_set_flex_grow(savedBtn, 1);
+    lv_obj_add_event_cb(savedBtn, showSavedOverlay, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* savedLabel = lv_label_create(savedBtn);
+    lv_label_set_text(savedLabel, LV_SYMBOL_LIST " Saved");
+    lv_obj_center(savedLabel);
 
 
     // ---- Access point panel ----
@@ -580,6 +801,10 @@ lv_obj_t* create(lv_obj_t* parent) {
     }
     lv_tabview_set_act(modeTabview, 0, LV_ANIM_OFF);
     updateTabLabels();
+
+    lastState = network_manager::getState();
+    lastScanGeneration = network_manager::getScanGeneration();
+    refreshConnectionLabel();
 
     pollTimer = lv_timer_create(pollCb, kPollIntervalMs, scr);
     apPollTimer = lv_timer_create(apPollCb, kApPollIntervalMs, scr);

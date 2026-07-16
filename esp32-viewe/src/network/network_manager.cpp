@@ -8,6 +8,7 @@
 #include <NetworkClient.h>
 #include <esp_sntp.h>
 #include <freertos/FreeRTOS.h>
+#include <freertos/queue.h>
 #include <freertos/task.h>
 #include <time.h>
 #include "device/device_identity.h"
@@ -18,6 +19,8 @@ namespace network_manager {
 namespace {
 
 NetworkState currentState = NetworkState::Disconnected;
+ConnectionPhase connectionPhase = ConnectionPhase::Idle;
+ConnectionFailure connectionFailure = ConnectionFailure::None;
 uint32_t connectStartTime = 0;
 char targetSsid[33] = {0};
 char lastPassword[64] = {0};
@@ -25,33 +28,67 @@ bool apRunning = false; // Add this discrete AP state flag
 bool mdnsRunning = false;
 uint32_t nextReconnectAt = 0;
 uint32_t reconnectDelayMs = 1000;
+bool retryEnabled = false;
+bool connectionStartPending = false;
+uint32_t connectionStartNotBefore = 0;
+
+enum class ExpectedDisconnect {
+    None,
+    Reconfigure,
+    Scan,
+    FailureCleanup,
+    Manual,
+};
+
+ExpectedDisconnect expectedDisconnect = ExpectedDisconnect::None;
+
+// Scan state is independent of station connection state so a connected
+// station can remain online while the radio surveys nearby networks.
+int scanCount = 0;
+ScanState scanState = ScanState::Idle;
+uint32_t scanGeneration = 0;
+uint32_t scanStartDeadline = 0;
+uint32_t nextScanStartAttempt = 0;
+bool resumeRetryAfterScan = false;
 
 // A concise, machine-readable serial line is the reliable recovery path when
 // mDNS is unavailable. Only emit it when an address or state changes: this is
 // useful in a monitor log without turning normal operation into log spam.
 uint32_t reportedStaIp = UINT32_MAX;
 uint32_t reportedApIp = UINT32_MAX;
-NetworkState reportedState = NetworkState::Scanning;
+NetworkState reportedState = static_cast<NetworkState>(0xff);
+ConnectionPhase reportedPhase = static_cast<ConnectionPhase>(0xff);
+ConnectionFailure reportedFailure = static_cast<ConnectionFailure>(0xff);
+ScanState reportedScanState = static_cast<ScanState>(0xff);
 
 void reportWebAddressesIfChanged() {
     const IPAddress staIp = WiFi.localIP();
     const IPAddress apIp = WiFi.softAPIP();
     const uint32_t staRaw = static_cast<uint32_t>(staIp);
     const uint32_t apRaw = static_cast<uint32_t>(apIp);
-    if (reportedStaIp == staRaw && reportedApIp == apRaw && reportedState == currentState) return;
+    if (reportedStaIp == staRaw && reportedApIp == apRaw &&
+        reportedState == currentState && reportedPhase == connectionPhase &&
+        reportedFailure == connectionFailure && reportedScanState == scanState) return;
     reportedStaIp = staRaw;
     reportedApIp = apRaw;
     reportedState = currentState;
+    reportedPhase = connectionPhase;
+    reportedFailure = connectionFailure;
+    reportedScanState = scanState;
 
     const String staText = staIp.toString();
     const String apText = apIp.toString();
     const char* host = device_identity::getHostname();
     // ESP_LOG is visible through this board's USB JTAG serial device; Serial
     // keeps the same information available on the conventional framework UART.
-    ESP_LOGI("network", "VIEWE_NETWORK state=%u station=%s ap=%s host=%s.local",
-             static_cast<unsigned>(currentState), staText.c_str(), apText.c_str(), host);
-    Serial.printf("VIEWE_NETWORK state=%u station=%s ap=%s host=%s.local\\n",
-                  static_cast<unsigned>(currentState), staText.c_str(), apText.c_str(), host);
+    ESP_LOGI("network", "VIEWE_NETWORK state=%u phase=%u failure=%u scan=%u station=%s ap=%s host=%s.local",
+             static_cast<unsigned>(currentState), static_cast<unsigned>(connectionPhase),
+             static_cast<unsigned>(connectionFailure), static_cast<unsigned>(scanState),
+             staText.c_str(), apText.c_str(), host);
+    Serial.printf("VIEWE_NETWORK state=%u phase=%u failure=%u scan=%u station=%s ap=%s host=%s.local\\n",
+                  static_cast<unsigned>(currentState), static_cast<unsigned>(connectionPhase),
+                  static_cast<unsigned>(connectionFailure), static_cast<unsigned>(scanState),
+                  staText.c_str(), apText.c_str(), host);
     if (staRaw) {
         ESP_LOGI("network", "VIEWE_WEB url=http://%s/ host=%s.local", staText.c_str(), host);
         Serial.printf("VIEWE_WEB url=http://%s/ host=%s.local\\n", staText.c_str(), host);
@@ -62,9 +99,14 @@ void reportWebAddressesIfChanged() {
     }
 }
 
-// Scan state
-int scanCount = 0;
-NetworkState stateBeforeScan = NetworkState::Disconnected;
+struct WifiEventRecord {
+    arduino_event_id_t id;
+    uint8_t disconnectReason;
+};
+
+StaticQueue_t wifiEventQueueStorage;
+uint8_t wifiEventQueueBuffer[8 * sizeof(WifiEventRecord)];
+QueueHandle_t wifiEventQueue = nullptr;
 
 // SNTP configuration
 constexpr char kNtpServer1[] = "pool.ntp.org";
@@ -85,6 +127,12 @@ uint8_t consecutiveInternetProbeFailures = 0;
 constexpr uint32_t kConnectTimeoutMs = 15000;
 constexpr int kMaxSavedNetworks = 8;
 constexpr uint32_t kReconnectMaxDelayMs = 60000;
+constexpr uint32_t kReconnectInitialDelayMs = 1000;
+constexpr uint32_t kPostScanRetryGraceMs = 3000;
+constexpr uint32_t kRadioSettleMs = 250;
+constexpr uint32_t kScanStartTimeoutMs = 2500;
+constexpr uint32_t kScanStartRetryMs = 200;
+constexpr uint32_t kScanMaxMsPerChannel = 200;
 
 // --- Persistence Helpers ---
 
@@ -147,6 +195,47 @@ bool loadLastNetwork(char* ssidOut, size_t ssidLen, char* passOut, size_t passLe
     return true;
 }
 
+bool removeSavedNetworkCredential(const char* ssid) {
+    if (!ssid || ssid[0] == '\0') return false;
+    Preferences prefs;
+    if (!prefs.begin("wifi_net", false)) return false;
+
+    const uint8_t count = min(prefs.getUChar("cnt", 0),
+                              static_cast<uint8_t>(kMaxSavedNetworks));
+    const int slot = findSavedNetworkSlot(prefs, count, ssid);
+    if (slot < 0) {
+        prefs.end();
+        return false;
+    }
+
+    const uint8_t oldLast = prefs.getUChar("last", kMaxSavedNetworks);
+    for (uint8_t i = static_cast<uint8_t>(slot); i + 1 < count; ++i) {
+        char ssidKey[4], passKey[4], nextSsidKey[4], nextPassKey[4];
+        snprintf(ssidKey, sizeof(ssidKey), "s%u", i);
+        snprintf(passKey, sizeof(passKey), "p%u", i);
+        snprintf(nextSsidKey, sizeof(nextSsidKey), "s%u", i + 1);
+        snprintf(nextPassKey, sizeof(nextPassKey), "p%u", i + 1);
+        prefs.putString(ssidKey, prefs.getString(nextSsidKey, ""));
+        prefs.putString(passKey, prefs.getString(nextPassKey, ""));
+    }
+
+    char finalSsidKey[4], finalPassKey[4];
+    snprintf(finalSsidKey, sizeof(finalSsidKey), "s%u", count - 1);
+    snprintf(finalPassKey, sizeof(finalPassKey), "p%u", count - 1);
+    prefs.remove(finalSsidKey);
+    prefs.remove(finalPassKey);
+    prefs.putUChar("cnt", count - 1);
+    prefs.putUChar("next", 0);
+
+    if (oldLast == slot || count == 1) {
+        prefs.remove("last");
+    } else if (oldLast < count) {
+        prefs.putUChar("last", oldLast > slot ? oldLast - 1 : oldLast);
+    }
+    prefs.end();
+    return true;
+}
+
 void stopMdns() {
     if (mdnsRunning) {
         MDNS.end();
@@ -165,9 +254,32 @@ void ensureMdns() {
     mdnsRunning = true;
 }
 
-void scheduleReconnect() {
+bool timeReached(uint32_t deadline, uint32_t now = millis()) {
+    return deadline != 0 && static_cast<int32_t>(now - deadline) >= 0;
+}
+
+bool scanBusy() {
+    return scanState == ScanState::Starting || scanState == ScanState::Running;
+}
+
+void scheduleReconnect(ConnectionFailure failure, bool advanceBackoff = true) {
+    connectionFailure = failure;
+    connectionStartPending = false;
+    if (!retryEnabled || targetSsid[0] == '\0' ||
+        !connectionFailureShouldRetry(failure)) {
+        nextReconnectAt = 0;
+        connectionPhase = connectionFailureNeedsUserAction(failure)
+                              ? ConnectionPhase::ActionRequired
+                              : ConnectionPhase::Idle;
+        return;
+    }
+
     nextReconnectAt = millis() + reconnectDelayMs;
-    reconnectDelayMs = min(reconnectDelayMs * 2, kReconnectMaxDelayMs);
+    if (advanceBackoff) {
+        reconnectDelayMs = nextReconnectDelay(reconnectDelayMs,
+                                               kReconnectMaxDelayMs);
+    }
+    connectionPhase = ConnectionPhase::RetryWaiting;
 }
 
 void saveApSettings(const char* ssid, bool secure, const char* password, bool enabled) {
@@ -240,7 +352,7 @@ void internetProbeTask(void*) {
 }
 
 void scheduleInternetProbe(bool immediate = false) {
-    if (internetProbeInFlight || WiFi.status() != WL_CONNECTED) return;
+    if (internetProbeInFlight || scanBusy() || WiFi.status() != WL_CONNECTED) return;
     const uint32_t now = millis();
     if (!immediate && now - lastInternetProbeMs < kInternetProbeIntervalMs) return;
     internetProbeResult = -1;
@@ -274,6 +386,7 @@ void applyInternetEvidence() {
     const bool reachable = internetProbeResult == 1;
     internetProbeResult = -1;
     internetProbeInFlight = false;
+    if (scanBusy()) return;
     if (canUpdateConnectedState && WiFi.status() == WL_CONNECTED) {
         if (reachable) {
             consecutiveInternetProbeFailures = 0;
@@ -284,14 +397,204 @@ void applyInternetEvidence() {
     }
 }
 
+void wifiEventCb(arduino_event_id_t event, arduino_event_info_t info) {
+    if (!wifiEventQueue) return;
+    if (event != ARDUINO_EVENT_WIFI_STA_CONNECTED &&
+        event != ARDUINO_EVENT_WIFI_STA_DISCONNECTED &&
+        event != ARDUINO_EVENT_WIFI_STA_GOT_IP &&
+        event != ARDUINO_EVENT_WIFI_STA_LOST_IP) return;
+
+    WifiEventRecord record{event, 0};
+    if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+        record.disconnectReason = info.wifi_sta_disconnected.reason;
+    }
+    xQueueSend(wifiEventQueue, &record, 0);
+}
+
+ConnectionFailure classifyDisconnect(uint8_t reason, bool wasConnected) {
+    if (wasConnected) return ConnectionFailure::LinkLost;
+    switch (reason) {
+        case WIFI_REASON_NO_AP_FOUND:
+        case WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD:
+            return ConnectionFailure::NetworkNotFound;
+        case WIFI_REASON_AUTH_FAIL:
+        case WIFI_REASON_802_1X_AUTH_FAILED:
+            return ConnectionFailure::AuthenticationFailed;
+        case WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY:
+        case WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD:
+        case WIFI_REASON_GROUP_CIPHER_INVALID:
+        case WIFI_REASON_PAIRWISE_CIPHER_INVALID:
+        case WIFI_REASON_AKMP_INVALID:
+        case WIFI_REASON_CIPHER_SUITE_REJECTED:
+        case WIFI_REASON_BAD_CIPHER_OR_AKM:
+            return ConnectionFailure::IncompatibleSecurity;
+        default:
+            return ConnectionFailure::ConnectionFailed;
+    }
+}
+
+void configureNetworkTime() {
+    if (ntpConfigured) return;
+    sntp_set_time_sync_notification_cb(ntpSyncCb);
+    configTime(static_cast<long>(time_service::utcOffsetMinutes()) * 60L,
+               0, kNtpServer1, kNtpServer2);
+    ntpConfigured = true;
+}
+
+void markStationConnected() {
+    if (WiFi.status() != WL_CONNECTED) return;
+    currentState = NetworkState::ConnectedStaLocal;
+    connectionPhase = ConnectionPhase::Idle;
+    connectionFailure = ConnectionFailure::None;
+    expectedDisconnect = ExpectedDisconnect::None;
+    connectionStartPending = false;
+    nextReconnectAt = 0;
+    reconnectDelayMs = kReconnectInitialDelayMs;
+    retryEnabled = targetSsid[0] != '\0';
+    saveNetworkCredential(targetSsid, lastPassword);
+    configureNetworkTime();
+    ensureMdns();
+    scheduleInternetProbe(true);
+    device_state::changed(device_state::Domain::Network);
+}
+
+bool startConnectionAttempt() {
+    connectionStartPending = false;
+    if (!retryEnabled || targetSsid[0] == '\0' || scanBusy()) return false;
+
+    expectedDisconnect = ExpectedDisconnect::None;
+    WiFi.mode(apRunning ? WIFI_AP_STA : WIFI_STA);
+    const wl_status_t result = lastPassword[0] != '\0'
+                                   ? WiFi.begin(targetSsid, lastPassword)
+                                   : WiFi.begin(targetSsid);
+    if (result == WL_CONNECT_FAILED) {
+        currentState = NetworkState::Disconnected;
+        expectedDisconnect = ExpectedDisconnect::FailureCleanup;
+        WiFi.disconnect(false, false);
+        scheduleReconnect(ConnectionFailure::ConnectionFailed);
+        device_state::changed(device_state::Domain::Network);
+        return false;
+    }
+
+    connectStartTime = millis();
+    nextReconnectAt = 0;
+    currentState = NetworkState::ConnectingSta;
+    connectionPhase = ConnectionPhase::LookingForNetwork;
+    connectionFailure = ConnectionFailure::None;
+    device_state::changed(device_state::Domain::Network);
+    if (WiFi.status() == WL_CONNECTED) markStationConnected();
+    return true;
+}
+
+void finishScan(ScanState finalState, int resultCount = 0) {
+    scanCount = finalState == ScanState::Succeeded ? max(resultCount, 0) : 0;
+    scanState = finalState;
+    ++scanGeneration;
+
+    if (resumeRetryAfterScan && retryEnabled && targetSsid[0] != '\0' &&
+        currentState == NetworkState::Disconnected &&
+        connectionPhase != ConnectionPhase::ActionRequired) {
+        const uint32_t now = millis();
+        const uint32_t graceDeadline = now + kPostScanRetryGraceMs;
+        if (nextReconnectAt == 0 ||
+            static_cast<int32_t>(nextReconnectAt - graceDeadline) < 0) {
+            nextReconnectAt = graceDeadline;
+        }
+        connectionPhase = ConnectionPhase::RetryWaiting;
+    }
+    resumeRetryAfterScan = false;
+}
+
+void updateScanOperation() {
+    const uint32_t now = millis();
+    if (scanState == ScanState::Starting && timeReached(nextScanStartAttempt, now)) {
+        const int result = WiFi.scanNetworks(true, false, false,
+                                             kScanMaxMsPerChannel);
+        if (result == WIFI_SCAN_RUNNING) {
+            scanState = ScanState::Running;
+        } else if (result >= 0) {
+            finishScan(ScanState::Succeeded, result);
+        } else if (timeReached(scanStartDeadline, now)) {
+            finishScan(ScanState::Failed);
+        } else {
+            nextScanStartAttempt = now + kScanStartRetryMs;
+        }
+    }
+
+    if (scanState == ScanState::Running) {
+        const int result = WiFi.scanComplete();
+        if (result == WIFI_SCAN_RUNNING) return;
+        finishScan(result >= 0 ? ScanState::Succeeded : ScanState::Failed,
+                   result);
+    }
+}
+
+void handleDisconnectedEvent(uint8_t reason) {
+    const ExpectedDisconnect expected = expectedDisconnect;
+    if (expected != ExpectedDisconnect::None || reason == WIFI_REASON_ASSOC_LEAVE) {
+        if (expected == ExpectedDisconnect::Reconfigure) {
+            connectionStartPending = true;
+            connectionStartNotBefore = millis() + kRadioSettleMs;
+        }
+        return;
+    }
+
+    if (currentState == NetworkState::Disconnected &&
+        (connectionPhase == ConnectionPhase::RetryWaiting ||
+         connectionPhase == ConnectionPhase::ActionRequired)) return;
+
+    const bool wasConnected = currentState == NetworkState::ConnectedStaLocal ||
+                              currentState == NetworkState::ConnectedStaInternet;
+    currentState = NetworkState::Disconnected;
+    stopMdns();
+    const ConnectionFailure failure = classifyDisconnect(reason, wasConnected);
+    expectedDisconnect = ExpectedDisconnect::FailureCleanup;
+    WiFi.disconnect(false, false);
+    scheduleReconnect(failure);
+    device_state::changed(device_state::Domain::Network);
+}
+
+void processWifiEvents() {
+    if (!wifiEventQueue) return;
+    WifiEventRecord record{};
+    while (xQueueReceive(wifiEventQueue, &record, 0) == pdTRUE) {
+        switch (record.id) {
+            case ARDUINO_EVENT_WIFI_STA_CONNECTED:
+                if (expectedDisconnect != ExpectedDisconnect::None) break;
+                if (currentState == NetworkState::ConnectingSta) {
+                    connectionPhase = ConnectionPhase::ObtainingIp;
+                }
+                break;
+            case ARDUINO_EVENT_WIFI_STA_GOT_IP:
+                if (expectedDisconnect != ExpectedDisconnect::None) break;
+                markStationConnected();
+                break;
+            case ARDUINO_EVENT_WIFI_STA_DISCONNECTED:
+                handleDisconnectedEvent(record.disconnectReason);
+                break;
+            case ARDUINO_EVENT_WIFI_STA_LOST_IP:
+                if (currentState == NetworkState::ConnectedStaInternet) {
+                    currentState = NetworkState::ConnectedStaLocal;
+                }
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 } // namespace
 
 void init() {
     device_identity::init();
     time_service::init();
+    wifiEventQueue = xQueueCreateStatic(8, sizeof(WifiEventRecord),
+                                        wifiEventQueueBuffer,
+                                        &wifiEventQueueStorage);
+    WiFi.onEvent(wifiEventCb);
+    WiFi.setAutoReconnect(false);
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(device_identity::getHostname());
-    WiFi.disconnect(false);
     char apSsid[33], apPassword[64];
     bool apSecure = true, apEnabled = false;
     if (loadApSettings(apSsid, sizeof(apSsid), apSecure, apPassword, sizeof(apPassword), apEnabled) && apEnabled) {
@@ -309,38 +612,25 @@ void init() {
 }
 
 void update() {
+    processWifiEvents();
     applyInternetEvidence();
+    updateScanOperation();
+
+    if (connectionStartPending && !scanBusy() &&
+        timeReached(connectionStartNotBefore)) {
+        startConnectionAttempt();
+    }
+
     switch (currentState) {
-        case NetworkState::Scanning: {
-            int n = WiFi.scanComplete();
-            if (n != WIFI_SCAN_RUNNING) {
-                scanCount = (n < 0) ? 0 : n;
-                currentState = WiFi.status() == WL_CONNECTED ? stateBeforeScan : NetworkState::Disconnected;
-                if (currentState == NetworkState::Disconnected && targetSsid[0] != '\0') {
-                    scheduleReconnect();
-                }
-            }
-            break;
-        }
         case NetworkState::ConnectingSta: {
             if (WiFi.status() == WL_CONNECTED) {
-                currentState = NetworkState::ConnectedStaLocal;
-
-                saveNetworkCredential(targetSsid, lastPassword);
-
-                if (!ntpConfigured) {
-                    sntp_set_time_sync_notification_cb(ntpSyncCb);
-                    configTime(static_cast<long>(time_service::utcOffsetMinutes()) * 60L,
-                               0, kNtpServer1, kNtpServer2);
-                    ntpConfigured = true;
-                }
-                reconnectDelayMs = 1000;
-                ensureMdns();
-                scheduleInternetProbe(true);
+                markStationConnected();
             } else if (millis() - connectStartTime > kConnectTimeoutMs) {
-                WiFi.disconnect();
                 currentState = NetworkState::Disconnected;
-                scheduleReconnect();
+                expectedDisconnect = ExpectedDisconnect::FailureCleanup;
+                WiFi.disconnect(false, false);
+                scheduleReconnect(ConnectionFailure::TimedOut);
+                device_state::changed(device_state::Domain::Network);
             }
             break;
         }
@@ -348,27 +638,29 @@ void update() {
             if (WiFi.status() != WL_CONNECTED) {
                 currentState = NetworkState::Disconnected;
                 stopMdns();
-                scheduleReconnect();
+                scheduleReconnect(ConnectionFailure::LinkLost);
+                device_state::changed(device_state::Domain::Network);
                 break;
             }
-            scheduleInternetProbe();
+            if (!scanBusy()) scheduleInternetProbe();
             break;
         }
         case NetworkState::ConnectedStaInternet: {
             if (WiFi.status() != WL_CONNECTED) {
                 currentState = NetworkState::Disconnected;
                 stopMdns();
-                scheduleReconnect();
-            } else {
+                scheduleReconnect(ConnectionFailure::LinkLost);
+                device_state::changed(device_state::Domain::Network);
+            } else if (!scanBusy()) {
                 scheduleInternetProbe();
             }
             break;
         }
         case NetworkState::Disconnected:
             ensureMdns();
-            if (targetSsid[0] != '\0' && nextReconnectAt != 0 &&
-                static_cast<int32_t>(millis() - nextReconnectAt) >= 0) {
-                connectTo(targetSsid, lastPassword);
+            if (retryEnabled && !scanBusy() && !connectionStartPending &&
+                timeReached(nextReconnectAt)) {
+                startConnectionAttempt();
             }
             break;
         default:
@@ -377,31 +669,63 @@ void update() {
     reportWebAddressesIfChanged();
 }
 
-void connectTo(const char* ssid, const char* password) {
-    // REMOVED: if (currentState == NetworkState::ApRunning) stopAp();
-
-    // Ensure the radio mode supports our concurrent requirements
-    if (apRunning) {
-        WiFi.mode(WIFI_AP_STA);
-    } else {
-        WiFi.mode(WIFI_STA);
-    }
+bool connectTo(const char* ssid, const char* password) {
+    if (!ssid || ssid[0] == '\0' || scanBusy()) return false;
+    const bool alreadyConnected =
+        (currentState == NetworkState::ConnectedStaLocal ||
+         currentState == NetworkState::ConnectedStaInternet) &&
+        strcmp(targetSsid, ssid) == 0;
+    if (alreadyConnected) return true;
 
     strncpy(targetSsid, ssid, sizeof(targetSsid) - 1);
     targetSsid[sizeof(targetSsid) - 1] = '\0';
-
     if (password && password[0] != '\0') {
         strncpy(lastPassword, password, sizeof(lastPassword) - 1);
         lastPassword[sizeof(lastPassword) - 1] = '\0';
-        WiFi.begin(ssid, password);
     } else {
         lastPassword[0] = '\0';
-        WiFi.begin(ssid);
     }
 
-    connectStartTime = millis();
+    retryEnabled = true;
+    reconnectDelayMs = kReconnectInitialDelayMs;
     nextReconnectAt = 0;
-    currentState = NetworkState::ConnectingSta;
+    connectionFailure = ConnectionFailure::None;
+    connectionPhase = ConnectionPhase::LookingForNetwork;
+
+    if (currentState != NetworkState::Disconnected ||
+        WiFi.status() == WL_CONNECTED) {
+        currentState = NetworkState::Disconnected;
+        stopMdns();
+        expectedDisconnect = ExpectedDisconnect::Reconfigure;
+        connectionStartPending = true;
+        connectionStartNotBefore = millis() + kRadioSettleMs;
+        WiFi.disconnect(false, false);
+        device_state::changed(device_state::Domain::Network);
+        return true;
+    }
+    if (expectedDisconnect != ExpectedDisconnect::None) {
+        expectedDisconnect = ExpectedDisconnect::Reconfigure;
+        connectionStartPending = true;
+        connectionStartNotBefore = millis() + kRadioSettleMs;
+        device_state::changed(device_state::Domain::Network);
+        return true;
+    }
+    return startConnectionAttempt();
+}
+
+void disconnect() {
+    retryEnabled = false;
+    connectionStartPending = false;
+    nextReconnectAt = 0;
+    reconnectDelayMs = kReconnectInitialDelayMs;
+    targetSsid[0] = '\0';
+    lastPassword[0] = '\0';
+    connectionFailure = ConnectionFailure::None;
+    connectionPhase = ConnectionPhase::Idle;
+    currentState = NetworkState::Disconnected;
+    expectedDisconnect = ExpectedDisconnect::Manual;
+    WiFi.disconnect(false, false);
+    stopMdns();
     device_state::changed(device_state::Domain::Network);
 }
 
@@ -448,18 +772,42 @@ void restartMdns() {
     ensureMdns();
 }
 
-void scanNetworks() {
-    stateBeforeScan = currentState;
-    WiFi.scanNetworks(true); // async
-    currentState = NetworkState::Scanning;
+bool scanNetworks() {
+    if (scanBusy()) return false;
+
+    resumeRetryAfterScan = retryEnabled && targetSsid[0] != '\0';
+    scanCount = 0;
+    scanState = ScanState::Starting;
+    scanStartDeadline = millis() + kScanStartTimeoutMs;
+    nextScanStartAttempt = millis();
+
+    if (currentState == NetworkState::ConnectingSta || connectionStartPending) {
+        currentState = NetworkState::Disconnected;
+        connectionStartPending = false;
+        expectedDisconnect = ExpectedDisconnect::Scan;
+        WiFi.disconnect(false, false);
+        nextScanStartAttempt = millis() + kRadioSettleMs;
+    }
+    return true;
 }
 
 NetworkState getState() {
     return currentState;
 }
 
+ConnectionPhase getConnectionPhase() { return connectionPhase; }
+
+ConnectionFailure getConnectionFailure() { return connectionFailure; }
+
 const char* getCurrentSsid() {
     return targetSsid;
+}
+
+uint32_t getReconnectSecondsRemaining() {
+    if (connectionPhase != ConnectionPhase::RetryWaiting ||
+        nextReconnectAt == 0) return 0;
+    const int32_t remaining = static_cast<int32_t>(nextReconnectAt - millis());
+    return remaining <= 0 ? 0 : static_cast<uint32_t>(remaining + 999) / 1000;
 }
 
 int getRssi() {
@@ -491,6 +839,60 @@ bool getApClientMac(int index, char* macStrOut, size_t maxLen) {
     return true;
 }
 
+int getSavedNetworkCount() {
+    Preferences prefs;
+    if (!prefs.begin("wifi_net", true)) return 0;
+    const int count = min(prefs.getUChar("cnt", 0),
+                          static_cast<uint8_t>(kMaxSavedNetworks));
+    prefs.end();
+    return count;
+}
+
+bool getSavedNetwork(int index, char* ssidOut, size_t ssidLen) {
+    if (!ssidOut || ssidLen == 0) return false;
+    ssidOut[0] = '\0';
+    Preferences prefs;
+    if (!prefs.begin("wifi_net", true)) return false;
+    const uint8_t count = min(prefs.getUChar("cnt", 0),
+                              static_cast<uint8_t>(kMaxSavedNetworks));
+    if (index < 0 || index >= count) {
+        prefs.end();
+        return false;
+    }
+
+    const uint8_t last = prefs.getUChar("last", kMaxSavedNetworks);
+    uint8_t slot = static_cast<uint8_t>(index);
+    if (last < count) {
+        if (index == 0) slot = last;
+        else {
+            slot = static_cast<uint8_t>(index - 1);
+            if (slot >= last) ++slot;
+        }
+    }
+
+    char key[4];
+    snprintf(key, sizeof(key), "s%u", slot);
+    const String ssid = prefs.getString(key, "");
+    prefs.end();
+    if (ssid.isEmpty()) return false;
+    strncpy(ssidOut, ssid.c_str(), ssidLen - 1);
+    ssidOut[ssidLen - 1] = '\0';
+    return true;
+}
+
+bool connectSavedNetwork(const char* ssid) {
+    char password[64];
+    if (!getSavedPassword(ssid, password, sizeof(password))) return false;
+    return connectTo(ssid, password);
+}
+
+bool forgetSavedNetwork(const char* ssid) {
+    if (!ssid || ssid[0] == '\0') return false;
+    const bool isTarget = strcmp(targetSsid, ssid) == 0;
+    if (isTarget) disconnect();
+    return removeSavedNetworkCredential(ssid);
+}
+
 bool getSavedPassword(const char* ssid, char* passOut, size_t maxLen) {
     Preferences prefs;
     if (!prefs.begin("wifi_net", true)) return false;
@@ -514,6 +916,10 @@ void getSavedApSettings(char* ssidOut, size_t ssidLen, bool& secureOut, char* pa
     loadApSettings(ssidOut, ssidLen, secureOut, passOut, passLen, enabled);
 }
 
+ScanState getScanState() { return scanState; }
+
+uint32_t getScanGeneration() { return scanGeneration; }
+
 bool clearSavedCredentials() {
     Preferences networks;
     Preferences accessPoint;
@@ -527,6 +933,14 @@ bool clearSavedCredentials() {
     const bool cleared = networks.clear() && accessPoint.clear();
     networks.end();
     accessPoint.end();
+    retryEnabled = false;
+    connectionStartPending = false;
+    nextReconnectAt = 0;
+    targetSsid[0] = '\0';
+    lastPassword[0] = '\0';
+    currentState = NetworkState::Disconnected;
+    connectionPhase = ConnectionPhase::Idle;
+    connectionFailure = ConnectionFailure::None;
     // Also remove the Wi-Fi driver's remembered station configuration.
     WiFi.disconnect(true, true);
     return cleared;
