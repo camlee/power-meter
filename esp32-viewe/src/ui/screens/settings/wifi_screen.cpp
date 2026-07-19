@@ -111,9 +111,11 @@ void refreshConnectionLabel() {
     NetworkState st = network_manager::getState();
     ConnectionPhase phase = network_manager::getConnectionPhase();
     ConnectionFailure failure = network_manager::getConnectionFailure();
+    RecoveryState recovery = network_manager::getRecoveryState();
     const char* ssid = network_manager::getCurrentSsid();
 
     if (st == NetworkState::Disconnected &&
+        recovery == RecoveryState::Disabled &&
         (ssid[0] == '\0' || phase == ConnectionPhase::Idle)) {
         lv_obj_add_flag(activeConnPanel, LV_OBJ_FLAG_HIDDEN);
         return;
@@ -121,8 +123,58 @@ void refreshConnectionLabel() {
 
     lv_obj_clear_flag(activeConnPanel, LV_OBJ_FLAG_HIDDEN);
 
-    lv_label_set_text(activeSsidLabel, ssid);
+    const bool genericRecovery =
+        st == NetworkState::Disconnected &&
+        (recovery == RecoveryState::Discovering ||
+         recovery == RecoveryState::Waiting ||
+         recovery == RecoveryState::Blocked);
+    lv_label_set_text(activeSsidLabel,
+                      genericRecovery || ssid[0] == '\0'
+                          ? "Saved networks"
+                          : ssid);
     const ScanState scan = network_manager::getScanState();
+    if (st == NetworkState::Disconnected &&
+        recovery == RecoveryState::Discovering) {
+        lv_label_set_text(activeStatusLabel, "Looking for saved networks...");
+        lv_label_set_text(activeRssiLabel, "");
+        lv_label_set_text(activeIpLabel, "");
+        return;
+    }
+    if (st == NetworkState::Disconnected &&
+        recovery == RecoveryState::Waiting) {
+        const uint32_t seconds = network_manager::getReconnectSecondsRemaining();
+        lv_label_set_text_fmt(activeStatusLabel,
+                              failure == ConnectionFailure::NetworkNotFound
+                                  ? "None nearby - checking in %lus"
+                                  : "Trying saved networks in %lus",
+                              static_cast<unsigned long>(seconds));
+        lv_label_set_text(activeRssiLabel, "");
+        lv_label_set_text(activeIpLabel, "");
+        return;
+    }
+    if (st == NetworkState::Disconnected &&
+        recovery == RecoveryState::Blocked) {
+        lv_label_set_text(activeStatusLabel, "Saved networks need attention");
+        lv_label_set_text(activeRssiLabel, "");
+        lv_label_set_text(activeIpLabel, "");
+        return;
+    }
+    if (st == NetworkState::Disconnected &&
+        recovery == RecoveryState::FastRetry) {
+        const uint32_t seconds = network_manager::getReconnectSecondsRemaining();
+        if (failure == ConnectionFailure::LinkLost) {
+            lv_label_set_text(activeStatusLabel, "Connection lost - reconnecting...");
+        } else {
+            lv_label_set_text_fmt(activeStatusLabel,
+                                  failure == ConnectionFailure::NetworkNotFound
+                                      ? "Not nearby - retry in %lus"
+                                      : "Connection failed - retry in %lus",
+                                  static_cast<unsigned long>(seconds));
+        }
+        lv_label_set_text(activeRssiLabel, "");
+        lv_label_set_text(activeIpLabel, "");
+        return;
+    }
     if (st == NetworkState::Disconnected &&
         (scan == ScanState::Starting || scan == ScanState::Running)) {
         lv_label_set_text(activeStatusLabel, "Retry paused for scan");
@@ -804,6 +856,10 @@ lv_obj_t* create(lv_obj_t* parent) {
 
     lastState = network_manager::getState();
     lastScanGeneration = network_manager::getScanGeneration();
+    if (network_manager::getScanState() == ScanState::Succeeded &&
+        lastScanGeneration > 0) {
+        rebuildListFromScan();
+    }
     refreshConnectionLabel();
 
     pollTimer = lv_timer_create(pollCb, kPollIntervalMs, scr);

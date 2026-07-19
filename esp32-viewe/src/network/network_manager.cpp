@@ -1,4 +1,5 @@
 #include "network_manager.h"
+#include "network_reconnect_policy.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <esp_wifi.h>
@@ -27,10 +28,44 @@ char lastPassword[64] = {0};
 bool apRunning = false; // Add this discrete AP state flag
 bool mdnsRunning = false;
 uint32_t nextReconnectAt = 0;
-uint32_t reconnectDelayMs = 1000;
+uint32_t reconnectDelayMs = 5000;
 bool retryEnabled = false;
 bool connectionStartPending = false;
 uint32_t connectionStartNotBefore = 0;
+
+enum class AttemptOrigin {
+    None,
+    Manual,
+    FastRetry,
+    RecoveryCandidate,
+};
+
+enum class PendingRecoveryAction {
+    None,
+    FastRetry,
+    TryNextCandidate,
+    Discover,
+};
+
+enum ScanPurpose : uint8_t {
+    ScanPurposeNone = 0,
+    ScanPurposeUser = 1 << 0,
+    ScanPurposeRecovery = 1 << 1,
+};
+
+struct RecoveryCandidate {
+    RecoveryCandidatePolicy policy{};
+    char ssid[33]{};
+    char password[64]{};
+};
+
+RecoveryState recoveryState = RecoveryState::Disabled;
+AttemptOrigin attemptOrigin = AttemptOrigin::None;
+PendingRecoveryAction pendingRecoveryAction = PendingRecoveryAction::None;
+RecoveryCandidate recoveryCandidates[8];
+size_t recoveryCandidateCount = 0;
+char suppressedSsids[8][33]{};
+size_t suppressedSsidCount = 0;
 
 enum class ExpectedDisconnect {
     None,
@@ -49,7 +84,7 @@ ScanState scanState = ScanState::Idle;
 uint32_t scanGeneration = 0;
 uint32_t scanStartDeadline = 0;
 uint32_t nextScanStartAttempt = 0;
-bool resumeRetryAfterScan = false;
+uint8_t scanPurpose = ScanPurposeNone;
 
 // A concise, machine-readable serial line is the reliable recovery path when
 // mDNS is unavailable. Only emit it when an address or state changes: this is
@@ -60,6 +95,7 @@ NetworkState reportedState = static_cast<NetworkState>(0xff);
 ConnectionPhase reportedPhase = static_cast<ConnectionPhase>(0xff);
 ConnectionFailure reportedFailure = static_cast<ConnectionFailure>(0xff);
 ScanState reportedScanState = static_cast<ScanState>(0xff);
+RecoveryState reportedRecoveryState = static_cast<RecoveryState>(0xff);
 
 void reportWebAddressesIfChanged() {
     const IPAddress staIp = WiFi.localIP();
@@ -68,26 +104,30 @@ void reportWebAddressesIfChanged() {
     const uint32_t apRaw = static_cast<uint32_t>(apIp);
     if (reportedStaIp == staRaw && reportedApIp == apRaw &&
         reportedState == currentState && reportedPhase == connectionPhase &&
-        reportedFailure == connectionFailure && reportedScanState == scanState) return;
+        reportedFailure == connectionFailure && reportedScanState == scanState &&
+        reportedRecoveryState == recoveryState) return;
     reportedStaIp = staRaw;
     reportedApIp = apRaw;
     reportedState = currentState;
     reportedPhase = connectionPhase;
     reportedFailure = connectionFailure;
     reportedScanState = scanState;
+    reportedRecoveryState = recoveryState;
 
     const String staText = staIp.toString();
     const String apText = apIp.toString();
     const char* host = device_identity::getHostname();
     // ESP_LOG is visible through this board's USB JTAG serial device; Serial
     // keeps the same information available on the conventional framework UART.
-    ESP_LOGI("network", "VIEWE_NETWORK state=%u phase=%u failure=%u scan=%u station=%s ap=%s host=%s.local",
+    ESP_LOGI("network", "VIEWE_NETWORK state=%u phase=%u failure=%u scan=%u recovery=%u station=%s ap=%s host=%s.local",
              static_cast<unsigned>(currentState), static_cast<unsigned>(connectionPhase),
              static_cast<unsigned>(connectionFailure), static_cast<unsigned>(scanState),
+             static_cast<unsigned>(recoveryState),
              staText.c_str(), apText.c_str(), host);
-    Serial.printf("VIEWE_NETWORK state=%u phase=%u failure=%u scan=%u station=%s ap=%s host=%s.local\\n",
+    Serial.printf("VIEWE_NETWORK state=%u phase=%u failure=%u scan=%u recovery=%u station=%s ap=%s host=%s.local\\n",
                   static_cast<unsigned>(currentState), static_cast<unsigned>(connectionPhase),
                   static_cast<unsigned>(connectionFailure), static_cast<unsigned>(scanState),
+                  static_cast<unsigned>(recoveryState),
                   staText.c_str(), apText.c_str(), host);
     if (staRaw) {
         ESP_LOGI("network", "VIEWE_WEB url=http://%s/ host=%s.local", staText.c_str(), host);
@@ -127,8 +167,8 @@ uint8_t consecutiveInternetProbeFailures = 0;
 constexpr uint32_t kConnectTimeoutMs = 15000;
 constexpr int kMaxSavedNetworks = 8;
 constexpr uint32_t kReconnectMaxDelayMs = 60000;
-constexpr uint32_t kReconnectInitialDelayMs = 1000;
-constexpr uint32_t kPostScanRetryGraceMs = 3000;
+constexpr uint32_t kDiscoveryInitialDelayMs = 5000;
+constexpr uint32_t kFastRetryDelayMs = 1000;
 constexpr uint32_t kRadioSettleMs = 250;
 constexpr uint32_t kScanStartTimeoutMs = 2500;
 constexpr uint32_t kScanStartRetryMs = 200;
@@ -168,31 +208,14 @@ void saveNetworkCredential(const char* ssid, const char* password) {
     char passKey[4];
     snprintf(passKey, sizeof(passKey), "p%d", slot);
     prefs.putString(passKey, password ? password : "");
+    uint32_t successSequence = prefs.getUInt("seq", 0) + 1;
+    if (successSequence == 0) successSequence = 1;
+    prefs.putUInt("seq", successSequence);
+    char successKey[4];
+    snprintf(successKey, sizeof(successKey), "u%d", slot);
+    prefs.putUInt(successKey, successSequence);
     prefs.putUChar("last", slot);
     prefs.end();
-}
-
-bool loadLastNetwork(char* ssidOut, size_t ssidLen, char* passOut, size_t passLen) {
-    Preferences prefs;
-    if (!prefs.begin("wifi_net", true)) return false;
-    uint8_t count = prefs.getUChar("cnt", 0);
-    uint8_t slot = prefs.getUChar("last", kMaxSavedNetworks);
-    if (slot >= count) {
-        prefs.end();
-        return false;
-    }
-    char ssidKey[4], passKey[4];
-    snprintf(ssidKey, sizeof(ssidKey), "s%u", slot);
-    snprintf(passKey, sizeof(passKey), "p%u", slot);
-    String ssid = prefs.getString(ssidKey, "");
-    String password = prefs.getString(passKey, "");
-    prefs.end();
-    if (ssid.isEmpty()) return false;
-    strncpy(ssidOut, ssid.c_str(), ssidLen - 1);
-    ssidOut[ssidLen - 1] = '\0';
-    strncpy(passOut, password.c_str(), passLen - 1);
-    passOut[passLen - 1] = '\0';
-    return true;
 }
 
 bool removeSavedNetworkCredential(const char* ssid) {
@@ -210,20 +233,26 @@ bool removeSavedNetworkCredential(const char* ssid) {
 
     const uint8_t oldLast = prefs.getUChar("last", kMaxSavedNetworks);
     for (uint8_t i = static_cast<uint8_t>(slot); i + 1 < count; ++i) {
-        char ssidKey[4], passKey[4], nextSsidKey[4], nextPassKey[4];
+        char ssidKey[4], passKey[4], successKey[4];
+        char nextSsidKey[4], nextPassKey[4], nextSuccessKey[4];
         snprintf(ssidKey, sizeof(ssidKey), "s%u", i);
         snprintf(passKey, sizeof(passKey), "p%u", i);
+        snprintf(successKey, sizeof(successKey), "u%u", i);
         snprintf(nextSsidKey, sizeof(nextSsidKey), "s%u", i + 1);
         snprintf(nextPassKey, sizeof(nextPassKey), "p%u", i + 1);
+        snprintf(nextSuccessKey, sizeof(nextSuccessKey), "u%u", i + 1);
         prefs.putString(ssidKey, prefs.getString(nextSsidKey, ""));
         prefs.putString(passKey, prefs.getString(nextPassKey, ""));
+        prefs.putUInt(successKey, prefs.getUInt(nextSuccessKey, 0));
     }
 
-    char finalSsidKey[4], finalPassKey[4];
+    char finalSsidKey[4], finalPassKey[4], finalSuccessKey[4];
     snprintf(finalSsidKey, sizeof(finalSsidKey), "s%u", count - 1);
     snprintf(finalPassKey, sizeof(finalPassKey), "p%u", count - 1);
+    snprintf(finalSuccessKey, sizeof(finalSuccessKey), "u%u", count - 1);
     prefs.remove(finalSsidKey);
     prefs.remove(finalPassKey);
+    prefs.remove(finalSuccessKey);
     prefs.putUChar("cnt", count - 1);
     prefs.putUChar("next", 0);
 
@@ -262,24 +291,97 @@ bool scanBusy() {
     return scanState == ScanState::Starting || scanState == ScanState::Running;
 }
 
-void scheduleReconnect(ConnectionFailure failure, bool advanceBackoff = true) {
-    connectionFailure = failure;
+bool isSuppressedSsid(const char* ssid) {
+    for (size_t i = 0; i < suppressedSsidCount; ++i) {
+        if (strcmp(suppressedSsids[i], ssid) == 0) return true;
+    }
+    return false;
+}
+
+void suppressSsid(const char* ssid) {
+    if (!ssid || ssid[0] == '\0' || isSuppressedSsid(ssid) ||
+        suppressedSsidCount >= kMaxSavedNetworks) return;
+    strncpy(suppressedSsids[suppressedSsidCount], ssid,
+            sizeof(suppressedSsids[0]) - 1);
+    suppressedSsids[suppressedSsidCount][sizeof(suppressedSsids[0]) - 1] = '\0';
+    ++suppressedSsidCount;
+}
+
+void unsuppressSsid(const char* ssid) {
+    for (size_t i = 0; i < suppressedSsidCount; ++i) {
+        if (strcmp(suppressedSsids[i], ssid) != 0) continue;
+        for (size_t j = i; j + 1 < suppressedSsidCount; ++j) {
+            memcpy(suppressedSsids[j], suppressedSsids[j + 1],
+                   sizeof(suppressedSsids[j]));
+        }
+        --suppressedSsidCount;
+        suppressedSsids[suppressedSsidCount][0] = '\0';
+        return;
+    }
+}
+
+bool allSavedNetworksSuppressed() {
+    const int count = getSavedNetworkCount();
+    if (count <= 0) return false;
+    for (int i = 0; i < count; ++i) {
+        char ssid[33];
+        if (getSavedNetwork(i, ssid, sizeof(ssid)) && !isSuppressedSsid(ssid)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void setTarget(const char* ssid, const char* password) {
+    strncpy(targetSsid, ssid ? ssid : "", sizeof(targetSsid) - 1);
+    targetSsid[sizeof(targetSsid) - 1] = '\0';
+    strncpy(lastPassword, password ? password : "", sizeof(lastPassword) - 1);
+    lastPassword[sizeof(lastPassword) - 1] = '\0';
+}
+
+void scheduleRecoveryAction(PendingRecoveryAction action, uint32_t delayMs,
+                            ConnectionFailure failure) {
+    pendingRecoveryAction = action;
     connectionStartPending = false;
-    if (!retryEnabled || targetSsid[0] == '\0' ||
-        !connectionFailureShouldRetry(failure)) {
+    connectionFailure = failure;
+    nextReconnectAt = millis() + max(delayMs, 1UL);
+    connectionPhase = ConnectionPhase::RetryWaiting;
+    recoveryState = action == PendingRecoveryAction::FastRetry
+                        ? RecoveryState::FastRetry
+                        : RecoveryState::Waiting;
+}
+
+void stopAutomaticRecovery(ConnectionFailure failure = ConnectionFailure::None) {
+    retryEnabled = false;
+    pendingRecoveryAction = PendingRecoveryAction::None;
+    nextReconnectAt = 0;
+    recoveryState = RecoveryState::Disabled;
+    connectionFailure = failure;
+    connectionPhase = connectionFailureNeedsUserAction(failure)
+                          ? ConnectionPhase::ActionRequired
+                          : ConnectionPhase::Idle;
+}
+
+void scheduleDiscovery(ConnectionFailure failure, bool advanceBackoff) {
+    if (!retryEnabled || getSavedNetworkCount() <= 0) {
+        stopAutomaticRecovery(failure);
+        return;
+    }
+    if (allSavedNetworksSuppressed()) {
+        pendingRecoveryAction = PendingRecoveryAction::None;
         nextReconnectAt = 0;
-        connectionPhase = connectionFailureNeedsUserAction(failure)
-                              ? ConnectionPhase::ActionRequired
-                              : ConnectionPhase::Idle;
+        recoveryState = RecoveryState::Blocked;
+        connectionFailure = failure;
+        connectionPhase = ConnectionPhase::ActionRequired;
         return;
     }
 
-    nextReconnectAt = millis() + reconnectDelayMs;
+    const uint32_t delay = advanceBackoff ? reconnectDelayMs : kRadioSettleMs;
+    scheduleRecoveryAction(PendingRecoveryAction::Discover, delay, failure);
     if (advanceBackoff) {
-        reconnectDelayMs = nextReconnectDelay(reconnectDelayMs,
-                                               kReconnectMaxDelayMs);
+        reconnectDelayMs = nextDiscoveryDelay(reconnectDelayMs,
+                                              kReconnectMaxDelayMs);
     }
-    connectionPhase = ConnectionPhase::RetryWaiting;
 }
 
 void saveApSettings(const char* ssid, bool secure, const char* password, bool enabled) {
@@ -443,20 +545,28 @@ void configureNetworkTime() {
 
 void markStationConnected() {
     if (WiFi.status() != WL_CONNECTED) return;
+    if (currentState == NetworkState::ConnectedStaLocal ||
+        currentState == NetworkState::ConnectedStaInternet) return;
     currentState = NetworkState::ConnectedStaLocal;
     connectionPhase = ConnectionPhase::Idle;
     connectionFailure = ConnectionFailure::None;
     expectedDisconnect = ExpectedDisconnect::None;
     connectionStartPending = false;
+    pendingRecoveryAction = PendingRecoveryAction::None;
     nextReconnectAt = 0;
-    reconnectDelayMs = kReconnectInitialDelayMs;
+    reconnectDelayMs = kDiscoveryInitialDelayMs;
     retryEnabled = targetSsid[0] != '\0';
+    recoveryState = retryEnabled ? RecoveryState::Idle : RecoveryState::Disabled;
+    attemptOrigin = AttemptOrigin::None;
+    if (targetSsid[0] != '\0') unsuppressSsid(targetSsid);
     saveNetworkCredential(targetSsid, lastPassword);
     configureNetworkTime();
     ensureMdns();
     scheduleInternetProbe(true);
     device_state::changed(device_state::Domain::Network);
 }
+
+void handleConnectionFailure(ConnectionFailure failure, bool wasConnected);
 
 bool startConnectionAttempt() {
     connectionStartPending = false;
@@ -471,7 +581,7 @@ bool startConnectionAttempt() {
         currentState = NetworkState::Disconnected;
         expectedDisconnect = ExpectedDisconnect::FailureCleanup;
         WiFi.disconnect(false, false);
-        scheduleReconnect(ConnectionFailure::ConnectionFailed);
+        handleConnectionFailure(ConnectionFailure::ConnectionFailed, false);
         device_state::changed(device_state::Domain::Network);
         return false;
     }
@@ -486,23 +596,120 @@ bool startConnectionAttempt() {
     return true;
 }
 
+bool startNextRecoveryCandidate() {
+    RecoveryCandidatePolicy policy[kMaxSavedNetworks];
+    for (size_t i = 0; i < recoveryCandidateCount; ++i) {
+        policy[i] = recoveryCandidates[i].policy;
+    }
+    const int selected = chooseRecoveryCandidate(policy, recoveryCandidateCount);
+    if (selected < 0) {
+        scheduleDiscovery(connectionFailure == ConnectionFailure::None
+                              ? ConnectionFailure::NetworkNotFound
+                              : connectionFailure,
+                          true);
+        return false;
+    }
+
+    RecoveryCandidate& candidate = recoveryCandidates[selected];
+    candidate.policy.attempted = true;
+    setTarget(candidate.ssid, candidate.password);
+    attemptOrigin = AttemptOrigin::RecoveryCandidate;
+    pendingRecoveryAction = PendingRecoveryAction::None;
+    nextReconnectAt = 0;
+    recoveryState = RecoveryState::TryingCandidate;
+    connectionPhase = ConnectionPhase::LookingForNetwork;
+    connectionFailure = ConnectionFailure::None;
+    return startConnectionAttempt();
+}
+
+void prepareRecoveryCandidates() {
+    recoveryCandidateCount = 0;
+    const int savedCount = getSavedNetworkCount();
+    for (int savedIndex = 0;
+         savedIndex < savedCount && recoveryCandidateCount < kMaxSavedNetworks;
+         ++savedIndex) {
+        char ssid[33];
+        if (!getSavedNetwork(savedIndex, ssid, sizeof(ssid)) ||
+            isSuppressedSsid(ssid)) continue;
+
+        int bestRssi = -1000;
+        bool visible = false;
+        for (int scanIndex = 0; scanIndex < scanCount; ++scanIndex) {
+            if (WiFi.SSID(scanIndex) != ssid) continue;
+            bestRssi = max(bestRssi, static_cast<int>(WiFi.RSSI(scanIndex)));
+            visible = true;
+        }
+        if (!visible) continue;
+
+        RecoveryCandidate& candidate = recoveryCandidates[recoveryCandidateCount++];
+        candidate.policy = {true, false, false,
+                            static_cast<uint8_t>(savedIndex), bestRssi};
+        strncpy(candidate.ssid, ssid, sizeof(candidate.ssid) - 1);
+        candidate.ssid[sizeof(candidate.ssid) - 1] = '\0';
+        if (!getSavedPassword(ssid, candidate.password,
+                              sizeof(candidate.password))) {
+            candidate.password[0] = '\0';
+        }
+    }
+
+    if (recoveryCandidateCount > 0) {
+        scheduleRecoveryAction(PendingRecoveryAction::TryNextCandidate,
+                               kRadioSettleMs, ConnectionFailure::None);
+    } else {
+        scheduleDiscovery(ConnectionFailure::NetworkNotFound, true);
+    }
+}
+
+bool requestScan(uint8_t purpose) {
+    scanPurpose |= purpose;
+    if (scanBusy()) {
+        if ((purpose & ScanPurposeRecovery) != 0 &&
+            currentState == NetworkState::Disconnected) {
+            recoveryState = RecoveryState::Discovering;
+        }
+        return true;
+    }
+
+    scanCount = 0;
+    scanState = ScanState::Starting;
+    scanStartDeadline = millis() + kScanStartTimeoutMs;
+    nextScanStartAttempt = millis();
+    nextReconnectAt = 0;
+    pendingRecoveryAction = PendingRecoveryAction::None;
+
+    if ((purpose & ScanPurposeRecovery) != 0 &&
+        currentState == NetworkState::Disconnected) {
+        recoveryState = RecoveryState::Discovering;
+        connectionPhase = ConnectionPhase::RetryWaiting;
+        setTarget("", "");
+    }
+
+    if (currentState == NetworkState::ConnectingSta || connectionStartPending) {
+        currentState = NetworkState::Disconnected;
+        connectionStartPending = false;
+        if ((purpose & ScanPurposeRecovery) != 0) {
+            recoveryState = RecoveryState::Discovering;
+            setTarget("", "");
+        }
+        expectedDisconnect = ExpectedDisconnect::Scan;
+        WiFi.disconnect(false, false);
+        nextScanStartAttempt = millis() + kRadioSettleMs;
+    }
+    return true;
+}
+
 void finishScan(ScanState finalState, int resultCount = 0) {
     scanCount = finalState == ScanState::Succeeded ? max(resultCount, 0) : 0;
     scanState = finalState;
     ++scanGeneration;
+    const uint8_t completedPurpose = scanPurpose;
+    scanPurpose = ScanPurposeNone;
 
-    if (resumeRetryAfterScan && retryEnabled && targetSsid[0] != '\0' &&
-        currentState == NetworkState::Disconnected &&
-        connectionPhase != ConnectionPhase::ActionRequired) {
-        const uint32_t now = millis();
-        const uint32_t graceDeadline = now + kPostScanRetryGraceMs;
-        if (nextReconnectAt == 0 ||
-            static_cast<int32_t>(nextReconnectAt - graceDeadline) < 0) {
-            nextReconnectAt = graceDeadline;
-        }
-        connectionPhase = ConnectionPhase::RetryWaiting;
+    if ((completedPurpose & ScanPurposeRecovery) != 0 && retryEnabled &&
+        currentState == NetworkState::Disconnected) {
+        if (finalState == ScanState::Succeeded) prepareRecoveryCandidates();
+        else scheduleDiscovery(ConnectionFailure::ConnectionFailed, true);
     }
-    resumeRetryAfterScan = false;
 }
 
 void updateScanOperation() {
@@ -529,6 +736,46 @@ void updateScanOperation() {
     }
 }
 
+void handleConnectionFailure(ConnectionFailure failure, bool wasConnected) {
+    connectionFailure = failure;
+    connectionStartPending = false;
+
+    if (!retryEnabled) {
+        stopAutomaticRecovery(failure);
+        return;
+    }
+
+    if (wasConnected) {
+        attemptOrigin = AttemptOrigin::FastRetry;
+        scheduleRecoveryAction(PendingRecoveryAction::FastRetry,
+                               kFastRetryDelayMs, failure);
+        return;
+    }
+
+    if (getSavedNetworkCount() <= 0) {
+        if ((attemptOrigin == AttemptOrigin::Manual ||
+             attemptOrigin == AttemptOrigin::FastRetry) &&
+            connectionFailureShouldRetry(failure) && targetSsid[0] != '\0') {
+            scheduleRecoveryAction(PendingRecoveryAction::FastRetry,
+                                   reconnectDelayMs, failure);
+            reconnectDelayMs = nextDiscoveryDelay(reconnectDelayMs,
+                                                  kReconnectMaxDelayMs);
+        } else {
+            stopAutomaticRecovery(failure);
+        }
+        return;
+    }
+
+    if (failureSuppressesAutomaticCandidate(failure)) suppressSsid(targetSsid);
+
+    if (attemptOrigin == AttemptOrigin::RecoveryCandidate) {
+        scheduleRecoveryAction(PendingRecoveryAction::TryNextCandidate,
+                               kRadioSettleMs, failure);
+    } else {
+        scheduleDiscovery(failure, false);
+    }
+}
+
 void handleDisconnectedEvent(uint8_t reason) {
     const ExpectedDisconnect expected = expectedDisconnect;
     if (expected != ExpectedDisconnect::None || reason == WIFI_REASON_ASSOC_LEAVE) {
@@ -550,7 +797,7 @@ void handleDisconnectedEvent(uint8_t reason) {
     const ConnectionFailure failure = classifyDisconnect(reason, wasConnected);
     expectedDisconnect = ExpectedDisconnect::FailureCleanup;
     WiFi.disconnect(false, false);
-    scheduleReconnect(failure);
+    handleConnectionFailure(failure, wasConnected);
     device_state::changed(device_state::Domain::Network);
 }
 
@@ -604,9 +851,10 @@ void init() {
             ensureMdns();
         }
     }
-    char ssid[33], password[64];
-    if (loadLastNetwork(ssid, sizeof(ssid), password, sizeof(password))) {
-        connectTo(ssid, password);
+    if (getSavedNetworkCount() > 0) {
+        retryEnabled = true;
+        recoveryState = RecoveryState::Discovering;
+        requestScan(ScanPurposeRecovery);
     }
     reportWebAddressesIfChanged();
 }
@@ -621,6 +869,29 @@ void update() {
         startConnectionAttempt();
     }
 
+    if (currentState == NetworkState::Disconnected && !scanBusy() &&
+        !connectionStartPending && pendingRecoveryAction != PendingRecoveryAction::None &&
+        timeReached(nextReconnectAt)) {
+        const PendingRecoveryAction action = pendingRecoveryAction;
+        pendingRecoveryAction = PendingRecoveryAction::None;
+        nextReconnectAt = 0;
+        switch (action) {
+            case PendingRecoveryAction::FastRetry:
+                attemptOrigin = AttemptOrigin::FastRetry;
+                recoveryState = RecoveryState::FastRetry;
+                startConnectionAttempt();
+                break;
+            case PendingRecoveryAction::TryNextCandidate:
+                startNextRecoveryCandidate();
+                break;
+            case PendingRecoveryAction::Discover:
+                requestScan(ScanPurposeRecovery);
+                break;
+            default:
+                break;
+        }
+    }
+
     switch (currentState) {
         case NetworkState::ConnectingSta: {
             if (WiFi.status() == WL_CONNECTED) {
@@ -629,7 +900,7 @@ void update() {
                 currentState = NetworkState::Disconnected;
                 expectedDisconnect = ExpectedDisconnect::FailureCleanup;
                 WiFi.disconnect(false, false);
-                scheduleReconnect(ConnectionFailure::TimedOut);
+                handleConnectionFailure(ConnectionFailure::TimedOut, false);
                 device_state::changed(device_state::Domain::Network);
             }
             break;
@@ -638,7 +909,9 @@ void update() {
             if (WiFi.status() != WL_CONNECTED) {
                 currentState = NetworkState::Disconnected;
                 stopMdns();
-                scheduleReconnect(ConnectionFailure::LinkLost);
+                expectedDisconnect = ExpectedDisconnect::FailureCleanup;
+                WiFi.disconnect(false, false);
+                handleConnectionFailure(ConnectionFailure::LinkLost, true);
                 device_state::changed(device_state::Domain::Network);
                 break;
             }
@@ -649,7 +922,9 @@ void update() {
             if (WiFi.status() != WL_CONNECTED) {
                 currentState = NetworkState::Disconnected;
                 stopMdns();
-                scheduleReconnect(ConnectionFailure::LinkLost);
+                expectedDisconnect = ExpectedDisconnect::FailureCleanup;
+                WiFi.disconnect(false, false);
+                handleConnectionFailure(ConnectionFailure::LinkLost, true);
                 device_state::changed(device_state::Domain::Network);
             } else if (!scanBusy()) {
                 scheduleInternetProbe();
@@ -658,10 +933,6 @@ void update() {
         }
         case NetworkState::Disconnected:
             ensureMdns();
-            if (retryEnabled && !scanBusy() && !connectionStartPending &&
-                timeReached(nextReconnectAt)) {
-                startConnectionAttempt();
-            }
             break;
         default:
             break;
@@ -677,18 +948,15 @@ bool connectTo(const char* ssid, const char* password) {
         strcmp(targetSsid, ssid) == 0;
     if (alreadyConnected) return true;
 
-    strncpy(targetSsid, ssid, sizeof(targetSsid) - 1);
-    targetSsid[sizeof(targetSsid) - 1] = '\0';
-    if (password && password[0] != '\0') {
-        strncpy(lastPassword, password, sizeof(lastPassword) - 1);
-        lastPassword[sizeof(lastPassword) - 1] = '\0';
-    } else {
-        lastPassword[0] = '\0';
-    }
+    setTarget(ssid, password);
+    unsuppressSsid(ssid);
 
     retryEnabled = true;
-    reconnectDelayMs = kReconnectInitialDelayMs;
+    reconnectDelayMs = kDiscoveryInitialDelayMs;
     nextReconnectAt = 0;
+    pendingRecoveryAction = PendingRecoveryAction::None;
+    attemptOrigin = AttemptOrigin::Manual;
+    recoveryState = RecoveryState::TryingCandidate;
     connectionFailure = ConnectionFailure::None;
     connectionPhase = ConnectionPhase::LookingForNetwork;
 
@@ -714,10 +982,11 @@ bool connectTo(const char* ssid, const char* password) {
 }
 
 void disconnect() {
-    retryEnabled = false;
+    stopAutomaticRecovery();
     connectionStartPending = false;
-    nextReconnectAt = 0;
-    reconnectDelayMs = kReconnectInitialDelayMs;
+    reconnectDelayMs = kDiscoveryInitialDelayMs;
+    recoveryCandidateCount = 0;
+    attemptOrigin = AttemptOrigin::None;
     targetSsid[0] = '\0';
     lastPassword[0] = '\0';
     connectionFailure = ConnectionFailure::None;
@@ -773,22 +1042,11 @@ void restartMdns() {
 }
 
 bool scanNetworks() {
-    if (scanBusy()) return false;
-
-    resumeRetryAfterScan = retryEnabled && targetSsid[0] != '\0';
-    scanCount = 0;
-    scanState = ScanState::Starting;
-    scanStartDeadline = millis() + kScanStartTimeoutMs;
-    nextScanStartAttempt = millis();
-
-    if (currentState == NetworkState::ConnectingSta || connectionStartPending) {
-        currentState = NetworkState::Disconnected;
-        connectionStartPending = false;
-        expectedDisconnect = ExpectedDisconnect::Scan;
-        WiFi.disconnect(false, false);
-        nextScanStartAttempt = millis() + kRadioSettleMs;
+    uint8_t purpose = ScanPurposeUser;
+    if (retryEnabled && currentState == NetworkState::Disconnected) {
+        purpose |= ScanPurposeRecovery;
     }
-    return true;
+    return requestScan(purpose);
 }
 
 NetworkState getState() {
@@ -798,6 +1056,8 @@ NetworkState getState() {
 ConnectionPhase getConnectionPhase() { return connectionPhase; }
 
 ConnectionFailure getConnectionFailure() { return connectionFailure; }
+
+RecoveryState getRecoveryState() { return recoveryState; }
 
 const char* getCurrentSsid() {
     return targetSsid;
@@ -861,14 +1121,29 @@ bool getSavedNetwork(int index, char* ssidOut, size_t ssidLen) {
     }
 
     const uint8_t last = prefs.getUChar("last", kMaxSavedNetworks);
-    uint8_t slot = static_cast<uint8_t>(index);
-    if (last < count) {
-        if (index == 0) slot = last;
-        else {
-            slot = static_cast<uint8_t>(index - 1);
-            if (slot >= last) ++slot;
+    uint8_t slots[kMaxSavedNetworks];
+    uint32_t success[kMaxSavedNetworks];
+    for (uint8_t i = 0; i < count; ++i) {
+        slots[i] = i;
+        char key[4];
+        snprintf(key, sizeof(key), "u%u", i);
+        success[i] = prefs.getUInt(key, 0);
+    }
+    for (uint8_t i = 0; i < count; ++i) {
+        for (uint8_t j = i + 1; j < count; ++j) {
+            const uint8_t a = slots[i];
+            const uint8_t b = slots[j];
+            const bool bPreferred = b == last && a != last;
+            const bool bNewer = a != last && b != last &&
+                                (success[b] > success[a] ||
+                                 (success[b] == success[a] && b < a));
+            if (bPreferred || bNewer) {
+                slots[i] = b;
+                slots[j] = a;
+            }
         }
     }
+    const uint8_t slot = slots[index];
 
     char key[4];
     snprintf(key, sizeof(key), "s%u", slot);
@@ -889,8 +1164,35 @@ bool connectSavedNetwork(const char* ssid) {
 bool forgetSavedNetwork(const char* ssid) {
     if (!ssid || ssid[0] == '\0') return false;
     const bool isTarget = strcmp(targetSsid, ssid) == 0;
-    if (isTarget) disconnect();
-    return removeSavedNetworkCredential(ssid);
+    if (!removeSavedNetworkCredential(ssid)) return false;
+    unsuppressSsid(ssid);
+    for (size_t i = 0; i < recoveryCandidateCount; ++i) {
+        if (strcmp(recoveryCandidates[i].ssid, ssid) == 0) {
+            recoveryCandidates[i].policy.suppressed = true;
+        }
+    }
+    if (isTarget) {
+        currentState = NetworkState::Disconnected;
+        connectionStartPending = false;
+        expectedDisconnect = ExpectedDisconnect::FailureCleanup;
+        WiFi.disconnect(false, false);
+        stopMdns();
+        setTarget("", "");
+        attemptOrigin = AttemptOrigin::None;
+    }
+
+    if (getSavedNetworkCount() <= 0) {
+        stopAutomaticRecovery();
+        setTarget("", "");
+    } else if (isTarget ||
+               (currentState == NetworkState::Disconnected && retryEnabled && !scanBusy())) {
+        retryEnabled = true;
+        reconnectDelayMs = kDiscoveryInitialDelayMs;
+        recoveryCandidateCount = 0;
+        scheduleDiscovery(ConnectionFailure::None, false);
+    }
+    device_state::changed(device_state::Domain::Network);
+    return true;
 }
 
 bool getSavedPassword(const char* ssid, char* passOut, size_t maxLen) {
@@ -933,9 +1235,11 @@ bool clearSavedCredentials() {
     const bool cleared = networks.clear() && accessPoint.clear();
     networks.end();
     accessPoint.end();
-    retryEnabled = false;
+    stopAutomaticRecovery();
     connectionStartPending = false;
-    nextReconnectAt = 0;
+    reconnectDelayMs = kDiscoveryInitialDelayMs;
+    recoveryCandidateCount = 0;
+    suppressedSsidCount = 0;
     targetSsid[0] = '\0';
     lastPassword[0] = '\0';
     currentState = NetworkState::Disconnected;

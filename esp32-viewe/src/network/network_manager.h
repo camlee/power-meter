@@ -29,6 +29,16 @@ enum class ScanState {
     Failed,
 };
 
+enum class RecoveryState {
+    Disabled,
+    Idle,
+    FastRetry,
+    Discovering,
+    TryingCandidate,
+    Waiting,
+    Blocked,
+};
+
 // Subsystem initialization and non-blocking event loop tick
 void init();
 void update();
@@ -44,6 +54,7 @@ bool scanNetworks();
 NetworkState getState();
 ConnectionPhase getConnectionPhase();
 ConnectionFailure getConnectionFailure();
+RecoveryState getRecoveryState();
 const char* getCurrentSsid();
 uint32_t getReconnectSecondsRemaining();
 int getRssi();
