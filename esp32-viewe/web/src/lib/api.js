@@ -133,13 +133,13 @@ function parseHistory(buffer) {
 
 export async function getCycles() {
   const start = await fetch('/api/v1/cycles', { cache: 'no-store' });
-  if (start.status !== 202) throw new Error(`cycles ${start.status}`);
+  if (start.status !== 202) throw await responseError(start, 'cycles');
   const { job } = await start.json();
   for (let attempt = 0; attempt < 80; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 250));
     const response = await fetch(`/api/v1/cycles?job=${job}`, { cache: 'no-store' });
     if (response.status === 202) continue;
-    if (!response.ok) throw new Error(`cycles ${response.status}`);
+    if (!response.ok) throw await responseError(response, 'cycles');
     return response.json();
   }
   throw new Error('cycle query timed out');
@@ -163,14 +163,22 @@ export async function saveCycleEndHour(endHour) {
 export async function getHistory(range = 'today', bucketMinutes = 30) {
   const params = new URLSearchParams({ range, bucket_minutes: String(bucketMinutes) });
   const start = await fetch(`/api/v1/history/query?${params}`, { cache: 'no-store' });
-  if (start.status !== 202) throw new Error(`history ${start.status}`);
+  if (start.status !== 202) throw await responseError(start, 'history');
   const { job } = await start.json();
   for (let attempt = 0; attempt < 80; attempt += 1) {
     await new Promise((resolve) => setTimeout(resolve, 250));
     const response = await fetch(`/api/v1/history/query?job=${job}`, { cache: 'no-store' });
     if (response.status === 202) continue;
-    if (!response.ok) throw new Error(`history ${response.status}`);
+    if (!response.ok) throw await responseError(response, 'history');
     return parseHistory(await response.arrayBuffer());
   }
   throw new Error('history query timed out');
+}
+
+async function responseError(response, resource) {
+  const body = await response.json().catch(() => ({}));
+  const error = new Error(body.error || `${resource} ${response.status}`);
+  error.status = response.status;
+  error.userMessage = body.error;
+  return error;
 }

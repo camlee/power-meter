@@ -162,7 +162,11 @@ void scheduleNextRefresh() {
 void startQuery(bool replacePending = false)
 {
     if (!screenObject || !lv_obj_is_visible(screenObject)) return;
-    if (pendingJob && !replacePending) return;
+    if (pendingJob) {
+        if (!replacePending) return;
+        history_query_service::cancel(pendingJob);
+        pendingJob = 0;
+    }
     const Range& range = kRanges[selectedRange];
     pendingJob = history_query_service::requestUsage({range.calendar, range.calendarRange,
                                                        range.lookbackMinutes, range.bucketMinutes});
@@ -182,7 +186,14 @@ void completionCb(lv_timer_t*) {
     historical_storage::QueryStatus status{};
     size_t count = 0;
     history_query_service::Timing timing{};
-    if (!history_query_service::takeUsage(pendingJob, buckets, kMaxPoints, count, status, &timing)) return;
+    if (!history_query_service::takeUsage(pendingJob, buckets, kMaxPoints, count, status, &timing)) {
+        if (history_query_service::jobState(pendingJob) ==
+            history_query_service::JobState::Gone) {
+            pendingJob = 0;
+            startQuery();
+        }
+        return;
+    }
     pendingJob = 0;
     linear_progress::hide(progress);
     renderChart(buckets, count, status);
@@ -215,9 +226,8 @@ void rangeChangedCb(lv_event_t* event)
 }
 
 void screenRefreshCb(lv_event_t* event) {
-    // A query from this hidden screen may have been superseded by another
-    // history request. Requeue on activation instead of retaining a job ID
-    // that can no longer complete.
+    // Replace a stale hidden-screen query with one for the currently selected
+    // range when this screen becomes active again.
     if (lv_event_get_code(event) == LV_EVENT_REFRESH) startQuery(true);
 }
 

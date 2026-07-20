@@ -181,7 +181,14 @@ void completionCb(lv_timer_t*) {
     historical_storage::StorageStats stats{};
     size_t total = 0;
     size_t count = 0;
-    if (!history_query_service::takeFiles(pendingJob, fileBuffer, kMaxVisibleFiles, count, total, stats)) return;
+    if (!history_query_service::takeFiles(pendingJob, fileBuffer, kMaxVisibleFiles, count, total, stats)) {
+        if (history_query_service::jobState(pendingJob) ==
+            history_query_service::JobState::Gone) {
+            pendingJob = 0;
+            startLoad();
+        }
+        return;
+    }
     pendingJob = 0;
     loaded = true;
     linear_progress::hide(progress);
@@ -195,8 +202,7 @@ void screenRefreshCb(lv_event_t* event) {
     selectedDataset = historical_storage::activeDataset();
     updateDatasetTab();
     loaded = false;
-    // A hidden screen's request can be superseded by the Usage query. Queue a
-    // fresh one on activation so this page cannot remain permanently pending.
+    if (pendingJob) history_query_service::cancel(pendingJob);
     pendingJob = 0;
     startLoad();
 }
@@ -206,6 +212,7 @@ void datasetChangedCb(lv_event_t* event) {
     selectedDataset = lv_tabview_get_tab_act(datasetTabview) == 1
         ? historical_storage::Dataset::Demo : historical_storage::Dataset::Real;
     loaded = false;
+    if (pendingJob) history_query_service::cancel(pendingJob);
     pendingJob = 0;
     startLoad();
 }

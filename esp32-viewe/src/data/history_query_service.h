@@ -12,6 +12,16 @@ namespace history_query_service {
 
 constexpr size_t kMaxUsageBuckets = 336;
 constexpr size_t kMaxListedFiles = 20;
+constexpr size_t kQueuedJobCapacity = 4;
+constexpr uint32_t kResultTtlMs = 10000;
+
+enum class JobState : uint8_t {
+    Unknown,
+    Queued,
+    Running,
+    Ready,
+    Gone,
+};
 
 struct UsageRequest {
     bool calendar;
@@ -44,6 +54,7 @@ uint32_t requestCycles();
 uint32_t requestFiles(size_t limit = kMaxListedFiles);
 uint32_t requestFilesForDataset(historical_storage::Dataset dataset,
                                 size_t limit = kMaxListedFiles);
+bool cancel(uint32_t jobId);
 
 bool takeUsage(uint32_t jobId, historical_storage::PowerBucket* out, size_t maxBuckets,
                size_t& count, historical_storage::QueryStatus& status, Timing* timing = nullptr);
@@ -55,6 +66,8 @@ bool takeFiles(uint32_t jobId, historical_storage::HistoryFileInfo* out, size_t 
                size_t& count, size_t& total, historical_storage::StorageStats& stats,
                Timing* timing = nullptr);
 
+JobState jobState(uint32_t jobId);
+const char* jobStateName(JobState state);
 bool busy();
 void getTiming(Timing& out);
 

@@ -9,6 +9,7 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include "data/history_job_queue.h"
 #include "memory/heap_policy.h"
 
 namespace history_query_service {
@@ -29,12 +30,8 @@ TaskHandle_t task = nullptr;
 historical_storage::PowerBucket* usageBuffer = nullptr;
 energy_cycle::Summary* cycleBuffer = nullptr;
 historical_storage::HistoryFileInfo* filesBuffer = nullptr;
-Job queued{};
-uint32_t nextJobId = 0;
-uint32_t requestedJobId = 0;
-uint32_t completedJobId = 0;
-JobKind completedKind = JobKind::None;
-bool isBusy = false;
+constexpr size_t kFinishedJobCapacity = 8;
+history_job_queue::Queue<Job, kQueuedJobCapacity, kFinishedJobCapacity> jobs;
 bool usageResultLeased = false;
 uint32_t leasedUsageJobId = 0;
 size_t usageCount = 0;
@@ -54,7 +51,7 @@ private:
     bool locked;
 };
 
-void runJob(const Job& job, Timing& timing) {
+bool runJob(const Job& job, Timing& timing) {
     const uint32_t started = millis();
     if (job.kind == JobKind::Usage) {
         historical_storage::QueryStatus status{};
@@ -65,91 +62,106 @@ void runJob(const Job& job, Timing& timing) {
             : historical_storage::getPowerBuckets(
                   usageBuffer, kMaxUsageBuckets, job.usage.lookbackMinutes,
                   job.usage.bucketMinutes, 0, true, &status);
-        Lock lock;
-        if (!lock || requestedJobId != job.id) return;
-        usageCount = count;
-        usageStatus = status;
-        completedKind = JobKind::Usage;
-        completedJobId = job.id;
+        timing.lastDurationMs = millis() - started;
         timing.lastRecordsRead = status.recordsRead;
         timing.lastFilesRead = status.filesRead;
+        timing.lastWasUsage = true;
+        Lock lock;
+        if (!lock || jobs.state(job.id) != history_job_queue::State::Running) return false;
+        usageCount = count;
+        usageStatus = status;
     } else if (job.kind == JobKind::Cycles) {
         const size_t count = energy_cycle::query(
             cycleBuffer, energy_cycle::kRecentCycleCount);
-        Lock lock;
-        if (!lock || requestedJobId != job.id) return;
-        cycleCount = count;
-        completedKind = JobKind::Cycles;
-        completedJobId = job.id;
+        timing.lastDurationMs = millis() - started;
         timing.lastRecordsRead = 0;
         timing.lastFilesRead = 0;
+        timing.lastWasUsage = true;
+        Lock lock;
+        if (!lock || jobs.state(job.id) != history_job_queue::State::Running) return false;
+        cycleCount = count;
     } else if (job.kind == JobKind::Files) {
         historical_storage::StorageStats stats{};
         size_t total = 0;
         const size_t count = historical_storage::listFilesForDataset(
             job.fileDataset, filesBuffer, std::min(job.fileLimit, kMaxListedFiles),
             0, &total, &stats);
+        timing.lastDurationMs = millis() - started;
+        timing.lastRecordsRead = 0;
+        timing.lastFilesRead = static_cast<uint16_t>(count);
+        timing.lastWasUsage = false;
         Lock lock;
-        if (!lock || requestedJobId != job.id) return;
+        if (!lock || jobs.state(job.id) != history_job_queue::State::Running) return false;
         filesCount = count;
         filesTotal = total;
         filesStats = stats;
-        completedKind = JobKind::Files;
-        completedJobId = job.id;
-        timing.lastRecordsRead = 0;
-        timing.lastFilesRead = static_cast<uint16_t>(count);
+    } else {
+        return false;
     }
-    timing.lastDurationMs = millis() - started;
-    timing.lastWasUsage = job.kind == JobKind::Usage || job.kind == JobKind::Cycles;
+
+    Lock lock;
+    if (!lock || !jobs.complete(job.id, millis())) return false;
+    timing.maxDurationMs = std::max(lastTiming.maxDurationMs, timing.lastDurationMs);
+    lastTiming = timing;
+    return true;
 }
 
 void taskFn(void*) {
     for (;;) {
-        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
-        for (;;) {
-            Job job;
-            {
-                Lock lock;
-                if (!lock || queued.kind == JobKind::None) {
-                    if (lock) isBusy = false;
-                    break;
+        Job job{};
+        bool shouldRun = false;
+        uint32_t expiredJobId = 0;
+        TickType_t waitTicks = portMAX_DELAY;
+        {
+            Lock lock;
+            if (lock) {
+                const uint32_t now = millis();
+                const Job* ready = jobs.ready();
+                if (ready && !usageResultLeased &&
+                    static_cast<uint32_t>(now - jobs.readySinceMs()) >= kResultTtlMs) {
+                    expiredJobId = ready->id;
+                    jobs.expireReady(now, kResultTtlMs);
                 }
-                job = queued;
-                queued.kind = JobKind::None;
-            }
-
-            Timing timing{};
-            runJob(job, timing);
-            {
-                Lock lock;
-                if (lock && requestedJobId == job.id) {
-                    timing.maxDurationMs = std::max(lastTiming.maxDurationMs, timing.lastDurationMs);
-                    lastTiming = timing;
-                    const char* kindName = job.kind == JobKind::Usage ? "usage" :
-                                           job.kind == JobKind::Cycles ? "cycles" : "files";
-                    Serial.printf("history_query: %s %lu ms, %u files, %lu rows\n",
-                                  kindName,
-                                  static_cast<unsigned long>(timing.lastDurationMs),
-                                  timing.lastFilesRead,
-                                  static_cast<unsigned long>(timing.lastRecordsRead));
+                shouldRun = jobs.beginNext(job);
+                ready = jobs.ready();
+                if (!shouldRun && ready && !usageResultLeased) {
+                    const uint32_t elapsed = now - jobs.readySinceMs();
+                    const uint32_t remaining = elapsed >= kResultTtlMs ? 1 : kResultTtlMs - elapsed;
+                    waitTicks = std::max<TickType_t>(1, pdMS_TO_TICKS(remaining));
                 }
             }
         }
+        if (expiredJobId) {
+            Serial.printf("history_query: result %lu expired before collection\n",
+                          static_cast<unsigned long>(expiredJobId));
+        }
+        if (shouldRun) {
+            Timing timing{};
+            if (runJob(job, timing)) {
+                const char* kindName = job.kind == JobKind::Usage ? "usage" :
+                                       job.kind == JobKind::Cycles ? "cycles" : "files";
+                Serial.printf("history_query: %s job %lu, %lu ms, %u files, %lu rows\n",
+                              kindName,
+                              static_cast<unsigned long>(job.id),
+                              static_cast<unsigned long>(timing.lastDurationMs),
+                              timing.lastFilesRead,
+                              static_cast<unsigned long>(timing.lastRecordsRead));
+            }
+            continue;
+        }
+        ulTaskNotifyTake(pdTRUE, waitTicks);
     }
 }
 
 uint32_t enqueue(Job job) {
-    Lock lock;
-    if (!lock || !task || usageResultLeased) return 0;
-    job.id = ++nextJobId;
-    if (!job.id) job.id = ++nextJobId;
-    requestedJobId = job.id;
-    completedJobId = 0;
-    completedKind = JobKind::None;
-    queued = job; // The newest range wins; an older result is discarded.
-    isBusy = true;
-    xTaskNotifyGive(task);
-    return job.id;
+    uint32_t jobId = 0;
+    {
+        Lock lock;
+        if (!lock || !task) return 0;
+        jobId = jobs.enqueue(job);
+    }
+    if (jobId) xTaskNotifyGive(task);
+    return jobId;
 }
 
 } // namespace
@@ -199,23 +211,39 @@ uint32_t requestFilesForDataset(historical_storage::Dataset dataset, size_t limi
     return enqueue(job);
 }
 
+bool cancel(uint32_t jobId) {
+    bool cancelled = false;
+    {
+        Lock lock;
+        if (!lock || (usageResultLeased && leasedUsageJobId == jobId)) return false;
+        cancelled = jobs.cancel(jobId);
+    }
+    if (cancelled) xTaskNotifyGive(task);
+    return cancelled;
+}
+
 bool takeUsage(uint32_t jobId, historical_storage::PowerBucket* out, size_t maxBuckets,
                size_t& count, historical_storage::QueryStatus& status, Timing* timing) {
-    Lock lock;
-    if (!lock || !out || completedKind != JobKind::Usage || completedJobId != jobId) return false;
-    count = std::min(usageCount, maxBuckets);
-    memcpy(out, usageBuffer, count * sizeof(*out));
-    status = usageStatus;
-    if (timing) *timing = lastTiming;
-    completedJobId = 0;
-    completedKind = JobKind::None;
-    return true;
+    bool consumed = false;
+    {
+        Lock lock;
+        const Job* ready = lock ? jobs.ready() : nullptr;
+        if (!ready || !out || ready->kind != JobKind::Usage || ready->id != jobId) return false;
+        count = std::min(usageCount, maxBuckets);
+        memcpy(out, usageBuffer, count * sizeof(*out));
+        status = usageStatus;
+        if (timing) *timing = lastTiming;
+        consumed = jobs.consume(jobId);
+    }
+    if (consumed) xTaskNotifyGive(task);
+    return consumed;
 }
 
 bool acquireUsage(uint32_t jobId, UsageResultView& view, Timing* timing) {
     Lock lock;
-    if (!lock || usageResultLeased || completedKind != JobKind::Usage ||
-        completedJobId != jobId || !usageBuffer) return false;
+    const Job* ready = lock ? jobs.ready() : nullptr;
+    if (!ready || usageResultLeased || ready->kind != JobKind::Usage ||
+        ready->id != jobId || !usageBuffer) return false;
     usageResultLeased = true;
     leasedUsageJobId = jobId;
     view.buckets = usageBuffer;
@@ -226,44 +254,77 @@ bool acquireUsage(uint32_t jobId, UsageResultView& view, Timing* timing) {
 }
 
 void releaseUsage(uint32_t jobId) {
-    Lock lock;
-    if (!lock || !usageResultLeased || leasedUsageJobId != jobId) return;
-    usageResultLeased = false;
-    leasedUsageJobId = 0;
-    completedJobId = 0;
-    completedKind = JobKind::None;
+    bool consumed = false;
+    {
+        Lock lock;
+        if (!lock || !usageResultLeased || leasedUsageJobId != jobId) return;
+        usageResultLeased = false;
+        leasedUsageJobId = 0;
+        consumed = jobs.consume(jobId);
+    }
+    if (consumed) xTaskNotifyGive(task);
 }
 
 bool takeCycles(uint32_t jobId, energy_cycle::Summary* out, size_t maxSummaries,
                 size_t& count, Timing* timing) {
-    Lock lock;
-    if (!lock || !out || completedKind != JobKind::Cycles || completedJobId != jobId) return false;
-    count = std::min(cycleCount, maxSummaries);
-    memcpy(out, cycleBuffer, count * sizeof(*out));
-    if (timing) *timing = lastTiming;
-    completedJobId = 0;
-    completedKind = JobKind::None;
-    return true;
+    bool consumed = false;
+    {
+        Lock lock;
+        const Job* ready = lock ? jobs.ready() : nullptr;
+        if (!ready || !out || ready->kind != JobKind::Cycles || ready->id != jobId) return false;
+        count = std::min(cycleCount, maxSummaries);
+        memcpy(out, cycleBuffer, count * sizeof(*out));
+        if (timing) *timing = lastTiming;
+        consumed = jobs.consume(jobId);
+    }
+    if (consumed) xTaskNotifyGive(task);
+    return consumed;
 }
 
 bool takeFiles(uint32_t jobId, historical_storage::HistoryFileInfo* out, size_t maxFiles,
                size_t& count, size_t& total, historical_storage::StorageStats& stats,
                Timing* timing) {
+    bool consumed = false;
+    {
+        Lock lock;
+        const Job* ready = lock ? jobs.ready() : nullptr;
+        if (!ready || !out || ready->kind != JobKind::Files || ready->id != jobId) return false;
+        count = std::min(filesCount, maxFiles);
+        memcpy(out, filesBuffer, count * sizeof(*out));
+        total = filesTotal;
+        stats = filesStats;
+        if (timing) *timing = lastTiming;
+        consumed = jobs.consume(jobId);
+    }
+    if (consumed) xTaskNotifyGive(task);
+    return consumed;
+}
+
+JobState jobState(uint32_t jobId) {
     Lock lock;
-    if (!lock || !out || completedKind != JobKind::Files || completedJobId != jobId) return false;
-    count = std::min(filesCount, maxFiles);
-    memcpy(out, filesBuffer, count * sizeof(*out));
-    total = filesTotal;
-    stats = filesStats;
-    if (timing) *timing = lastTiming;
-    completedJobId = 0;
-    completedKind = JobKind::None;
-    return true;
+    if (!lock) return JobState::Unknown;
+    switch (jobs.state(jobId)) {
+        case history_job_queue::State::Queued: return JobState::Queued;
+        case history_job_queue::State::Running: return JobState::Running;
+        case history_job_queue::State::Ready: return JobState::Ready;
+        case history_job_queue::State::Gone: return JobState::Gone;
+        default: return JobState::Unknown;
+    }
+}
+
+const char* jobStateName(JobState state) {
+    switch (state) {
+        case JobState::Queued: return "queued";
+        case JobState::Running: return "running";
+        case JobState::Ready: return "ready";
+        case JobState::Gone: return "gone";
+        default: return "unknown";
+    }
 }
 
 bool busy() {
     Lock lock;
-    return lock && isBusy;
+    return lock && jobs.hasOutstanding();
 }
 
 void getTiming(Timing& out) {

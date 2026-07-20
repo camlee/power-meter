@@ -215,6 +215,26 @@ void appendSensorJson(String& json, const char* id, const char* label, sensors::
     json += "}}";
 }
 
+void sendHistoryJobState(uint32_t job, const char* resource) {
+    const history_query_service::JobState state = history_query_service::jobState(job);
+    server->sendHeader("Cache-Control", "no-store");
+    if (state == history_query_service::JobState::Queued ||
+        state == history_query_service::JobState::Running ||
+        state == history_query_service::JobState::Ready) {
+        server->sendHeader("Retry-After", "1");
+        server->send(202, "application/json", String("{\"state\":\"") +
+            history_query_service::jobStateName(state) + "\"}");
+        return;
+    }
+    if (state == history_query_service::JobState::Gone) {
+        server->send(410, "application/json", String("{\"error\":\"") + resource +
+            " job expired or was already consumed\"}");
+        return;
+    }
+    server->send(404, "application/json", String("{\"error\":\"") + resource +
+        " job not found\"}");
+}
+
 // V1 sensor diagnostics are intentionally a read model, not an operational
 // calculation feed. Finite observed values remain visible when out of range;
 // unavailable values are JSON null. The Power and History APIs continue to
@@ -317,7 +337,11 @@ void webHistoryQuery() {
         }
         const uint32_t job = history_query_service::requestUsage({calendar,
             range, lookbackMinutes, bucketMinutes});
-        if (!job) { server->send(503, "application/json", "{\"error\":\"history worker unavailable\"}"); return; }
+        if (!job) {
+            server->sendHeader("Retry-After", "1");
+            server->send(503, "application/json", "{\"error\":\"history queue full or unavailable\"}");
+            return;
+        }
         server->sendHeader("Cache-Control", "no-store");
         server->send(202, "application/json", String("{\"job\":") + job + "}");
         return;
@@ -326,8 +350,7 @@ void webHistoryQuery() {
     const uint32_t job = static_cast<uint32_t>(server->arg("job").toInt());
     history_query_service::UsageResultView result{};
     if (!history_query_service::acquireUsage(job, result)) {
-        server->sendHeader("Cache-Control", "no-store");
-        server->send(202, "application/json", "{\"state\":\"pending\"}");
+        sendHistoryJobState(job, "history");
         return;
     }
 
@@ -537,7 +560,8 @@ void webCycles() {
     if (!server->hasArg("job")) {
         const uint32_t job = history_query_service::requestCycles();
         if (!job) {
-            server->send(503, "application/json", "{\"error\":\"history worker unavailable\"}");
+            server->sendHeader("Retry-After", "1");
+            server->send(503, "application/json", "{\"error\":\"history queue full or unavailable\"}");
             return;
         }
         server->sendHeader("Cache-Control", "no-store");
@@ -549,8 +573,7 @@ void webCycles() {
     energy_cycle::Summary summaries[energy_cycle::kRecentCycleCount]{};
     size_t count = 0;
     if (!history_query_service::takeCycles(job, summaries, energy_cycle::kRecentCycleCount, count)) {
-        server->sendHeader("Cache-Control", "no-store");
-        server->send(202, "application/json", "{\"state\":\"pending\"}");
+        sendHistoryJobState(job, "cycle");
         return;
     }
 

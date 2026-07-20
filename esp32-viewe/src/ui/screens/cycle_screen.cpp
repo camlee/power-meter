@@ -137,7 +137,11 @@ void render(const energy_cycle::Summary* summaries, size_t count) {
 
 void startQuery(bool replacePending = false) {
     if (!screenObject || !lv_obj_is_visible(screenObject)) return;
-    if (pendingJob && !replacePending) return;
+    if (pendingJob) {
+        if (!replacePending) return;
+        history_query_service::cancel(pendingJob);
+        pendingJob = 0;
+    }
     pendingJob = history_query_service::requestCycles();
     if (!pendingJob) {
         lv_label_set_text(statusLabel, "History unavailable");
@@ -153,9 +157,8 @@ void completionCb(lv_timer_t*) {
     size_t count = 0;
     if (!history_query_service::takeCycles(pendingJob, summaries,
             energy_cycle::kRecentCycleCount, count)) {
-        // The shared worker is newest-request-wins. A browser query can
-        // supersede this screen's job; retry once that newer job is finished.
-        if (!history_query_service::busy()) {
+        if (history_query_service::jobState(pendingJob) ==
+            history_query_service::JobState::Gone) {
             pendingJob = 0;
             startQuery();
         }
