@@ -184,7 +184,8 @@ the display. These controls are intended only for a trusted local network.
 
 The normal firmware image now contains a small Svelte web application at
 `http://device1.local/`. It displays live readings, contributes browser time,
-and includes the remote-display view without requiring a browser token. Its frontend
+and provides station/AP Wi-Fi management. Touchscreen targets also include the
+remote-display view. These trusted-LAN controls do not require a browser token. Its frontend
 assets ship with normal USB and signed OTA application updates; they do not use
 the history LittleFS partition. See [docs/WEB_APP.md](docs/WEB_APP.md) for the
 local Node/PlatformIO build workflow, caching policy, realtime protocol, and

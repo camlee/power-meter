@@ -31,6 +31,30 @@ export async function saveSetup(settings) {
   return result;
 }
 
+export async function getWifi() {
+  const response = await fetch('/api/v1/wifi', { cache: 'no-store' });
+  if (!response.ok) throw await responseError(response, 'Wi-Fi');
+  return response.json();
+}
+
+export async function sendWifiStationCommand(command) {
+  const response = await fetch('/api/v1/wifi/station', {
+    method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(command)
+  });
+  if (!response.ok) throw await responseError(response, 'Wi-Fi station');
+  return response.json();
+}
+
+export async function saveWifiAp(settings) {
+  const response = await fetch('/api/v1/wifi/ap', {
+    method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(settings)
+  });
+  if (!response.ok) throw await responseError(response, 'Wi-Fi access point');
+  return response.json();
+}
+
 export async function getDebug() {
   const response = await fetch('/api/v1/debug', { cache: 'no-store' });
   if (!response.ok) throw new Error(`debug ${response.status}`);

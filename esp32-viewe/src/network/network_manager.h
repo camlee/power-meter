@@ -46,7 +46,7 @@ void update();
 // Command API
 bool connectTo(const char* ssid, const char* password = nullptr);
 void disconnect();
-void startAp(const char* ssid, const char* password = nullptr, bool secure = true);
+bool startAp(const char* ssid, const char* password = nullptr, bool secure = true);
 void stopAp();
 bool scanNetworks();
 

@@ -37,12 +37,82 @@ bool jsonString(const String& json, const char* name, String& value) {
     if (keyAt < 0) return false;
     const int colon = json.indexOf(':', keyAt + key.length());
     if (colon < 0) return false;
-    const int firstQuote = json.indexOf('\"', colon + 1);
-    if (firstQuote < 0) return false;
-    const int lastQuote = json.indexOf('\"', firstQuote + 1);
-    if (lastQuote < 0) return false;
-    value = json.substring(firstQuote + 1, lastQuote);
-    return true;
+    int cursor = colon + 1;
+    while (cursor < static_cast<int>(json.length()) &&
+           isspace(static_cast<unsigned char>(json[cursor]))) ++cursor;
+    if (cursor >= static_cast<int>(json.length()) || json[cursor++] != '\"') return false;
+
+    value = "";
+    while (cursor < static_cast<int>(json.length())) {
+        const char ch = json[cursor++];
+        if (ch == '\"') return true;
+        if (static_cast<unsigned char>(ch) < 0x20) return false;
+        if (ch != '\\') {
+            value += ch;
+            continue;
+        }
+        if (cursor >= static_cast<int>(json.length())) return false;
+        const char escaped = json[cursor++];
+        switch (escaped) {
+            case '\"': value += '\"'; break;
+            case '\\': value += '\\'; break;
+            case '/': value += '/'; break;
+            case 'b': value += '\b'; break;
+            case 'f': value += '\f'; break;
+            case 'n': value += '\n'; break;
+            case 'r': value += '\r'; break;
+            case 't': value += '\t'; break;
+            // JSON.stringify emits non-ASCII text as UTF-8, so the only \u
+            // escapes it normally sends here are control characters. Decode
+            // that byte range and reject larger escapes rather than silently
+            // changing a Wi-Fi credential.
+            case 'u': {
+                if (cursor + 4 > static_cast<int>(json.length())) return false;
+                uint16_t codepoint = 0;
+                for (int i = 0; i < 4; ++i) {
+                    const char hex = json[cursor++];
+                    codepoint <<= 4;
+                    if (hex >= '0' && hex <= '9') codepoint |= hex - '0';
+                    else if (hex >= 'a' && hex <= 'f') codepoint |= hex - 'a' + 10;
+                    else if (hex >= 'A' && hex <= 'F') codepoint |= hex - 'A' + 10;
+                    else return false;
+                }
+                if (codepoint > 0x7f) return false;
+                value += static_cast<char>(codepoint);
+                break;
+            }
+            default: return false;
+        }
+    }
+    return false;
+}
+
+void appendJsonString(String& json, const char* value) {
+    static constexpr char hex[] = "0123456789abcdef";
+    json += '\"';
+    for (const unsigned char* cursor =
+             reinterpret_cast<const unsigned char*>(value ? value : "");
+         *cursor; ++cursor) {
+        switch (*cursor) {
+            case '\"': json += "\\\""; break;
+            case '\\': json += "\\\\"; break;
+            case '\b': json += "\\b"; break;
+            case '\f': json += "\\f"; break;
+            case '\n': json += "\\n"; break;
+            case '\r': json += "\\r"; break;
+            case '\t': json += "\\t"; break;
+            default:
+                if (*cursor < 0x20) {
+                    json += "\\u00";
+                    json += hex[*cursor >> 4];
+                    json += hex[*cursor & 0x0f];
+                } else {
+                    json += static_cast<char>(*cursor);
+                }
+                break;
+        }
+    }
+    json += '\"';
 }
 
 bool validSha256(const String& hash) {

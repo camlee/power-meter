@@ -73,7 +73,7 @@ accuracy is deliberately tracked in a later on-site milestone.
 | 3. Local calibration | Implemented | Electrical calibration and accuracy validation belong to the on-site hardware milestone. |
 | 4. Embedded web application | Complete | Calibration, settings writes, storage tools, and appearance refinements are normal backlog. |
 | 5. OTA and remote display | Verified for current workflow | Continue regression coverage as related services change. |
-| 6. WROOM web-first target | Physical Demo boot/AP verified | Complete browser/API validation, then add its OLED and ADS1115 in follow-up milestones. |
+| 6. WROOM web-first target | Demo bring-up verified | Add its OLED and ADS1115 in follow-up milestones. |
 
 The current ESP32 firmware, Arduino firmware, and embedded web app build
 successfully. Candidate History V1, live, historical, and Cycle browser views,
@@ -89,13 +89,40 @@ capabilities. `meter-viewe` retains the ESP32-S3/LVGL touchscreen, while
 runtime-capability-aware web application and fresh devices start a local access
 point. The WROOM build deliberately uses Demo sensors for its first physical
 bring-up. It has been erased, flashed, and verified booting the shared runtime,
-Demo history, web and live services, and its generated local access point. A
-browser/API pass from a client joined to that access point remains.
+Demo history, web and live services, and its generated local access point. The
+embedded SPA, runtime capability model, Wi-Fi read model, binary history query,
+headless route behavior, and live WebSocket have also been verified from a LAN
+client after station provisioning as `meter2.local`.
 
 The next WROOM checkpoints, after that minimal bring-up is verified, are a
 shared/mutex-protected I2C service, the onboard SSD1306 status display, and the
 ADS1115 acquisition source with the established per-channel calibration and
 filtering behavior. ADS1115 work is not part of the initial Demo-mode milestone.
+
+#### Known WROOM SSD1306 baseline
+
+The working MicroPython firmware provides a concrete starting point for the
+status-display follow-up; these details do not need to be rediscovered:
+
+- The display is a monochrome 128×64 SSD1306 connected over I2C.
+- It uses SDA GPIO 5 and SCL GPIO 4 and the SSD1306 driver's default address,
+  `0x3c`.
+- The installed panel is rendered with both horizontal and vertical flipping
+  enabled (`flip_horiz=True`, `flip_vert=True`).
+- It shares that same bus with the ADS1115 at `0x48`; the C++ implementation
+  should therefore initialize the bus once and serialize access for both
+  clients rather than letting either driver own `Wire` independently.
+- The legacy status layout is a useful behavioral reference: startup and
+  connection progress, Wi-Fi SSID and IP address, input/output current and
+  power, UTC time, and connected WebSocket count. Its measurement/status area
+  refreshes once per second.
+- This remains a small headless status surface, not an LVGL target. Keep
+  `POWER_METER_HAS_TOUCH_UI=0`; set the separate status-display capability only
+  after the SSD1306 service initializes successfully on the C++ target.
+
+The first OLED milestone should prove initialization, orientation, shared-bus
+ownership, and periodic status updates while retaining Demo sensing. ADS1115
+acquisition and electrical calibration remain a separate subsequent milestone.
 
 ### Roadmap checkpoint — 2026-07-15
 

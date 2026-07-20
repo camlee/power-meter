@@ -107,6 +107,9 @@ GET  /api/v1/web/status       JSON, no-store
 GET  /api/v1/sensors          raw sensor/source diagnostics, JSON, no-store
 GET  /api/v1/setup            persisted device setup, JSON, no-store
 POST /api/v1/setup            validate, persist, and restart
+GET  /api/v1/wifi             station/AP state, scans, saved networks and AP clients
+POST /api/v1/wifi/station     scan/connect/disconnect/connect-saved/forget commands
+POST /api/v1/wifi/ap          validate and apply access-point settings
 GET  /api/v1/debug            on-device Debug read model, JSON, no-store
 POST /api/v1/time/anchor      local-LAN browser time anchor
 GET  /api/v1/display/...      local-LAN remote display control (`meter-viewe` only)
@@ -127,10 +130,23 @@ it. A later migration of OTA routes to the native server can unite both on port
 80 without changing the browser protocol path or frame layout.
 
 The live WebSocket, sensor read model, browser time anchor, and remote-display
-endpoints are unauthenticated for use on a trusted local network. OTA and its
+endpoints are unauthenticated for use on a trusted local network. The Wi-Fi
+settings endpoints follow the same local-management model and the Wi-Fi read
+model includes the saved AP password so it can reproduce the on-device editor.
+OTA and its
 maintenance diagnostics retain their bearer-token policy. Do not expose the
 meter beyond the trusted LAN without adding authentication to these
 browser-facing endpoints.
+
+The Wi-Fi settings page uses the same `network_manager` command and persistence
+methods as the LVGL Wi-Fi screen. Station scans and connections are asynchronous;
+the page polls the small Wi-Fi read model once per second while visible to show
+scan, connection, retry, and credential-failure state. A user can select a scan
+result or enter a hidden SSID, connect with new credentials, reconnect to or
+forget a saved network, and explicitly disconnect station mode. Access-point
+settings include enabled/disabled, SSID, open/secured mode, password, IP address,
+and connected client MAC addresses. Applying a different active AP configuration
+can disconnect the browser, which must then join the new SSID.
 
 `/api/v1/web/status` publishes the hardware profile and capabilities, including
 touch/status displays, the local sensor backend, and supported sensor modes.
@@ -238,6 +254,12 @@ be recolored safely in place, a boundary transition persists the next
 effective appearance and performs a controlled restart; the persisted value
 prevents a clock-sync restart loop. Do not manipulate UI widgets from a
 network task or mirror Preferences directly in JavaScript.
+
+Wi-Fi changes do not require a restart. The browser stages only the fields in
+the visible form, then calls the shared manager through the Wi-Fi API. The API
+validates ESP32 limits (SSID 1–32 bytes, WPA password 8–63 bytes), JSON-escapes
+arbitrary SSID/password characters, and reports an in-progress conflict rather
+than starting a second radio operation.
 
 While Usage is visible, both browser and LVGL refresh just after a monotonic
 storage boundary at a cadence equal to one displayed x-axis bucket (2 minutes

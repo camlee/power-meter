@@ -1038,14 +1038,16 @@ void disconnect() {
     device_state::changed(device_state::Domain::Network);
 }
 
-void startAp(const char* ssid, const char* password, bool secure) {
+bool startAp(const char* ssid, const char* password, bool secure) {
     WiFi.mode(WIFI_AP_STA); // Forces hardware to support both
     if (WiFi.softAP(ssid, secure ? password : nullptr)) {
         apRunning = true;
         saveApSettings(ssid, secure, password, true);
         ensureMdns();
         device_state::changed(device_state::Domain::Network);
+        return true;
     }
+    return false;
 }
 
 void stopAp() {

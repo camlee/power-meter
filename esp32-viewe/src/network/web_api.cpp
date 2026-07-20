@@ -617,6 +617,248 @@ void webCycles() {
     server->send(200, "application/json", response);
 }
 
+const char* networkStateName(network_manager::NetworkState state) {
+    switch (state) {
+        case network_manager::NetworkState::Disconnected: return "disconnected";
+        case network_manager::NetworkState::ConnectingSta: return "connecting";
+        case network_manager::NetworkState::ConnectedStaLocal: return "connected_local";
+        case network_manager::NetworkState::ConnectedStaInternet: return "connected_internet";
+    }
+    return "disconnected";
+}
+
+const char* connectionPhaseName(network_manager::ConnectionPhase phase) {
+    switch (phase) {
+        case network_manager::ConnectionPhase::Idle: return "idle";
+        case network_manager::ConnectionPhase::LookingForNetwork: return "looking_for_network";
+        case network_manager::ConnectionPhase::ObtainingIp: return "obtaining_ip";
+        case network_manager::ConnectionPhase::RetryWaiting: return "retry_waiting";
+        case network_manager::ConnectionPhase::ActionRequired: return "action_required";
+    }
+    return "idle";
+}
+
+const char* connectionFailureName(network_manager::ConnectionFailure failure) {
+    switch (failure) {
+        case network_manager::ConnectionFailure::None: return "none";
+        case network_manager::ConnectionFailure::NetworkNotFound: return "network_not_found";
+        case network_manager::ConnectionFailure::AuthenticationFailed: return "authentication_failed";
+        case network_manager::ConnectionFailure::IncompatibleSecurity: return "incompatible_security";
+        case network_manager::ConnectionFailure::ConnectionFailed: return "connection_failed";
+        case network_manager::ConnectionFailure::TimedOut: return "timed_out";
+        case network_manager::ConnectionFailure::LinkLost: return "link_lost";
+    }
+    return "connection_failed";
+}
+
+const char* recoveryStateName(network_manager::RecoveryState state) {
+    switch (state) {
+        case network_manager::RecoveryState::Disabled: return "disabled";
+        case network_manager::RecoveryState::Idle: return "idle";
+        case network_manager::RecoveryState::FastRetry: return "fast_retry";
+        case network_manager::RecoveryState::Discovering: return "discovering";
+        case network_manager::RecoveryState::TryingCandidate: return "trying_candidate";
+        case network_manager::RecoveryState::Waiting: return "waiting";
+        case network_manager::RecoveryState::Blocked: return "blocked";
+    }
+    return "disabled";
+}
+
+const char* scanStateName(network_manager::ScanState state) {
+    switch (state) {
+        case network_manager::ScanState::Idle: return "idle";
+        case network_manager::ScanState::Starting: return "starting";
+        case network_manager::ScanState::Running: return "running";
+        case network_manager::ScanState::Succeeded: return "succeeded";
+        case network_manager::ScanState::Failed: return "failed";
+    }
+    return "idle";
+}
+
+bool validWifiText(const String& value, size_t minimum, size_t maximum) {
+    if (value.length() < minimum || value.length() > maximum) return false;
+    for (size_t i = 0; i < value.length(); ++i) {
+        if (static_cast<unsigned char>(value[i]) < 0x20) return false;
+    }
+    return true;
+}
+
+void webWifi() {
+    const auto stationState = network_manager::getState();
+    const bool stationConnected =
+        stationState == network_manager::NetworkState::ConnectedStaLocal ||
+        stationState == network_manager::NetworkState::ConnectedStaInternet;
+    char apSsid[33] = {}, apPassword[64] = {};
+    bool apSecure = true;
+    network_manager::getSavedApSettings(apSsid, sizeof(apSsid), apSecure,
+                                        apPassword, sizeof(apPassword));
+
+    String response;
+    response.reserve(4096);
+    response = String("{\"api_version\":1,\"state_revision\":") +
+        device_state::revision() + ",\"station\":{\"state\":\"" +
+        networkStateName(stationState) + "\",\"phase\":\"" +
+        connectionPhaseName(network_manager::getConnectionPhase()) +
+        "\",\"failure\":\"" +
+        connectionFailureName(network_manager::getConnectionFailure()) +
+        "\",\"recovery\":\"" +
+        recoveryStateName(network_manager::getRecoveryState()) +
+        "\",\"ssid\":";
+    http_utils::appendJsonString(response, network_manager::getCurrentSsid());
+    response += String(",\"ip\":\"") + network_manager::getStaIpAddress() +
+        "\",\"rssi\":";
+    response += stationConnected ? String(network_manager::getRssi()) : "null";
+    response += String(",\"reconnect_seconds\":") +
+        network_manager::getReconnectSecondsRemaining() + "},\"scan\":{\"state\":\"" +
+        scanStateName(network_manager::getScanState()) +
+        "\",\"generation\":" + network_manager::getScanGeneration() +
+        ",\"networks\":[";
+
+    const int scanCount = network_manager::getScanResultCount();
+    bool firstScan = true;
+    for (int i = 0; i < scanCount; ++i) {
+        char ssid[33];
+        bool secure = false;
+        int rssi = 0;
+        if (!network_manager::getScanResult(i, ssid, sizeof(ssid), secure, rssi)) continue;
+        if (!firstScan) response += ',';
+        firstScan = false;
+        response += "{\"ssid\":";
+        http_utils::appendJsonString(response, ssid);
+        response += String(",\"secure\":") + (secure ? "true" : "false") +
+            ",\"rssi\":" + rssi + "}";
+    }
+    response += "]},\"saved_networks\":[";
+    const int savedCount = network_manager::getSavedNetworkCount();
+    bool firstSaved = true;
+    for (int i = 0; i < savedCount; ++i) {
+        char ssid[33];
+        if (!network_manager::getSavedNetwork(i, ssid, sizeof(ssid))) continue;
+        if (!firstSaved) response += ',';
+        firstSaved = false;
+        http_utils::appendJsonString(response, ssid);
+    }
+    response += "],\"ap\":{\"enabled\":";
+    response += network_manager::isApEnabled() ? "true" : "false";
+    response += ",\"ssid\":";
+    http_utils::appendJsonString(response, apSsid);
+    response += String(",\"secure\":") + (apSecure ? "true" : "false") +
+        ",\"password\":";
+    http_utils::appendJsonString(response, apPassword);
+    response += String(",\"ip\":\"") +
+        (network_manager::isApEnabled() ? network_manager::getApIpAddress() : "") +
+        "\",\"client_count\":" + network_manager::getApClientCount() +
+        ",\"clients\":[";
+    const int clientCount = network_manager::getApClientCount();
+    bool firstClient = true;
+    for (int i = 0; i < clientCount; ++i) {
+        char mac[18];
+        if (!network_manager::getApClientMac(i, mac, sizeof(mac))) continue;
+        if (!firstClient) response += ',';
+        firstClient = false;
+        http_utils::appendJsonString(response, mac);
+    }
+    response += "]}}";
+    server->sendHeader("Cache-Control", "no-store");
+    server->send(200, "application/json", response);
+}
+
+void webWifiStation() {
+    const String body = server->arg("plain");
+    String action;
+    if (!http_utils::jsonString(body, "action", action)) {
+        server->send(400, "application/json", "{\"error\":\"invalid station command\"}");
+        return;
+    }
+
+    if (action == "scan") {
+        if (!network_manager::scanNetworks()) {
+            server->send(409, "application/json", "{\"error\":\"a network operation is already in progress\"}");
+            return;
+        }
+        server->send(202, "application/json", "{\"ok\":true,\"pending\":true}");
+        return;
+    }
+    if (action == "disconnect") {
+        network_manager::disconnect();
+        server->send(200, "application/json", "{\"ok\":true}");
+        return;
+    }
+
+    String ssid;
+    if (!http_utils::jsonString(body, "ssid", ssid) ||
+        !validWifiText(ssid, 1, 32)) {
+        server->send(400, "application/json", "{\"error\":\"SSID must be 1 to 32 bytes without control characters\"}");
+        return;
+    }
+    if (action == "connect") {
+        String password;
+        if (!http_utils::jsonString(body, "password", password) ||
+            !validWifiText(password, 0, 63) ||
+            (password.length() > 0 && password.length() < 8)) {
+            server->send(400, "application/json", "{\"error\":\"Password must be empty for an open network or 8 to 63 bytes\"}");
+            return;
+        }
+        if (!network_manager::connectTo(ssid.c_str(), password.c_str())) {
+            server->send(409, "application/json", "{\"error\":\"a network operation is already in progress\"}");
+            return;
+        }
+        server->send(202, "application/json", "{\"ok\":true,\"pending\":true}");
+        return;
+    }
+    if (action == "connect_saved") {
+        if (!network_manager::connectSavedNetwork(ssid.c_str())) {
+            server->send(404, "application/json", "{\"error\":\"saved network was not found or is busy\"}");
+            return;
+        }
+        server->send(202, "application/json", "{\"ok\":true,\"pending\":true}");
+        return;
+    }
+    if (action == "forget") {
+        if (!network_manager::forgetSavedNetwork(ssid.c_str())) {
+            server->send(404, "application/json", "{\"error\":\"saved network was not found\"}");
+            return;
+        }
+        server->send(200, "application/json", "{\"ok\":true}");
+        return;
+    }
+    server->send(400, "application/json", "{\"error\":\"unknown station command\"}");
+}
+
+void webWifiAp() {
+    const String body = server->arg("plain");
+    bool enabled = false;
+    if (!http_utils::jsonBool(body, "enabled", enabled)) {
+        server->send(400, "application/json", "{\"error\":\"enabled must be boolean\"}");
+        return;
+    }
+    if (!enabled) {
+        network_manager::stopAp();
+        server->send(200, "application/json", "{\"ok\":true}");
+        return;
+    }
+
+    String ssid, password;
+    bool secure = true;
+    if (!http_utils::jsonString(body, "ssid", ssid) ||
+        !http_utils::jsonString(body, "password", password) ||
+        !http_utils::jsonBool(body, "secure", secure) ||
+        !validWifiText(ssid, 1, 32)) {
+        server->send(400, "application/json", "{\"error\":\"invalid access-point settings\"}");
+        return;
+    }
+    if ((secure && !validWifiText(password, 8, 63)) ||
+        (!secure && !validWifiText(password, 0, 63))) {
+        server->send(400, "application/json", "{\"error\":\"A secured access point needs an 8 to 63 byte password\"}");
+        return;
+    }
+    if (!network_manager::startAp(ssid.c_str(), password.c_str(), secure)) {
+        server->send(500, "application/json", "{\"error\":\"access point could not be started\"}");
+        return;
+    }
+    server->send(200, "application/json", "{\"ok\":true}");
+}
+
 void historyFiles() {
     if (!http_utils::authorised(*server)) {
         server->send(401, "application/json", "{\"error\":\"unauthorised\"}");
@@ -694,6 +936,9 @@ void registerRoutes(WebServer& value) {
     server->on("/api/v1/sensors", HTTP_GET, webSensors);
     server->on("/api/v1/setup", HTTP_GET, webSetup);
     server->on("/api/v1/setup", HTTP_POST, webSetup);
+    server->on("/api/v1/wifi", HTTP_GET, webWifi);
+    server->on("/api/v1/wifi/station", HTTP_POST, webWifiStation);
+    server->on("/api/v1/wifi/ap", HTTP_POST, webWifiAp);
     server->on("/api/v1/debug", HTTP_GET, webDebug);
     server->on("/", HTTP_GET, serveWebAsset);
     server->onNotFound(serveWebAsset);

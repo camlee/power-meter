@@ -217,14 +217,13 @@ The implemented local service layer includes:
 
 - a shared asynchronous energy-cycle summary model used by LVGL and Web;
 - realtime power/history plus raw sensor-diagnostic browser APIs;
-- an embedded web application with Power, Usage, Cycle, Sensors, read-only
-  Setup, and remote-display views;
+- an embedded web application with Power, Usage, Cycle, Sensors, Setup, Wi-Fi,
+  diagnostics, and capability-gated remote-display views;
 - browser time contribution;
 - signed OTA delivery and diagnostics;
 - remote display capture and input on a trusted local network.
 
-Browser calibration, settings writes, and storage tools remain incremental
-product backlog.
+Browser calibration and storage tools remain incremental product backlog.
 Data export and synchronization between devices remain future work.
 
 Mesh networking is a future architectural option, not a near-term dependency;

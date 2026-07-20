@@ -11,8 +11,11 @@
     getSensors,
     getSetup,
     getStatus,
+    getWifi,
     openLiveSocket,
+    saveWifiAp,
     sendRemotePointer,
+    sendWifiStationCommand,
     saveCycleEndHour,
     saveSetup,
   } from './lib/api.js';
@@ -25,6 +28,7 @@
   const STATUS_POLL_MS = 10_000;
   const SENSOR_POLL_MS = 1_000;
   const DEBUG_POLL_MS = 1_000;
+  const WIFI_POLL_MS = 1_000;
   const CYCLE_REFRESH_MS = 5 * 60_000;
   const cycleHours = Array.from({ length: 24 }, (_, hour) => ({ hour, label: hourLabel(hour) }));
 
@@ -73,12 +77,13 @@
     history: '/history',
     cycle: '/cycle',
     sensors: '/sensors',
+    wifi: '/wifi',
     setup: '/setup',
     info: '/info',
     debug: '/debug',
   };
 
-  const SETTINGS_ROUTES = ['setup', 'info', 'debug', 'remote'];
+  const SETTINGS_ROUTES = ['wifi', 'setup', 'info', 'debug', 'remote'];
 
   // ---------------------------------------------------------------------
   // State
@@ -126,6 +131,25 @@
     setupAppearance !== setup.appearance || resetSetup || resetWifi ||
     resetCalibration || resetUsage
   );
+
+  // Wi-Fi commands are applied immediately by the shared network manager.
+  // Poll while this page is visible because scans and connections finish
+  // asynchronously and may also be changed from the touchscreen.
+  let wifi = null;
+  let wifiError = '';
+  let wifiMessage = '';
+  let wifiBusy = false;
+  let wifiPollTimer;
+  let stationSsid = '';
+  let stationPassword = '';
+  let stationSecure = false;
+  let apDraftLoaded = false;
+  let apEnabled = false;
+  let apSsid = '';
+  let apSecure = true;
+  let apPassword = '';
+  $: wifiNetworks = wifi?.scan?.networks || [];
+  $: wifiScanBusy = ['starting', 'running'].includes(wifi?.scan?.state);
 
   // On-device diagnostics are refreshed only while Debug is visible.
   let debugStatus = null;
@@ -305,6 +329,29 @@
     }
   }
 
+  function wifiStationLabel(station) {
+    if (!station) return 'Loading…';
+    if (station.state === 'connected_internet') return 'Connected · Internet available';
+    if (station.state === 'connected_local') return 'Connected · Local network only';
+    if (station.phase === 'obtaining_ip') return 'Connected · Obtaining IP address…';
+    if (station.state === 'connecting' || station.phase === 'looking_for_network') return 'Connecting…';
+    if (station.phase === 'retry_waiting') {
+      return `Retrying in ${station.reconnect_seconds || 0}s · ${titleCase(station.failure)}`;
+    }
+    if (station.phase === 'action_required') return titleCase(station.failure);
+    if (station.recovery === 'discovering') return 'Looking for saved networks…';
+    if (station.recovery === 'blocked') return 'Saved networks need attention';
+    return 'Disconnected';
+  }
+
+  function signalLabel(rssi) {
+    if (!Number.isFinite(rssi)) return '';
+    if (rssi >= -55) return `${rssi} dBm · Excellent`;
+    if (rssi >= -67) return `${rssi} dBm · Good`;
+    if (rssi >= -75) return `${rssi} dBm · Fair`;
+    return `${rssi} dBm · Weak`;
+  }
+
   // Turns a thrown error into a stable, user-facing message so different
   // failures (network down, server error, bad response) are distinguishable
   // instead of all collapsing into "undefined" or a raw stack trace.
@@ -338,6 +385,7 @@
     route = next;
     clearTimeout(historyRefreshTimer);
     clearTimeout(cycleRefreshTimer);
+    clearInterval(wifiPollTimer);
 
     if (next === 'history') {
       if (!history) {
@@ -359,6 +407,11 @@
     }
 
     if (next === 'setup') refreshSetup();
+
+    if (next === 'wifi') {
+      refreshWifi();
+      wifiPollTimer = setInterval(refreshWifi, WIFI_POLL_MS);
+    }
 
     clearInterval(debugPollTimer);
     if (next === 'debug') {
@@ -437,6 +490,110 @@
       loadSetupDraft(await getSetup());
     } catch (err) {
       setupError = describeError(err, 'load setup');
+    }
+  }
+
+  function loadApDraft(value) {
+    apEnabled = value.enabled;
+    apSsid = value.ssid || '';
+    apSecure = value.secure;
+    apPassword = value.password || '';
+    apDraftLoaded = true;
+  }
+
+  function apDraftMatches(value) {
+    return !!value && apEnabled === value.enabled && apSsid === (value.ssid || '') &&
+      apSecure === value.secure && apPassword === (value.password || '');
+  }
+
+  async function refreshWifi(syncAp = false) {
+    try {
+      const next = await getWifi();
+      // Follow changes made on the touchscreen while the form is clean, but
+      // never overwrite a browser edit that has not been applied yet.
+      const shouldSyncAp = syncAp || !apDraftLoaded || apDraftMatches(wifi?.ap);
+      wifi = next;
+      if (shouldSyncAp) loadApDraft(next.ap);
+      wifiError = '';
+    } catch (err) {
+      wifiError = describeError(err, 'load Wi-Fi settings');
+    }
+  }
+
+  function selectStationNetwork(network) {
+    stationSsid = network.ssid;
+    stationSecure = network.secure;
+    stationPassword = '';
+  }
+
+  async function stationCommand(command, successMessage) {
+    wifiBusy = true;
+    wifiError = '';
+    wifiMessage = '';
+    try {
+      await sendWifiStationCommand(command);
+      wifiMessage = successMessage;
+      await refreshWifi();
+    } catch (err) {
+      wifiError = describeError(err, 'change station Wi-Fi');
+    } finally {
+      wifiBusy = false;
+    }
+  }
+
+  function connectStation() {
+    if (!stationSsid.length) {
+      wifiError = 'Enter or select a network name.';
+      return;
+    }
+    if ((stationSecure && stationPassword.length < 8) ||
+        (stationPassword.length > 0 && stationPassword.length < 8)) {
+      wifiError = 'Use an empty password for an open network, or at least 8 characters.';
+      return;
+    }
+    stationCommand(
+      { action: 'connect', ssid: stationSsid, password: stationPassword },
+      `Connecting to ${stationSsid}…`,
+    );
+  }
+
+  function connectSavedStation(ssid) {
+    stationCommand({ action: 'connect_saved', ssid }, `Connecting to ${ssid}…`);
+  }
+
+  function forgetSavedStation(ssid) {
+    if (!window.confirm(`Forget ${ssid}?`)) return;
+    stationCommand({ action: 'forget', ssid }, `${ssid} forgotten.`);
+  }
+
+  async function submitAp() {
+    wifiError = '';
+    wifiMessage = '';
+    if (apEnabled && !apSsid.length) {
+      wifiError = 'Enter an access-point network name.';
+      return;
+    }
+    if (apEnabled && apSecure && apPassword.length < 8) {
+      wifiError = 'A secured access point needs a password of at least 8 characters.';
+      return;
+    }
+    if (wifi?.ap?.enabled &&
+        (!apEnabled || apSsid !== wifi.ap.ssid || apSecure !== wifi.ap.secure ||
+         (apSecure && apPassword !== wifi.ap.password)) &&
+        !window.confirm('Changing the active access point may disconnect this browser. Apply these settings?')) return;
+
+    wifiBusy = true;
+    try {
+      await saveWifiAp({ enabled: apEnabled, ssid: apSsid, secure: apSecure, password: apPassword });
+      wifiMessage = apEnabled
+        ? 'Access-point settings applied. Reconnect to the new network if this browser disconnects.'
+        : 'Access point stopped.';
+      apDraftLoaded = false;
+      await refreshWifi(true);
+    } catch (err) {
+      wifiError = describeError(err, 'change the access point');
+    } finally {
+      wifiBusy = false;
     }
   }
 
@@ -799,6 +956,7 @@
       clearTimeout(cycleRefreshTimer);
       clearInterval(sensorPollTimer);
       clearInterval(debugPollTimer);
+      clearInterval(wifiPollTimer);
       return;
     }
 
@@ -818,6 +976,10 @@
     if (route === 'debug') {
       refreshDebug();
       debugPollTimer = setInterval(refreshDebug, DEBUG_POLL_MS);
+    }
+    if (route === 'wifi') {
+      refreshWifi();
+      wifiPollTimer = setInterval(refreshWifi, WIFI_POLL_MS);
     }
   }
 
@@ -841,6 +1003,7 @@
       clearInterval(statusPollTimer);
       clearInterval(sensorPollTimer);
       clearInterval(debugPollTimer);
+      clearInterval(wifiPollTimer);
       clearTimeout(reconnectTimer);
       clearTimeout(remoteRefreshTimer);
       clearTimeout(historyRefreshTimer);
@@ -892,6 +1055,7 @@
 
   {#if SETTINGS_ROUTES.includes(route)}
     <nav class="settings-nav" aria-label="Settings navigation">
+      <button class:active={route === 'wifi'} on:click={() => navigate('wifi')}>Wi-Fi</button>
       <button class:active={route === 'setup'} on:click={() => navigate('setup')}>Setup</button>
       <button class:active={route === 'info'} on:click={() => navigate('info')}>Info</button>
       <button class:active={route === 'debug'} on:click={() => navigate('debug')}>Debug</button>
@@ -925,6 +1089,114 @@
       <button class="refresh" on:click={refreshRemote} disabled={remoteBusy} aria-label="Refresh display" title="Refresh display">
         ↻
       </button>
+    </section>
+  {:else if route === 'wifi'}
+    <section class="wifi-view">
+      {#if wifiError}<p class="error" role="alert">{wifiError}</p>{/if}
+      {#if wifiMessage}<p class="success" role="status">{wifiMessage}</p>{/if}
+
+      <div class="wifi-grid">
+        <article class="wifi-card">
+          <header class="wifi-heading">
+            <div>
+              <h2>Station</h2>
+              <p class:good={wifi?.station?.state?.startsWith('connected')} class:warning={wifi?.station?.state === 'connecting'}>
+                {wifiStationLabel(wifi?.station)}
+              </p>
+            </div>
+            {#if wifi?.station?.state !== 'disconnected' || wifi?.station?.ssid}
+              <button class="secondary compact" disabled={wifiBusy} on:click={() => stationCommand({ action: 'disconnect' }, 'Station disconnected.')}>Disconnect</button>
+            {/if}
+          </header>
+
+          {#if wifi?.station?.ssid}
+            <dl class="wifi-current">
+              <dt>Network</dt><dd>{wifi.station.ssid}</dd>
+              <dt>IP address</dt><dd>{wifi.station.ip || '—'}</dd>
+              <dt>Signal</dt><dd>{signalLabel(wifi.station.rssi) || '—'}</dd>
+            </dl>
+          {/if}
+
+          <div class="wifi-section-heading">
+            <h3>Available networks</h3>
+            <button class="secondary compact" disabled={wifiBusy || wifiScanBusy} on:click={() => stationCommand({ action: 'scan' }, 'Scanning for networks…')}>
+              {wifiScanBusy ? 'Scanning…' : 'Scan'}
+            </button>
+          </div>
+          {#if wifiNetworks.length}
+            <div class="network-list">
+              {#each wifiNetworks as network}
+                <button type="button" class:selected={stationSsid === network.ssid} on:click={() => selectStationNetwork(network)}>
+                  <span>{network.ssid || '(hidden network)'}</span>
+                  <small>{network.secure ? 'Secured' : 'Open'} · {network.rssi} dBm</small>
+                </button>
+              {/each}
+            </div>
+          {:else}
+            <p class="wifi-empty">{wifiScanBusy ? 'Scanning…' : 'Scan to find nearby networks.'}</p>
+          {/if}
+
+          <form class="wifi-connect" on:submit|preventDefault={connectStation}>
+            <label for="station-ssid">Network name (SSID)</label>
+            <input id="station-ssid" bind:value={stationSsid} on:input={() => stationSecure = false} maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" />
+            <label for="station-password">Password</label>
+            <input id="station-password" type="password" bind:value={stationPassword} maxlength="63" autocomplete="current-password" placeholder={stationSecure ? 'Required for this network' : 'Leave empty for an open network'} />
+            <button class="primary" type="submit" disabled={wifiBusy || wifiScanBusy || !stationSsid}>Connect</button>
+          </form>
+
+          <h3 class="saved-title">Saved networks</h3>
+          {#if wifi?.saved_networks?.length}
+            <div class="saved-networks">
+              {#each wifi.saved_networks as ssid}
+                <div>
+                  <span>{ssid}</span>
+                  <button class="secondary compact" disabled={wifiBusy} on:click={() => connectSavedStation(ssid)}>Connect</button>
+                  <button class="danger compact" disabled={wifiBusy} on:click={() => forgetSavedStation(ssid)}>Forget</button>
+                </div>
+              {/each}
+            </div>
+          {:else}
+            <p class="wifi-empty">No saved networks.</p>
+          {/if}
+        </article>
+
+        <article class="wifi-card">
+          <header class="wifi-heading">
+            <div>
+              <h2>Access point</h2>
+              <p class:good={wifi?.ap?.enabled}>{wifi?.ap?.enabled ? `Running · ${wifi.ap.client_count} connected` : 'Stopped'}</p>
+            </div>
+          </header>
+          {#if wifi?.ap?.enabled}
+            <dl class="wifi-current">
+              <dt>Network</dt><dd>{wifi.ap.ssid}</dd>
+              <dt>IP address</dt><dd>{wifi.ap.ip || '—'}</dd>
+            </dl>
+          {/if}
+
+          <form class="wifi-ap-form" on:submit|preventDefault={submitAp}>
+            <fieldset disabled={wifiBusy}>
+              <label class="switch-row"><input type="checkbox" bind:checked={apEnabled} /> Enable access point</label>
+              <label for="ap-ssid">Network name (SSID)</label>
+              <input id="ap-ssid" bind:value={apSsid} maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" />
+              <label class="switch-row"><input type="checkbox" bind:checked={apSecure} /> Require a password</label>
+              <label for="ap-password">Access-point password</label>
+              <input id="ap-password" type="password" bind:value={apPassword} maxlength="63" minlength={apSecure ? 8 : undefined} disabled={!apSecure} autocomplete="new-password" />
+            </fieldset>
+            <button class="primary" type="submit" disabled={wifiBusy}>{wifiBusy ? 'Applying…' : 'Apply access-point settings'}</button>
+          </form>
+
+          <h3 class="saved-title">Connected devices</h3>
+          {#if wifi?.ap?.clients?.length}
+            <ul class="ap-clients">
+              {#each wifi.ap.clients as mac}<li>{mac}</li>{/each}
+            </ul>
+          {:else}
+            <p class="wifi-empty">No devices connected.</p>
+          {/if}
+          <p class="field-note">Changing or stopping the access point disconnects browsers using that network.</p>
+        </article>
+      </div>
     </section>
   {:else if route === 'setup'}
     <section class="setup-view">
@@ -1327,6 +1599,7 @@
 
   .settings-nav {
     display: flex;
+    overflow-x: auto;
     gap: 0.25rem;
     border-bottom: 1px solid var(--border);
   }
@@ -1350,6 +1623,7 @@
   .history-view,
   .cycle-view,
   .remote-view,
+  .wifi-view,
   .setup-view,
   .sensors-view,
   .table-view {
@@ -1603,6 +1877,168 @@
     max-width: 36rem;
   }
 
+  .wifi-view { max-width: 68rem; }
+
+  .wifi-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.8rem;
+    align-items: start;
+  }
+
+  .wifi-card {
+    min-width: 0;
+    padding: 0.85rem;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    background: var(--surface);
+  }
+
+  .wifi-heading,
+  .wifi-section-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+  }
+
+  .wifi-heading h2,
+  .wifi-section-heading h3 { margin: 0; }
+
+  .wifi-heading p {
+    margin-top: 0.12rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .wifi-heading p.good { color: var(--charge); }
+  .wifi-heading p.warning { color: var(--warning); }
+
+  .wifi-current {
+    margin-top: 0.7rem;
+    padding: 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 0.3rem;
+    background: var(--background);
+    font-size: 0.82rem;
+  }
+
+  .wifi-current dd { text-align: right; }
+
+  .wifi-section-heading { margin-top: 1rem; }
+
+  button.compact {
+    padding: 0.32rem 0.55rem;
+    border-radius: 0.28rem;
+    font-size: 0.76rem;
+  }
+
+  button.secondary { border-color: var(--border); color: var(--text); }
+  button.danger { border-color: var(--battery); color: var(--battery); }
+  button.primary {
+    min-height: 2.3rem;
+    border-radius: 0.3rem;
+    background: var(--accent);
+    color: white;
+  }
+
+  .network-list {
+    max-height: 12rem;
+    margin-top: 0.45rem;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 0.3rem;
+    background: var(--background);
+  }
+
+  .network-list button {
+    width: 100%;
+    padding: 0.48rem 0.6rem;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+    border-bottom: 1px solid var(--border);
+    color: var(--text);
+    text-align: left;
+  }
+
+  .network-list button:last-child { border-bottom: 0; }
+  .network-list button.selected { background: color-mix(in srgb, var(--accent) 15%, var(--background)); }
+  .network-list small { color: var(--muted); font-weight: 400; }
+
+  .wifi-empty {
+    margin-top: 0.45rem;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+
+  .wifi-connect,
+  .wifi-ap-form {
+    display: grid;
+    gap: 0.35rem;
+    margin-top: 0.8rem;
+  }
+
+  .wifi-connect label,
+  .wifi-ap-form label:not(.switch-row) {
+    margin-top: 0.35rem;
+    color: var(--muted);
+    font-size: 0.76rem;
+    font-weight: 700;
+  }
+
+  .wifi-connect input,
+  .wifi-ap-form input[type='password'],
+  #ap-ssid {
+    width: 100%;
+    min-width: 0;
+    padding: 0.55rem 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 0.25rem;
+    background: var(--background);
+    color: var(--text);
+    font: inherit;
+  }
+
+  .wifi-connect button,
+  .wifi-ap-form > button { margin-top: 0.45rem; }
+
+  .wifi-ap-form fieldset { display: grid; gap: 0.35rem; }
+  .switch-row {
+    display: flex;
+    align-items: center;
+    gap: 0.45rem;
+    margin: 0.4rem 0 0.2rem;
+  }
+  .switch-row input { accent-color: var(--accent); }
+
+  .saved-title { margin-top: 1rem; }
+
+  .saved-networks {
+    margin-top: 0.45rem;
+    border-top: 1px solid var(--border);
+  }
+
+  .saved-networks > div {
+    min-width: 0;
+    padding: 0.45rem 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto auto;
+    align-items: center;
+    gap: 0.35rem;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .saved-networks span { overflow-wrap: anywhere; }
+
+  .ap-clients {
+    margin: 0.45rem 0 0;
+    padding-left: 1.4rem;
+    color: var(--muted);
+    font: 0.82rem ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+
   .table-view { max-width: 42rem; }
 
   form { margin-top: 0.3rem; }
@@ -1833,5 +2269,7 @@
     .sensor-grid {
       grid-template-columns: 1fr;
     }
+
+    .wifi-grid { grid-template-columns: 1fr; }
   }
 </style>
