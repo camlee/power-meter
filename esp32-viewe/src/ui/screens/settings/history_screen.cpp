@@ -4,6 +4,8 @@
 #include <ctime>
 #include <esp_heap_caps.h>
 
+#include "memory/heap_policy.h"
+
 #include "data/historical_storage.h"
 #include "data/history_query_service.h"
 #include "time/time_service.h"
@@ -160,9 +162,9 @@ void render(const historical_storage::StorageStats& stats, size_t total, size_t 
 void startLoad() {
     if (loaded || !screenObject || !lv_obj_is_visible(screenObject)) return;
     if (!fileBuffer) {
-        fileBuffer = static_cast<historical_storage::HistoryFileInfo*>(heap_caps_calloc(
-            kMaxVisibleFiles, sizeof(historical_storage::HistoryFileInfo),
-            MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+        fileBuffer = static_cast<historical_storage::HistoryFileInfo*>(
+            heap_policy::callocPreferred(kMaxVisibleFiles,
+                                         sizeof(historical_storage::HistoryFileInfo)));
     }
     if (!fileBuffer) return;
     pendingJob = history_query_service::requestFilesForDataset(selectedDataset, kMaxVisibleFiles);

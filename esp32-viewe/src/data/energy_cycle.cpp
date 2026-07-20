@@ -8,6 +8,8 @@
 #include <esp_heap_caps.h>
 #include <algorithm>
 
+#include "memory/heap_policy.h"
+
 namespace energy_cycle {
 namespace {
 constexpr char kPreferencesNamespace[] = "energy_cycle";
@@ -76,8 +78,8 @@ size_t query(Summary* out, size_t maxSummaries) {
 
     const size_t count = std::min(maxSummaries, kRecentCycleCount);
     const int64_t startMs = currentEndMs - static_cast<int64_t>(count) * kDayMs;
-    auto* buckets = static_cast<historical_storage::PowerBucket*>(heap_caps_calloc(
-        count, sizeof(historical_storage::PowerBucket), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    auto* buckets = static_cast<historical_storage::PowerBucket*>(
+        heap_policy::callocPreferred(count, sizeof(historical_storage::PowerBucket)));
     if (!buckets) return 0;
     historical_storage::QueryStatus status{};
     const size_t bucketCount = historical_storage::getTimePowerBuckets(

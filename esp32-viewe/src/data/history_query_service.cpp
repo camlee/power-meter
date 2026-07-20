@@ -9,6 +9,8 @@
 #include <freertos/semphr.h>
 #include <freertos/task.h>
 
+#include "memory/heap_policy.h"
+
 namespace history_query_service {
 namespace {
 
@@ -33,6 +35,8 @@ uint32_t requestedJobId = 0;
 uint32_t completedJobId = 0;
 JobKind completedKind = JobKind::None;
 bool isBusy = false;
+bool usageResultLeased = false;
+uint32_t leasedUsageJobId = 0;
 size_t usageCount = 0;
 historical_storage::QueryStatus usageStatus{};
 size_t cycleCount = 0;
@@ -136,7 +140,7 @@ void taskFn(void*) {
 
 uint32_t enqueue(Job job) {
     Lock lock;
-    if (!lock || !task) return 0;
+    if (!lock || !task || usageResultLeased) return 0;
     job.id = ++nextJobId;
     if (!job.id) job.id = ++nextJobId;
     requestedJobId = job.id;
@@ -154,15 +158,14 @@ bool init() {
     if (task) return true;
     if (!mutex) mutex = xSemaphoreCreateMutex();
     if (!mutex) return false;
-    if (!usageBuffer) usageBuffer = static_cast<historical_storage::PowerBucket*>(heap_caps_calloc(
-        kMaxUsageBuckets, sizeof(historical_storage::PowerBucket), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!cycleBuffer) cycleBuffer = static_cast<energy_cycle::Summary*>(heap_caps_calloc(
-        energy_cycle::kRecentCycleCount, sizeof(energy_cycle::Summary),
-        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!filesBuffer) filesBuffer = static_cast<historical_storage::HistoryFileInfo*>(heap_caps_calloc(
-        kMaxListedFiles, sizeof(historical_storage::HistoryFileInfo), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!usageBuffer) usageBuffer = static_cast<historical_storage::PowerBucket*>(
+        heap_policy::callocPreferred(kMaxUsageBuckets, sizeof(historical_storage::PowerBucket)));
+    if (!cycleBuffer) cycleBuffer = static_cast<energy_cycle::Summary*>(
+        heap_policy::callocPreferred(energy_cycle::kRecentCycleCount, sizeof(energy_cycle::Summary)));
+    if (!filesBuffer) filesBuffer = static_cast<historical_storage::HistoryFileInfo*>(
+        heap_policy::callocPreferred(kMaxListedFiles, sizeof(historical_storage::HistoryFileInfo)));
     if (!usageBuffer || !cycleBuffer || !filesBuffer) {
-        Serial.println("history_query: PSRAM allocation failed");
+        Serial.println("history_query: buffer allocation failed");
         return false;
     }
     // Keep filesystem aggregation off the Arduino/LVGL core and below the
@@ -207,6 +210,28 @@ bool takeUsage(uint32_t jobId, historical_storage::PowerBucket* out, size_t maxB
     completedJobId = 0;
     completedKind = JobKind::None;
     return true;
+}
+
+bool acquireUsage(uint32_t jobId, UsageResultView& view, Timing* timing) {
+    Lock lock;
+    if (!lock || usageResultLeased || completedKind != JobKind::Usage ||
+        completedJobId != jobId || !usageBuffer) return false;
+    usageResultLeased = true;
+    leasedUsageJobId = jobId;
+    view.buckets = usageBuffer;
+    view.count = usageCount;
+    view.status = usageStatus;
+    if (timing) *timing = lastTiming;
+    return true;
+}
+
+void releaseUsage(uint32_t jobId) {
+    Lock lock;
+    if (!lock || !usageResultLeased || leasedUsageJobId != jobId) return;
+    usageResultLeased = false;
+    leasedUsageJobId = 0;
+    completedJobId = 0;
+    completedKind = JobKind::None;
 }
 
 bool takeCycles(uint32_t jobId, energy_cycle::Summary* out, size_t maxSummaries,

@@ -28,6 +28,16 @@ struct Timing {
     bool lastWasUsage;
 };
 
+// Read-only lease over a completed usage result. While leased, new history
+// jobs are rejected so the worker cannot overwrite the backing buffer. This
+// lets HTTP serialize the result incrementally without allocating a duplicate
+// bucket array or a second full response buffer.
+struct UsageResultView {
+    const historical_storage::PowerBucket* buckets = nullptr;
+    size_t count = 0;
+    historical_storage::QueryStatus status{};
+};
+
 bool init();
 uint32_t requestUsage(const UsageRequest& request);
 uint32_t requestCycles();
@@ -37,6 +47,8 @@ uint32_t requestFilesForDataset(historical_storage::Dataset dataset,
 
 bool takeUsage(uint32_t jobId, historical_storage::PowerBucket* out, size_t maxBuckets,
                size_t& count, historical_storage::QueryStatus& status, Timing* timing = nullptr);
+bool acquireUsage(uint32_t jobId, UsageResultView& view, Timing* timing = nullptr);
+void releaseUsage(uint32_t jobId);
 bool takeCycles(uint32_t jobId, energy_cycle::Summary* out, size_t maxSummaries,
                 size_t& count, Timing* timing = nullptr);
 bool takeFiles(uint32_t jobId, historical_storage::HistoryFileInfo* out, size_t maxFiles,

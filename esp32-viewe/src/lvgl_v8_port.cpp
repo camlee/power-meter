@@ -11,6 +11,7 @@
 #include "lvgl_v8_port.h"
 #include "ui/input/remote_input.h"
 #include <esp_heap_caps.h>
+#include "memory/heap_policy.h"
 
 using namespace esp_panel::drivers;
 
@@ -584,8 +585,8 @@ static lv_disp_t *display_init(LCD *lcd)
 
     remote_framebuffer_width = lcd_width;
     remote_framebuffer_height = lcd_height;
-    remote_framebuffer = static_cast<uint8_t *>(heap_caps_malloc(
-        static_cast<size_t>(lcd_width) * lcd_height * 2, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    remote_framebuffer = static_cast<uint8_t *>(heap_policy::mallocPsramOnly(
+        static_cast<size_t>(lcd_width) * lcd_height * 2));
     if (!remote_framebuffer) {
         ESP_UTILS_LOGW("Remote framebuffer disabled: no PSRAM available");
     }

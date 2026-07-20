@@ -10,6 +10,7 @@
 #include <freertos/semphr.h>
 
 #include "demo_history_profile.h"
+#include "memory/heap_policy.h"
 #include "../sensors/sensor_mode.h"
 #include "../time/time_service.h"
 
@@ -874,12 +875,12 @@ bool init() {
     if (!LittleFS.exists(kV1Dir)) LittleFS.mkdir(kV1Dir);
     if (!LittleFS.exists(kRealDir)) LittleFS.mkdir(kRealDir);
     if (!LittleFS.exists(kDemoDir)) LittleFS.mkdir(kDemoDir);
-    if (!ram) ram = static_cast<MinuteEnergyRecord*>(heap_caps_calloc(
-        kRamCapacity, sizeof(MinuteEnergyRecord), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!catalogScratch) catalogScratch = static_cast<CatalogEntry*>(heap_caps_calloc(
-        kCatalogCapacity, sizeof(CatalogEntry), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!ram) ram = static_cast<MinuteEnergyRecord*>(
+        heap_policy::callocPreferred(kRamCapacity, sizeof(MinuteEnergyRecord)));
+    if (!catalogScratch) catalogScratch = static_cast<CatalogEntry*>(
+        heap_policy::callocPreferred(kCatalogCapacity, sizeof(CatalogEntry)));
     if (!ram || !catalogScratch) {
-        Serial.println("historical_storage: PSRAM allocation failed");
+        Serial.println("historical_storage: buffer allocation failed");
         return false;
     }
     time_service::init();
