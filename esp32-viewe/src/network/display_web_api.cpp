@@ -1,6 +1,9 @@
 #include "display_web_api.h"
 
 #include <WebServer.h>
+#include "device/hardware_profile.h"
+
+#if POWER_METER_HAS_TOUCH_UI
 #include <WiFi.h>
 #include <cstring>
 
@@ -183,3 +186,17 @@ String lvglVersion() {
 }
 
 } // namespace display_web_api
+#else
+namespace display_web_api {
+
+void registerRoutes(WebServer&) {}
+const char* appearanceModeName() { return "auto"; }
+bool isDark() { return false; }
+bool isValidAppearance(const String& value) {
+    return value == "light" || value == "dark" || value == "auto";
+}
+void setAppearance(const String&) {}
+String lvglVersion() { return String(); }
+
+} // namespace display_web_api
+#endif

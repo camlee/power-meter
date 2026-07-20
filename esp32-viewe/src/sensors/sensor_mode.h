@@ -12,6 +12,7 @@ enum class Mode : uint8_t {
 };
 
 Mode get();
+bool isSupported(Mode mode);
 bool set(Mode mode);
 const char* label();
 } // namespace sensor_mode

@@ -1,16 +1,14 @@
-# ESP32 VIEWE Power Meter Display
+# ESP32 Power Meter Firmware
 
-PlatformIO Arduino project for an ESP32-S3 VIEWE display module using ESP Display Panel and [LVGL](https://lvgl.io/docs/open) v8.
+PlatformIO Arduino project with two hardware profiles sharing one runtime and
+embedded web application.
 
-## Board Settings
+## Hardware targets
 
-- Board: ESP32S3 Dev Module
-- USB CDC On Boot: Disabled
-- USB DFU On Boot: Disabled
-- Flash: 16MB
-- Partition scheme: 3MB OTA app slots with LittleFS data partition
-- PSRAM: OPI PSRAM
-- Monitor speed: 115200
+| Environment | OTA identity | Hardware | Local UI | Flash/RAM |
+| --- | --- | --- | --- | --- |
+| `meter` | `meter-viewe` | VIEWE ESP32-S3 | LVGL touch display | 16 MB flash, OPI PSRAM |
+| `wroom32` | `meter-wroom` | WEMOS LOLIN32 / ESP32-WROOM | Web only initially | 4 MB flash, internal RAM |
 
 The active ESP Display Panel board is configured in `include/esp/esp_panel_board_supported_conf.h`:
 
@@ -23,7 +21,8 @@ The active ESP Display Panel board is configured in `include/esp/esp_panel_board
 Build the firmware with PlatformIO:
 
 ```sh
-pio run
+pio run -e meter
+pio run -e wroom32
 ```
 
 Run the host-side PM1 UART parser tests locally, without an attached ESP32:
@@ -43,13 +42,14 @@ meters with the exact same signed firmware.
 Connect one meter over USB, then run:
 
 ```sh
-pio run -t upload
+pio run -e meter -t upload --upload-port /dev/ttyACM0
+pio run -e wroom32 -t upload --upload-port /dev/ttyUSB0
 ```
 
-To watch logs:
+To watch WROOM logs:
 
 ```sh
-screen /dev/ttyACM0 -s 115200
+screen /dev/ttyUSB0 115200
 ```
 
 At boot and whenever networking changes, the meter prints a machine-readable
@@ -62,6 +62,11 @@ python3 tools/discover_device.py
 # Or use an address copied from serial:
 python3 tools/discover_device.py --host 192.168.1.217
 ```
+
+A device with no saved Wi-Fi or AP configuration starts an access point named
+`meterXX`, using the final two characters of its generated device identity.
+Set `POWER_METER_AP_SSID` and optionally `POWER_METER_AP_PASSWORD` in the
+ignored `.env` to override it. Without a password the initial AP is open.
 
 ### OTA setup
 
@@ -99,6 +104,7 @@ For a meter named `meter1` in Settings → Setup:
 
 ```sh
 python3 tools/ota.py meter1
+python3 tools/ota.py -e wroom32 meter2
 ```
 
 This builds, signs, uploads to `meter1.local`, and waits for the reboot. If
@@ -137,7 +143,9 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 
 ## Layout
 
-- `src/main.cpp`: board, display, LVGL, storage, and network startup
+- `src/main.cpp`: shared Arduino entry point plus optional touch-UI startup
+- `src/application_runtime.cpp`: common sensing, storage, network, web, and OTA lifecycle
+- `src/device/hardware_profile.h`: compile-time hardware capabilities
 - `src/ui/navigation/`: top-level and Settings tab registration
 - `src/ui/screens/`: top-level Sensors, Power, and Usage screens
 - `src/ui/screens/settings/`: Wi-Fi, Setup, Info, and Debug Settings sub-pages
@@ -154,7 +162,7 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 
 ## Remote display and control
 
-Once the meter is on Wi-Fi or its local AP, its local web interface exposes
+On the `meter-viewe` target, the local web interface exposes
 the actual LCD framebuffer and a virtual touch input without a browser token:
 
 ```sh
@@ -214,6 +222,10 @@ hardware. `src/sensors/sensor_config.h` contains the provisional sequential
 mapping: In voltage/current = GPIO 5/6, Out = 7/8, and Aux = 9/10. Set
 `POWER_METER_USE_SIMULATED_SENSORS` to `0` when the physical hardware is ready
 for validation.
+
+The initial WROOM target intentionally remains in Demo mode. Its existing
+ADS1115 and SSD1306 hardware are follow-up integrations, not part of the first
+web-UI bring-up.
 
 ## Firmware constraints and development gotchas
 

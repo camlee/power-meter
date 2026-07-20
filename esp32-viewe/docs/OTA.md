@@ -1,11 +1,12 @@
 # Manual signed OTA updates
 
-VIEWE devices accept updates only when all of these conditions are met:
+Power-meter devices accept updates only when all of these conditions are met:
 
 - the request has the shared bearer token;
 - `manifest.json` has a valid detached ECDSA P-256/SHA-256 signature;
 - the firmware SHA-256 and size match the signed manifest; and
-- the manifest board is `meter`.
+- the manifest board matches the hardware profile: `meter-viewe` or
+  `meter-wroom`.
 
 This is deliberately a direct, local workflow: devices do not check in, poll a
 server, or require an Internet connection. The updater talks to one device at a
@@ -72,10 +73,22 @@ builds once, signs once, and can update several meters with that same version:
 python3 tools/ota.py meter1 meter2 meter3
 ```
 
+Use `python3 tools/ota.py -e wroom32 <device>` for WROOM devices. The OTA board
+identities are intentionally incompatible, preventing an image for one target
+from being accepted by the other. Existing VIEWE devices that still identify
+as the former `meter` board require one wired flash before accepting
+`meter-viewe` OTA releases.
+
 To retain a named release directory, build and sign it separately:
 
 ```sh
 pio run -t release
+```
+
+Select the WROOM environment when creating its release:
+
+```sh
+pio run -e wroom32 -t release
 ```
 
 This builds the normal PlatformIO application and writes these files to

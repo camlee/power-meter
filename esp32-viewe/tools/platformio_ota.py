@@ -9,7 +9,9 @@ project_dir = env.subst("$PROJECT_DIR")
 firmware = env.subst("$BUILD_DIR/${PROGNAME}.bin")
 release_script = os.path.join(project_dir, "tools", "release.py")
 upload_script = os.path.join(project_dir, "tools", "ota_upload.py")
-command = '"{}" "{}" --firmware "{}"'.format(sys.executable, release_script, firmware)
+ota_board = env.GetProjectOption("custom_ota_board")
+command = '"{}" "{}" --firmware "{}" --board "{}"'.format(
+    sys.executable, release_script, firmware, ota_board)
 upload_command = '"{}" "{}"'.format(sys.executable, upload_script)
 
 env.AddCustomTarget(

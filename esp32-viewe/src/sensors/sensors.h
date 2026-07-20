@@ -19,12 +19,17 @@ enum SensorId : uint8_t {
 };
 
 constexpr uint32_t kSampleIntervalMs = 500;
-constexpr size_t kHistorySize = 600;   // 5 min of history at 500 ms/sample
+#ifndef POWER_METER_SENSOR_HISTORY_SIZE
+#define POWER_METER_SENSOR_HISTORY_SIZE 600
+#endif
+constexpr size_t kHistorySize = POWER_METER_SENSOR_HISTORY_SIZE;
 
 // Window used for duty-cycle calculations. Kept separate (and smaller) from
 // kHistorySize because it doubles as a fixed-size stack buffer in
 // getDutyCycle() -- passing a larger `window` just gets clamped to this.
 constexpr size_t kDutyWindowSize = 60; // ~30 s at 500 ms/sample
+static_assert(kHistorySize >= kDutyWindowSize,
+              "sensor history must retain the complete duty window");
 
 enum class ReadingState : uint8_t {
     NotConfigured,

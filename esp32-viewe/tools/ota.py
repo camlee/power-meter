@@ -9,6 +9,7 @@ Examples:
 
 import argparse
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -31,6 +32,8 @@ def main():
     parser.add_argument("device", nargs="*", help="mDNS name(s), with or without .local")
     parser.add_argument("--host", action="append", default=[], help="IP address, hostname, or http:// URL; repeatable")
     parser.add_argument("--version", help="optional version override (normally use the generated build version)")
+    parser.add_argument("-e", "--environment", default="meter",
+                        help="PlatformIO environment to build (default: meter)")
     parser.add_argument("--no-wait", action="store_true", help="do not wait for the device to reboot")
     args = parser.parse_args()
     if not args.device and not args.host:
@@ -43,10 +46,20 @@ def main():
     # `latest` is a local, ignored staging directory; versioned releases can
     # still be created with `pio run -t release` when they need to be retained.
     release_dir = PROJECT_DIR / "dist" / "latest"
-    run([pio, "run"])
+    run([pio, "run", "-e", args.environment])
+
+    try:
+        ota_header = (PROJECT_DIR / "include" / "ota_public_key.h").read_text(encoding="utf-8")
+        board_match = re.search(r'^#define OTA_BOARD_ID "([^"]+)"$', ota_header, re.MULTILINE)
+        ota_board = board_match.group(1) if board_match else None
+    except OSError:
+        ota_board = None
+    if not ota_board:
+        sys.exit("Generated OTA board identity was not found after the build.")
 
     release_command = [sys.executable, "tools/release.py", "--firmware",
-                       ".pio/build/meter/firmware.bin", "--output", str(release_dir)]
+                       ".pio/build/{}/firmware.bin".format(args.environment),
+                       "--output", str(release_dir), "--board", ota_board]
     if args.version:
         release_command.extend(["--version", args.version])
     run(release_command)

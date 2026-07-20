@@ -91,6 +91,17 @@
   let statusError = '';
   let statusPollTimer;
   let statusFetchedAt = 0;
+  $: hasTouchDisplay = status?.capabilities?.touch_display !== false;
+  $: webThemeOptions = hasTouchDisplay
+    ? ['light', 'dark', 'auto', 'device']
+    : ['light', 'dark', 'auto'];
+  $: sensorModeOptions = [
+    ['adc', 'ADC'], ['uart', 'UART'], ['demo', 'Demo'],
+  ].filter(([mode]) => status?.capabilities?.sensor_modes?.[mode] !== false);
+  $: if (status && !hasTouchDisplay && route === 'remote') {
+    window.history.replaceState({}, '', routePath('setup'));
+    enterRoute('setup');
+  }
 
   // Detailed sensor read model. This is polled separately from operational
   // status because it includes raw out-of-range values and UART diagnostics.
@@ -191,7 +202,7 @@
     if (resolved === 'auto') {
       resolved = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
     } else if (resolved === 'device') {
-      resolved = typeof status?.appearance?.dark === 'boolean'
+      resolved = hasTouchDisplay && typeof status?.appearance?.dark === 'boolean'
         ? (status.appearance.dark ? 'dark' : 'light')
         : (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
     }
@@ -209,7 +220,8 @@
   }
 
   function colorSchemeChanged() {
-    if (webTheme === 'auto' || (webTheme === 'device' && !status?.appearance)) applyWebTheme();
+    if (webTheme === 'auto' ||
+        (webTheme === 'device' && (!hasTouchDisplay || !status?.appearance))) applyWebTheme();
   }
 
   function connectionLabel() {
@@ -342,7 +354,7 @@
       else scheduleCycleRefresh();
     }
 
-    if (next === 'remote') {
+    if (next === 'remote' && hasTouchDisplay) {
       refreshRemote();
     }
 
@@ -862,7 +874,7 @@
       <span class="connection-message">Connection limit reached ({connectionLimit})</span>
     {/if}
     <div class="theme-segments" aria-label="Web appearance">
-      {#each ['light', 'dark', 'auto', 'device'] as option}
+      {#each webThemeOptions as option}
         <button class:active={webTheme === option} aria-pressed={webTheme === option} on:click={() => selectWebTheme(option)}>
           {option === 'device' ? 'Device' : titleCase(option)}
         </button>
@@ -883,7 +895,9 @@
       <button class:active={route === 'setup'} on:click={() => navigate('setup')}>Setup</button>
       <button class:active={route === 'info'} on:click={() => navigate('info')}>Info</button>
       <button class:active={route === 'debug'} on:click={() => navigate('debug')}>Debug</button>
-      <button class:active={route === 'remote'} on:click={() => navigate('remote')}>Remote</button>
+      {#if hasTouchDisplay}
+        <button class:active={route === 'remote'} on:click={() => navigate('remote')}>Remote</button>
+      {/if}
     </nav>
   {/if}
 
@@ -922,18 +936,20 @@
           <fieldset disabled={setupBusy}>
             <legend>Sensor mode</legend>
             <div class="form-segments">
-              {#each [['adc', 'ADC'], ['uart', 'UART'], ['demo', 'Demo']] as option}
+              {#each sensorModeOptions as option}
                 <button type="button" class:active={setupSensorMode === option[0]} aria-pressed={setupSensorMode === option[0]} on:click={() => setupSensorMode = option[0]}>{option[1]}</button>
               {/each}
             </div>
             <p class="field-note">Active: {sensorStatus?.source?.label || '—'} · {sourceStateLabel(sensorStatus?.source)}</p>
 
-            <div class="field-label">Device appearance</div>
-            <div class="form-segments">
-              {#each ['light', 'dark', 'auto'] as option}
-                <button type="button" class:active={setupAppearance === option} aria-pressed={setupAppearance === option} on:click={() => setupAppearance = option}>{titleCase(option)}</button>
-              {/each}
-            </div>
+            {#if hasTouchDisplay}
+              <div class="field-label">Device appearance</div>
+              <div class="form-segments">
+                {#each ['light', 'dark', 'auto'] as option}
+                  <button type="button" class:active={setupAppearance === option} aria-pressed={setupAppearance === option} on:click={() => setupAppearance = option}>{titleCase(option)}</button>
+                {/each}
+              </div>
+            {/if}
 
             <label class="field-label" for="hostname">Hostname</label>
             <input id="hostname" bind:value={setupHostname} maxlength="31" pattern="[a-z0-9](?:[a-z0-9-]{0,29}[a-z0-9])?" autocapitalize="none" autocomplete="off" spellcheck="false" />
@@ -980,7 +996,7 @@
       <h2>Debug</h2>
       {#if debugError}<p class="error" role="alert">{debugError}</p>{/if}
       <dl class="striped-details">
-        <dt>LVGL</dt><dd>{debugStatus?.lvgl || '—'}</dd>
+        {#if hasTouchDisplay}<dt>LVGL</dt><dd>{debugStatus?.lvgl || '—'}</dd>{/if}
         <dt>ESP-IDF / SDK</dt><dd>{debugStatus?.sdk || '—'}</dd>
         <dt>Chip</dt><dd>{debugStatus?.chip || '—'}</dd>
         <dt>CPU / flash</dt><dd>{debugStatus ? `${debugStatus.cpu_mhz} MHz / ${debugStatus.flash_mb} MB flash` : '—'}</dd>

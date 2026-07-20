@@ -2,9 +2,10 @@
 
 ## Product definition
 
-Build an independent touchscreen solar power meter that accurately shows live
-system behavior, retains useful energy history through unreliable power and
-time availability, and exposes that information over an optional local network.
+Build an independent solar power meter that accurately shows live system
+behavior, retains useful energy history through unreliable power and time
+availability, and exposes that information over a local network. The shared
+firmware supports a VIEWE touchscreen target and a WROOM web-first target.
 
 The local measurement, display, and history paths are the product foundation.
 Wi-Fi must never be required for sensing, energy accounting, or retention.
@@ -72,12 +73,29 @@ accuracy is deliberately tracked in a later on-site milestone.
 | 3. Local calibration | Implemented | Electrical calibration and accuracy validation belong to the on-site hardware milestone. |
 | 4. Embedded web application | Complete | Calibration, settings writes, storage tools, and appearance refinements are normal backlog. |
 | 5. OTA and remote display | Verified for current workflow | Continue regression coverage as related services change. |
+| 6. WROOM web-first target | Physical Demo boot/AP verified | Complete browser/API validation, then add its OLED and ADS1115 in follow-up milestones. |
 
 The current ESP32 firmware, Arduino firmware, and embedded web app build
 successfully. Candidate History V1, live, historical, and Cycle browser views,
 Wi-Fi/AP setup, browser/NTP time anchors, local calibration, signed OTA,
 diagnostics, and remote display control are in place. The shared on-device and
 browser Cycle view is complete for the current scope.
+
+### Roadmap checkpoint — 2026-07-19
+
+The firmware now has one shared application runtime with compile-time hardware
+capabilities. `meter-viewe` retains the ESP32-S3/LVGL touchscreen, while
+`meter-wroom` targets the 4 MB WEMOS LOLIN32 without PSRAM. Both serve the same
+runtime-capability-aware web application and fresh devices start a local access
+point. The WROOM build deliberately uses Demo sensors for its first physical
+bring-up. It has been erased, flashed, and verified booting the shared runtime,
+Demo history, web and live services, and its generated local access point. A
+browser/API pass from a client joined to that access point remains.
+
+The next WROOM checkpoints, after that minimal bring-up is verified, are a
+shared/mutex-protected I2C service, the onboard SSD1306 status display, and the
+ADS1115 acquisition source with the established per-channel calibration and
+filtering behavior. ADS1115 work is not part of the initial Demo-mode milestone.
 
 ### Roadmap checkpoint — 2026-07-15
 
@@ -214,11 +232,16 @@ work. Begin it when the final sensor assembly and installed system are available
 - Document the final hardware revision, reference equipment, results, and any
   configuration migration.
 
+For the WROOM hardware, first confirm the shared GPIO 5 SDA / GPIO 4 SCL bus,
+SSD1306 address, and ADS1115 `0x48` channel map. OLED and ADC clients must share
+one initialized, mutex-protected I2C service because display and sensor work run
+on different tasks.
+
 ## Deferred/out of scope
 
 - Remote sensor transport, peer discovery, mesh networking, aggregation, and
   duplicate-source resolution.
-- Alternate ESP32-WROOM/OLED firmware targets.
+- Peer/cluster roles beyond the implemented VIEWE and WROOM hardware profiles.
 - A cluster-wide web view. The current app is complete for one meter; a future
   aggregator must first define ownership and provenance for peer data.
 - Automatic detection of attached ADC sensors. Floating inputs are not reliable

@@ -15,6 +15,7 @@
 #include "data/energy_cycle.h"
 #include "data/history_query_service.h"
 #include "device/device_identity.h"
+#include "device/hardware_profile.h"
 #include "device/device_state.h"
 #include "memory/heap_policy.h"
 #include "network/display_web_api.h"
@@ -131,9 +132,12 @@ void webStatus() {
     const size_t storageTotal = LittleFS.totalBytes();
     const unsigned storagePercent = storageTotal
         ? static_cast<unsigned>((LittleFS.usedBytes() * 100U) / storageTotal) : 0;
-    char response[1280];
+    char response[1440];
     snprintf(response, sizeof(response),
              "{\"api_version\":1,\"web_build\":\"%s\",\"state_revision\":%lu,"
+             "\"hardware_profile\":\"%s\",\"capabilities\":{\"touch_display\":%s,"
+             "\"status_display\":%s,\"local_sensor\":\"%s\","
+             "\"sensor_modes\":{\"adc\":%s,\"uart\":%s,\"demo\":true}},"
              "\"device_id\":\"%s\",\"hostname\":\"%s\",\"uptime_ms\":%lu,"
              "\"time_source\":\"%s\",\"date\":\"%s\",\"time\":\"%s\","
              "\"build_version\":\"%s\",\"build_date\":\"%s\",\"build_time\":\"%s\","
@@ -144,6 +148,11 @@ void webStatus() {
              "\"aux\":{\"power\":%s},\"net_battery_power\":%s,"
              "\"network\":{\"state\":%u,\"station_ip\":\"%s\",\"ap_ip\":\"%s\"}}",
              web_assets::kBuildId, static_cast<unsigned long>(device_state::revision()),
+             hardware_profile::kName, hardware_profile::kHasTouchUi ? "true" : "false",
+             hardware_profile::kHasStatusDisplay ? "true" : "false",
+             hardware_profile::kLocalSensorBackend,
+             hardware_profile::kSupportsAdc ? "true" : "false",
+             hardware_profile::kSupportsUart ? "true" : "false",
              device_identity::getDeviceId(), network_manager::getHostname(), static_cast<unsigned long>(millis()),
              timeSource, date, clock, BUILD_VERSION, BUILD_DATE, BUILD_TIME,
              sensorModeName(sensor_mode::get()), display_web_api::appearanceModeName(),
@@ -414,6 +423,10 @@ void webSetup() {
     else if (requestedSensorMode == "demo") mode = sensor_mode::Mode::Demo;
     else {
         server->send(400, "application/json", "{\"error\":\"invalid sensor mode\"}");
+        return;
+    }
+    if (!sensor_mode::isSupported(mode)) {
+        server->send(400, "application/json", "{\"error\":\"sensor mode is not supported by this hardware profile\"}");
         return;
     }
     if (!display_web_api::isValidAppearance(requestedAppearance)) {

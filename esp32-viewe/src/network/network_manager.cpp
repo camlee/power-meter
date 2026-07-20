@@ -12,6 +12,7 @@
 #include <freertos/queue.h>
 #include <freertos/task.h>
 #include <time.h>
+#include "local_config.h"
 #include "device/device_identity.h"
 #include "device/device_state.h"
 #include "time/time_service.h"
@@ -116,6 +117,7 @@ void reportWebAddressesIfChanged() {
 
     const String staText = staIp.toString();
     const String apText = apIp.toString();
+    const String apSsid = apRunning ? WiFi.softAPSSID() : String();
     const char* host = device_identity::getHostname();
     // ESP_LOG is visible through this board's USB JTAG serial device; Serial
     // keeps the same information available on the conventional framework UART.
@@ -124,18 +126,18 @@ void reportWebAddressesIfChanged() {
              static_cast<unsigned>(connectionFailure), static_cast<unsigned>(scanState),
              static_cast<unsigned>(recoveryState),
              staText.c_str(), apText.c_str(), host);
-    Serial.printf("VIEWE_NETWORK state=%u phase=%u failure=%u scan=%u recovery=%u station=%s ap=%s host=%s.local\\n",
+    Serial.printf("VIEWE_NETWORK state=%u phase=%u failure=%u scan=%u recovery=%u station=%s ap=%s ap_ssid=%s host=%s.local\n",
                   static_cast<unsigned>(currentState), static_cast<unsigned>(connectionPhase),
                   static_cast<unsigned>(connectionFailure), static_cast<unsigned>(scanState),
                   static_cast<unsigned>(recoveryState),
-                  staText.c_str(), apText.c_str(), host);
+                  staText.c_str(), apText.c_str(), apSsid.c_str(), host);
     if (staRaw) {
         ESP_LOGI("network", "VIEWE_WEB url=http://%s/ host=%s.local", staText.c_str(), host);
-        Serial.printf("VIEWE_WEB url=http://%s/ host=%s.local\\n", staText.c_str(), host);
+        Serial.printf("VIEWE_WEB url=http://%s/ host=%s.local\n", staText.c_str(), host);
     }
     if (apRunning && apRaw) {
         ESP_LOGI("network", "VIEWE_WEB_AP url=http://%s/", apText.c_str());
-        Serial.printf("VIEWE_WEB_AP url=http://%s/\\n", apText.c_str());
+        Serial.printf("VIEWE_WEB_AP url=http://%s/\n", apText.c_str());
     }
 }
 
@@ -419,6 +421,28 @@ bool loadApSettings(char* ssidOut, size_t ssidLen, bool& secureOut,
     enabledOut = prefs.getBool("enabled", false);
     prefs.end();
     return ssidOut[0] != '\0';
+}
+
+void makeDefaultApSettings(char* ssidOut, size_t ssidLen, bool& secureOut,
+                           char* passOut, size_t passLen) {
+    if (POWER_METER_DEFAULT_AP_SSID[0] != '\0') {
+        strncpy(ssidOut, POWER_METER_DEFAULT_AP_SSID, ssidLen - 1);
+        ssidOut[ssidLen - 1] = '\0';
+    } else {
+        const char* deviceId = device_identity::getDeviceId();
+        const size_t length = strlen(deviceId);
+        const char first = length >= 2 ? deviceId[length - 2] : '0';
+        const char second = length >= 1 ? deviceId[length - 1] : '0';
+        snprintf(ssidOut, ssidLen, "meter%c%c", first, second);
+    }
+
+    strncpy(passOut, POWER_METER_DEFAULT_AP_PASSWORD, passLen - 1);
+    passOut[passLen - 1] = '\0';
+    secureOut = strlen(passOut) >= 8;
+    if (passOut[0] != '\0' && !secureOut) {
+        Serial.println("network: configured default AP password is shorter than 8 characters; starting open AP");
+        passOut[0] = '\0';
+    }
 }
 
 void ntpSyncCb(struct timeval*) { ntpSyncObserved = true; }
@@ -842,16 +866,32 @@ void init() {
     WiFi.setAutoReconnect(false);
     WiFi.mode(WIFI_STA);
     WiFi.setHostname(device_identity::getHostname());
+    const int savedNetworkCount = getSavedNetworkCount();
     char apSsid[33], apPassword[64];
     bool apSecure = true, apEnabled = false;
-    if (loadApSettings(apSsid, sizeof(apSsid), apSecure, apPassword, sizeof(apPassword), apEnabled) && apEnabled) {
+    const bool hasApSettings = loadApSettings(
+        apSsid, sizeof(apSsid), apSecure, apPassword, sizeof(apPassword), apEnabled);
+    if (hasApSettings && apEnabled) {
         WiFi.mode(WIFI_AP_STA);
         if (WiFi.softAP(apSsid, apSecure ? apPassword : nullptr)) {
             apRunning = true;
             ensureMdns();
         }
+    } else if (!hasApSettings && savedNetworkCount == 0) {
+        makeDefaultApSettings(apSsid, sizeof(apSsid), apSecure,
+                              apPassword, sizeof(apPassword));
+        WiFi.mode(WIFI_AP_STA);
+        if (WiFi.softAP(apSsid, apSecure ? apPassword : nullptr)) {
+            apRunning = true;
+            saveApSettings(apSsid, apSecure, apPassword, true);
+            ensureMdns();
+            Serial.printf("network: started default AP %s (%s)\n", apSsid,
+                          apSecure ? "secured" : "open");
+        } else {
+            Serial.println("network: failed to start default AP");
+        }
     }
-    if (getSavedNetworkCount() > 0) {
+    if (savedNetworkCount > 0) {
         retryEnabled = true;
         recoveryState = RecoveryState::Discovering;
         requestScan(ScanPurposeRecovery);

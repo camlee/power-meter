@@ -6,8 +6,7 @@ The embedded web-application milestone is complete. The normal firmware image
 contains a Svelte 5 single-page application with live power, per-channel sensor
 observations, browser time contribution, rolling/calendar history, daily
 energy-cycle balance, device information and diagnostics, device setup,
-independent Web appearance, and
-remote-display control. It is a useful product surface, not a requirement to
+independent Web appearance, and capability-gated remote-display control. It is a useful product surface, not a requirement to
 duplicate every LVGL page.
 
 The browser and on-device Cycle views are complete for the current product
@@ -36,13 +35,14 @@ PlatformIO pre-build action, so these normal commands always contain the web
 app:
 
 ```sh
-pio run -d esp32-viewe
-pio run -d esp32-viewe -t upload
+pio run -d esp32-viewe -e meter
+pio run -d esp32-viewe -e wroom32
 ```
 
 There is intentionally no CI/CD system for this project. The local checks are
 the release gate: a web build fails if its gzip payload exceeds 256 KiB; the
-normal PlatformIO size check must leave room in the 3 MiB OTA application slot.
+normal PlatformIO size check must leave room in the selected target's OTA
+application slot (3 MiB on VIEWE, 1.5 MiB on WROOM).
 
 `tools/build_web_assets.py` runs Vite, gzip-compresses each emitted asset with
 a reproducible timestamp, and generates ignored C++ source in
@@ -58,7 +58,7 @@ the AP changes. Its stable form is deliberately easy for a person or script to
 recognize:
 
 ```text
-VIEWE_NETWORK state=4 station=192.168.1.217 ap=192.168.4.1 host=meter1.local
+VIEWE_NETWORK state=4 station=192.168.1.217 ap=192.168.4.1 ap_ssid=meter4j host=meter1.local
 VIEWE_WEB url=http://192.168.1.217/ host=meter1.local
 ```
 
@@ -109,7 +109,7 @@ GET  /api/v1/setup            persisted device setup, JSON, no-store
 POST /api/v1/setup            validate, persist, and restart
 GET  /api/v1/debug            on-device Debug read model, JSON, no-store
 POST /api/v1/time/anchor      local-LAN browser time anchor
-GET  /api/v1/display/...      local-LAN remote display control
+GET  /api/v1/display/...      local-LAN remote display control (`meter-viewe` only)
 WS   ws://<meter>:81/api/v1/live
 GET  /api/v1/history/query?range=today&bucket_minutes=30
 GET  /api/v1/history/query?job=<id>
@@ -131,6 +131,11 @@ endpoints are unauthenticated for use on a trusted local network. OTA and its
 maintenance diagnostics retain their bearer-token policy. Do not expose the
 meter beyond the trusted LAN without adding authentication to these
 browser-facing endpoints.
+
+`/api/v1/web/status` publishes the hardware profile and capabilities, including
+touch/status displays, the local sensor backend, and supported sensor modes.
+The SPA hides remote-display, LVGL appearance, and unsupported source controls
+at runtime, allowing the same embedded assets to serve both hardware targets.
 
 `/api/v1/sensors` is a read-only diagnostic model used by the Sensors and Setup
 pages. Each channel reports `configured`, `observed`, its

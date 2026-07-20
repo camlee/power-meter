@@ -23,6 +23,8 @@ def read_env(path):
 project_dir = env.subst("$PROJECT_DIR")
 env_values = read_env(os.path.join(project_dir, ".env"))
 token = os.environ.get("VIEWE_OTA_TOKEN") or env_values.get("VIEWE_OTA_TOKEN", "")
+default_ap_ssid = os.environ.get("POWER_METER_AP_SSID") or env_values.get("POWER_METER_AP_SSID", "")
+default_ap_password = os.environ.get("POWER_METER_AP_PASSWORD") or env_values.get("POWER_METER_AP_PASSWORD", "")
 
 try:
     build_header = open(os.path.join(env.subst("$PROJECT_INCLUDE_DIR"), "build_time.h"), encoding="utf-8").read()
@@ -30,7 +32,7 @@ try:
     firmware_version = match.group(1) if match else "dev"
 except OSError:
     firmware_version = "dev"
-board_id = os.environ.get("VIEWE_OTA_BOARD") or env_values.get("VIEWE_OTA_BOARD", "meter")
+board_id = env.GetProjectOption("custom_ota_board")
 public_key_path = os.path.join(project_dir, "keys", "ota_signing_public.pem")
 try:
     with open(public_key_path, encoding="ascii") as source:
@@ -50,3 +52,12 @@ with open(header, "w", encoding="utf-8") as output:
     output.write('#define OTA_SIGNING_PUBLIC_KEY_PEM "{}"\n'.format(escaped_public_key))
     output.write('#define OTA_FIRMWARE_VERSION "{}"\n'.format(escaped_version))
     output.write('#define OTA_BOARD_ID "{}"\n'.format(escaped_board))
+
+local_header = os.path.join(env.subst("$PROJECT_INCLUDE_DIR"), "local_config.h")
+escaped_ap_ssid = default_ap_ssid.replace("\\", "\\\\").replace('"', '\\"')
+escaped_ap_password = default_ap_password.replace("\\", "\\\\").replace('"', '\\"')
+with open(local_header, "w", encoding="utf-8") as output:
+    output.write("#pragma once\n")
+    output.write("// Generated from .env; do not commit.\n")
+    output.write('#define POWER_METER_DEFAULT_AP_SSID "{}"\n'.format(escaped_ap_ssid))
+    output.write('#define POWER_METER_DEFAULT_AP_PASSWORD "{}"\n'.format(escaped_ap_password))

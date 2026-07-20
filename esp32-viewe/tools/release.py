@@ -6,7 +6,6 @@ import base64
 import datetime
 import hashlib
 import json
-import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -40,6 +39,17 @@ def default_version():
         return "dev-" + datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%d%H%M%S")
 
 
+def default_board():
+    try:
+        header = (PROJECT_DIR / "include" / "ota_public_key.h").read_text(encoding="utf-8")
+        match = re.search(r'^#define OTA_BOARD_ID "([^"]+)"$', header, re.MULTILINE)
+        if match:
+            return match.group(1)
+    except OSError:
+        pass
+    return "meter-viewe"
+
+
 def sign(payload, private_key):
     inspect = ["openssl", "pkey", "-in", str(private_key), "-text", "-noout"]
     try:
@@ -68,7 +78,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--firmware", required=True, type=Path, help="compiled firmware.bin")
     parser.add_argument("--version", default=default_version())
-    parser.add_argument("--board", default=os.environ.get("VIEWE_OTA_BOARD", "meter"))
+    parser.add_argument("--board", default=default_board())
     parser.add_argument(
         "--private-key", type=Path,
         default=PROJECT_DIR / "secrets" / "ota_signing_private.pem",

@@ -2,10 +2,17 @@
 
 ## Purpose
 
-`esp32-viewe` is the active power-meter firmware. It runs on a VIEWE
-ESP32-S3 touch-display module and is an **offline-first solar power meter**:
-live, accurate on-device measurements are the primary product; Wi-Fi adds
-configuration, synchronization, remote views, and future peer features.
+`esp32-viewe` is the active power-meter firmware. It runs on both a VIEWE
+ESP32-S3 touch-display module and an ESP32-WROOM web-first module, and is an
+**offline-first solar power meter**: live, accurate measurements are the
+primary product; Wi-Fi adds configuration, synchronization, remote views, and
+future peer features.
+
+Both targets use one application entry point and common runtime. Compile-time
+hardware profiles select PSRAM policy, touch/LVGL support, status-display
+support, local sensor backend, and bounded sensor-history depth. Runtime APIs
+publish those capabilities so one embedded web application can adapt without
+separate frontend builds.
 
 The current firmware is a meter/display. Its service boundaries should permit
 two roles in a future multi-device phase:
@@ -100,7 +107,7 @@ calibration implications.
 
 ### 2. UI
 
-LVGL owns the display and touch UI. `ScreenManager` provides the persistent
+On `meter-viewe`, LVGL owns the display and touch UI. `ScreenManager` provides the persistent
 top-level tab layout; screens should only consume public service APIs, never
 read hardware or files directly.
 
@@ -122,8 +129,10 @@ Current top-level screens are:
   - **Debug:** SDK/chip/reset details, disjoint internal/PSRAM heap usage and
     largest free blocks, storage, and OTA diagnostics.
 
-The display is a first-class offline interface. Network operations must be
-asynchronous and must not stall sampling or rendering.
+The VIEWE display is a first-class offline interface. The initial
+`meter-wroom` milestone is web-first and runs Demo sensors; its SSD1306 status
+display and ADS1115 source are follow-up capabilities. Network operations must
+be asynchronous and must not stall sampling or rendering.
 
 ### 3. Energy and durable history
 

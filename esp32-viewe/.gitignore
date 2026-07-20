@@ -1,6 +1,7 @@
 .pio*
 include/build_time.h
 include/ota_public_key.h
+include/local_config.h
 .build_number
 .env
 demo-source/
