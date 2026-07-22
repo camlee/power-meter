@@ -24,7 +24,7 @@ bool desiredAutoDark() {
     time_t now = time(nullptr);
     struct tm local {};
     localtime_r(&now, &local);
-    return local.tm_hour >= 19 || local.tm_hour < 7;
+    return local.tm_hour >= 22 || local.tm_hour < 6;
 }
 
 lv_color_t color(uint32_t light, uint32_t dark) { return lv_color_hex(isDark() ? dark : light); }

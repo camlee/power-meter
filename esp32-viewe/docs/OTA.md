@@ -73,7 +73,7 @@ builds once, signs once, and can update several meters with that same version:
 python3 tools/ota.py meter1 meter2 meter3
 ```
 
-Use `python3 tools/ota.py -e wroom32 <device>` for WROOM devices. The OTA board
+Use `python3 tools/ota.py -e wroom <device>` for WROOM devices. The OTA board
 identities are intentionally incompatible, preventing an image for one target
 from being accepted by the other. Existing VIEWE devices that still identify
 as the former `meter` board require one wired flash before accepting
@@ -88,7 +88,7 @@ pio run -t release
 Select the WROOM environment when creating its release:
 
 ```sh
-pio run -e wroom32 -t release
+pio run -e wroom -t release
 ```
 
 This builds the normal PlatformIO application and writes these files to
@@ -105,7 +105,7 @@ dirty Git and the next PlatformIO build advances it. A release can also be made
 directly from an existing binary:
 
 ```sh
-python3 tools/release.py --firmware .pio/build/meter/firmware.bin
+python3 tools/release.py --firmware .pio/build/viewe/firmware.bin
 ```
 
 Upload one release manually. Both target forms are supported:

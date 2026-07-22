@@ -7,8 +7,8 @@ embedded web application.
 
 | Environment | OTA identity | Hardware | Local UI | Flash/RAM |
 | --- | --- | --- | --- | --- |
-| `meter` | `meter-viewe` | VIEWE ESP32-S3 | LVGL touch display | 16 MB flash, OPI PSRAM |
-| `wroom32` | `meter-wroom` | WEMOS LOLIN32 / ESP32-WROOM | Web only initially | 4 MB flash, internal RAM |
+| `viewe` | `meter-viewe` | VIEWE ESP32-S3 | LVGL touch display | 16 MB flash, OPI PSRAM |
+| `wroom` | `meter-wroom` | WEMOS LOLIN32 / ESP32-WROOM | Web + SSD1306 status | 4 MB flash, internal RAM |
 
 The active ESP Display Panel board is configured in `include/esp/esp_panel_board_supported_conf.h`:
 
@@ -21,8 +21,8 @@ The active ESP Display Panel board is configured in `include/esp/esp_panel_board
 Build the firmware with PlatformIO:
 
 ```sh
-pio run -e meter
-pio run -e wroom32
+pio run -e viewe
+pio run -e wroom
 ```
 
 Run the host-side PM1 UART parser tests locally, without an attached ESP32:
@@ -42,8 +42,8 @@ meters with the exact same signed firmware.
 Connect one meter over USB, then run:
 
 ```sh
-pio run -e meter -t upload --upload-port /dev/ttyACM0
-pio run -e wroom32 -t upload --upload-port /dev/ttyUSB0
+pio run -e viewe -t upload --upload-port /dev/ttyACM0
+pio run -e wroom -t upload --upload-port /dev/ttyUSB0
 ```
 
 To watch WROOM logs:
@@ -103,8 +103,7 @@ This is not required when using `--host <IP-address>`.
 For a meter named `meter1` in Settings → Setup:
 
 ```sh
-python3 tools/ota.py meter1
-python3 tools/ota.py -e wroom32 meter2
+python3 tools/ota.py -e wroom meter1
 ```
 
 This builds, signs, uploads to `meter1.local`, and waits for the reboot. If
@@ -150,7 +149,7 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 - `src/ui/screens/`: top-level Sensors, Power, and Usage screens
 - `src/ui/screens/settings/`: Wi-Fi, Setup, Info, and Debug Settings sub-pages
 - `src/ui/components/`, `input/`, and `theme/`: shared UI building blocks
-- `src/sensors/`: sensor acquisition plus Demo, ESP32 ADC, and UART sources
+- `src/sensors/`: sensor acquisition plus Demo, ESP32 ADC, ADS1115, and UART sources
 - `src/sensors/sensor_config.h`: source selection and provisional pin mapping
 - `src/data/`: minute-level historical storage
 - `docs/HISTORY_STORAGE_V1.md`: candidate segmented history/tenant/coverage contract
@@ -162,7 +161,7 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 
 ## Remote display and control
 
-On the `meter-viewe` target, the local web interface exposes
+On the `viewe` target, the local web interface exposes
 the actual LCD framebuffer and a virtual touch input without a browser token:
 
 ```sh
@@ -182,7 +181,7 @@ the display. These controls are intended only for a trusted local network.
 
 ## Embedded web application
 
-The normal firmware image now contains a small Svelte web application at
+The normal firmware image contains a small Svelte web application at
 `http://device1.local/`. It displays live readings, contributes browser time,
 and provides station/AP Wi-Fi management. Touchscreen targets also include the
 remote-display view. These trusted-LAN controls do not require a browser token. Its frontend
@@ -224,9 +223,23 @@ mapping: In voltage/current = GPIO 5/6, Out = 7/8, and Aux = 9/10. Set
 `POWER_METER_USE_SIMULATED_SENSORS` to `0` when the physical hardware is ready
 for validation.
 
-The initial WROOM target intentionally remains in Demo mode. Its existing
-ADS1115 and SSD1306 hardware are follow-up integrations, not part of the first
-web-UI bring-up.
+The WROOM build keeps Demo as the fresh-device default but exposes ADS1115 in
+Setup. Its SSD1306 (address `0x3c`) and ADS1115 (`0x48`) share GPIO 5 SDA / GPIO
+4 SCL. The OLED reports hostname/network/IP and high-level sensor state, with
+large Summary and diagnostic Dense layouts. ADS1115 calibration is independent
+from ESP32-ADC calibration.
+
+Hardware capabilities are independent build flags:
+
+```text
+POWER_METER_HAS_STATUS_DISPLAY
+POWER_METER_HAS_ESP32_ADC
+POWER_METER_HAS_ADS1115
+```
+
+The normal VIEWE target disables ADS1115, but enabling it uses the ESP-IDF I2C
+backend on a separately configured port/pin pair rather than Arduino Wire,
+which cannot coexist with the VIEWE panel library's legacy I2C driver.
 
 ## Firmware constraints and development gotchas
 

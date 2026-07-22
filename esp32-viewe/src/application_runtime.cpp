@@ -9,6 +9,8 @@
 #include "data/historical_storage.h"
 #include "data/history_query_service.h"
 #include "device/hardware_profile.h"
+#include "device/i2c_bus.h"
+#include "device/status_display.h"
 #include "network/live_websocket_service.h"
 #include "network/network_manager.h"
 #include "network/ota_service.h"
@@ -83,6 +85,8 @@ historical_storage::SampleFrame makeHistoryFrame(uint32_t now) {
 
 void begin() {
     ensureRollbackVerificationDeferral();
+    const bool i2cReady = i2c_bus::begin();
+    const bool statusDisplayReady = status_display::begin();
     sensors::start();
     const bool storageReady = historical_storage::init();
     energy_cycle::init();
@@ -95,11 +99,15 @@ void begin() {
 
     constexpr uint32_t kInternalCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
     Serial.printf(
-        "POWER_METER profile=%s touch=%u status_display=%u local_sensor=%s "
+        "POWER_METER profile=%s touch=%u status_display=%u esp32_adc=%u ads1115=%u "
+        "i2c=%u status_display_ready=%u "
         "storage=%u history_query=%u web=%u live=%u heap_free=%u heap_largest=%u\n",
         hardware_profile::kName, hardware_profile::kHasTouchUi ? 1U : 0U,
         hardware_profile::kHasStatusDisplay ? 1U : 0U,
-        hardware_profile::kLocalSensorBackend, storageReady ? 1U : 0U,
+        hardware_profile::kHasEsp32Adc ? 1U : 0U,
+        hardware_profile::kHasAds1115 ? 1U : 0U,
+        i2cReady ? 1U : 0U, statusDisplayReady ? 1U : 0U,
+        storageReady ? 1U : 0U,
         historyQueryReady ? 1U : 0U, ota_service::isRunning() ? 1U : 0U,
         liveReady ? 1U : 0U,
         static_cast<unsigned>(heap_caps_get_free_size(kInternalCaps)),
@@ -116,6 +124,8 @@ void update() {
     }
     ota_service::update();
     live_websocket_service::update();
+    i2c_bus::update();
+    status_display::update();
 
     if (now - lastStorageFeedMs >= sensors::kSampleIntervalMs) {
         lastStorageFeedMs = now;

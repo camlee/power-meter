@@ -13,11 +13,22 @@
 namespace sensors::calibration {
 namespace {
 
-constexpr uint32_t kMagic = 0x43414C31; // "CAL1"
-constexpr uint16_t kVersion = 1;
-constexpr char kKey[] = "cal_v1";
+constexpr uint32_t kMagic = 0x43414C32; // "CAL2"
+constexpr uint16_t kVersion = 2;
+constexpr char kKey[] = "cal_v2";
+constexpr uint32_t kLegacyMagic = 0x43414C31; // "CAL1"
+constexpr uint16_t kLegacyVersion = 1;
+constexpr char kLegacyKey[] = "cal_v1";
+constexpr uint8_t kSourceCount = static_cast<uint8_t>(Source::Count);
 
 struct Profile {
+    uint32_t magic;
+    uint16_t version;
+    uint16_t reserved;
+    Value values[kSourceCount][SENSOR_COUNT][2];
+};
+
+struct LegacyProfile {
     uint32_t magic;
     uint16_t version;
     uint16_t reserved;
@@ -28,7 +39,17 @@ Profile profile{};
 bool loaded = false;
 portMUX_TYPE profileMux = portMUX_INITIALIZER_UNLOCKED;
 
-Value defaultValue(Measurement measurement) {
+Value defaultValue(Source source, uint8_t sensor, Measurement measurement) {
+    if (source == Source::Ads1115) {
+        if (sensor == SENSOR_IN) {
+            return measurement == Measurement::Voltage
+                ? Value{21.3f, 0.0f} : Value{33.0f, 1.1613f};
+        }
+        if (sensor == SENSOR_OUT) {
+            return measurement == Measurement::Voltage
+                ? Value{26.13f, 0.0f} : Value{36.0f, 0.957f};
+        }
+    }
     return measurement == Measurement::Voltage
         ? Value{config::kVoltageVoltsPerInputVolt, config::kVoltageOffsetV}
         : Value{config::kCurrentAmpsPerInputVolt, config::kCurrentOffsetV};
@@ -38,14 +59,29 @@ void resetProfile(Profile& value) {
     value = {};
     value.magic = kMagic;
     value.version = kVersion;
-    for (uint8_t sensor = 0; sensor < SENSOR_COUNT; ++sensor) {
-        value.values[sensor][static_cast<uint8_t>(Measurement::Voltage)] = defaultValue(Measurement::Voltage);
-        value.values[sensor][static_cast<uint8_t>(Measurement::Current)] = defaultValue(Measurement::Current);
+    for (uint8_t source = 0; source < kSourceCount; ++source) {
+        for (uint8_t sensor = 0; sensor < SENSOR_COUNT; ++sensor) {
+            value.values[source][sensor][static_cast<uint8_t>(Measurement::Voltage)] =
+                defaultValue(static_cast<Source>(source), sensor, Measurement::Voltage);
+            value.values[source][sensor][static_cast<uint8_t>(Measurement::Current)] =
+                defaultValue(static_cast<Source>(source), sensor, Measurement::Current);
+        }
     }
 }
 
 bool validProfile(const Profile& value) {
     if (value.magic != kMagic || value.version != kVersion) return false;
+    for (uint8_t source = 0; source < kSourceCount; ++source) {
+        for (uint8_t sensor = 0; sensor < SENSOR_COUNT; ++sensor) {
+            if (!isValid(Measurement::Voltage, value.values[source][sensor][0]) ||
+                !isValid(Measurement::Current, value.values[source][sensor][1])) return false;
+        }
+    }
+    return true;
+}
+
+bool validLegacyProfile(const LegacyProfile& value) {
+    if (value.magic != kLegacyMagic || value.version != kLegacyVersion) return false;
     for (uint8_t sensor = 0; sensor < SENSOR_COUNT; ++sensor) {
         if (!isValid(Measurement::Voltage, value.values[sensor][0]) ||
             !isValid(Measurement::Current, value.values[sensor][1])) return false;
@@ -60,11 +96,25 @@ void loadIfNeeded() {
     if (alreadyLoaded) return;
 
     Profile loadedProfile{};
+    resetProfile(loadedProfile);
     Preferences prefs;
-    bool ok = prefs.begin("sensor_cal", true) && prefs.getBytesLength(kKey) == sizeof(loadedProfile) &&
-              prefs.getBytes(kKey, &loadedProfile, sizeof(loadedProfile)) == sizeof(loadedProfile);
+    bool opened = prefs.begin("sensor_cal", true);
+    bool ok = opened && prefs.getBytesLength(kKey) == sizeof(loadedProfile) &&
+              prefs.getBytes(kKey, &loadedProfile, sizeof(loadedProfile)) == sizeof(loadedProfile) &&
+              validProfile(loadedProfile);
+    if (!ok && opened && prefs.getBytesLength(kLegacyKey) == sizeof(LegacyProfile)) {
+        LegacyProfile legacy{};
+        if (prefs.getBytes(kLegacyKey, &legacy, sizeof(legacy)) == sizeof(legacy) &&
+            validLegacyProfile(legacy)) {
+            for (uint8_t sensor = 0; sensor < SENSOR_COUNT; ++sensor) {
+                loadedProfile.values[static_cast<uint8_t>(Source::Esp32Adc)][sensor][0] = legacy.values[sensor][0];
+                loadedProfile.values[static_cast<uint8_t>(Source::Esp32Adc)][sensor][1] = legacy.values[sensor][1];
+            }
+            ok = true;
+        }
+    }
     prefs.end();
-    if (!ok || !validProfile(loadedProfile)) resetProfile(loadedProfile);
+    if (!ok) resetProfile(loadedProfile);
 
     portENTER_CRITICAL(&profileMux);
     if (!loaded) {
@@ -78,7 +128,9 @@ void loadIfNeeded() {
 
 void init() { loadIfNeeded(); }
 
-Value defaults(Measurement measurement) { return defaultValue(measurement); }
+Value defaults(Source source, uint8_t sensor, Measurement measurement) {
+    return defaultValue(source, sensor, measurement);
+}
 
 bool isValid(Measurement measurement, Value value) {
     if (!std::isfinite(value.gain) || !std::isfinite(value.offsetInputV)) return false;
@@ -90,25 +142,29 @@ bool isValid(Measurement measurement, Value value) {
     return true;
 }
 
-Value get(uint8_t sensor, Measurement measurement) {
+Value get(Source source, uint8_t sensor, Measurement measurement) {
     loadIfNeeded();
-    if (sensor >= SENSOR_COUNT) return defaultValue(measurement);
+    const uint8_t sourceIndex = static_cast<uint8_t>(source);
+    if (sourceIndex >= kSourceCount || sensor >= SENSOR_COUNT) {
+        return defaultValue(source, sensor, measurement);
+    }
     portENTER_CRITICAL(&profileMux);
-    Value value = profile.values[sensor][static_cast<uint8_t>(measurement)];
+    Value value = profile.values[sourceIndex][sensor][static_cast<uint8_t>(measurement)];
     portEXIT_CRITICAL(&profileMux);
     return value;
 }
 
 float apply(float inputV, Value value) { return (inputV - value.offsetInputV) * value.gain; }
 
-bool set(uint8_t sensor, Measurement measurement, Value value) {
+bool set(Source source, uint8_t sensor, Measurement measurement, Value value) {
     loadIfNeeded();
-    if (sensor >= SENSOR_COUNT || !isValid(measurement, value)) return false;
+    const uint8_t sourceIndex = static_cast<uint8_t>(source);
+    if (sourceIndex >= kSourceCount || sensor >= SENSOR_COUNT || !isValid(measurement, value)) return false;
 
     Profile candidate;
     portENTER_CRITICAL(&profileMux);
     candidate = profile;
-    candidate.values[sensor][static_cast<uint8_t>(measurement)] = value;
+    candidate.values[sourceIndex][sensor][static_cast<uint8_t>(measurement)] = value;
     portEXIT_CRITICAL(&profileMux);
 
     Preferences prefs;

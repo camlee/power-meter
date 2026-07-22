@@ -16,7 +16,7 @@ constexpr uint32_t kIntervalMs = 500;
 constexpr size_t kMaxClients = 5;
 constexpr size_t kReplayFrameCount = 60; // 30 seconds at the 2 Hz publish rate.
 constexpr uint8_t kReplayFramesPerWork = 20;
-constexpr uint32_t kLiveMagic = 0x324d5056; // "VPM2" little endian
+constexpr uint32_t kLiveMagic = 0x344d5056; // "VPM4" little endian
 
 struct __attribute__((packed)) LiveFrame {
     uint32_t magic;
@@ -34,10 +34,15 @@ struct __attribute__((packed)) LiveFrame {
     float outVoltage;
     float outCurrent;
     float outPower;
+    float auxVoltage;
+    float auxCurrent;
     float auxPower;
     float netBatteryPower;
+    float inDuty;
+    float outDuty;
+    float auxDuty;
 };
-static_assert(sizeof(LiveFrame) == 64, "web live protocol V1 frame changed");
+static_assert(sizeof(LiveFrame) == 84, "web live protocol V4 frame changed");
 
 struct Client {
     int fd = -1;
@@ -163,7 +168,7 @@ esp_err_t websocketHandler(httpd_req_t* req) {
         return ESP_OK;
     }
 
-    // The V1 protocol is server-push-only. Consume a received control frame
+    // The V4 protocol is server-push-only. Consume a received control frame
     // so a curious client cannot make the HTTPD task retain buffered input.
     httpd_ws_frame_t frame{};
     if (httpd_ws_recv_frame(req, &frame, 0) != ESP_OK) { removeClient(fd); return ESP_FAIL; }
@@ -181,7 +186,7 @@ esp_err_t websocketHandler(httpd_req_t* req) {
 void sendPending(void*) {
     // A new client receives historical frames before the current frame, so
     // browser arrival order remains chronological. Twenty frames per worker
-    // pass keeps the initial 3.84 KiB replay bounded and complete in 1.5 s.
+    // pass keeps the initial 5.04 KiB replay bounded and complete in 1.5 s.
     for (size_t slot = 0; slot < kMaxClients; ++slot) {
         bool sendFailed = false;
         for (uint8_t sent = 0; sent < kReplayFramesPerWork; ++sent) {
@@ -205,7 +210,7 @@ bool buildFrame(LiveFrame& frame) {
 
     frame = {};
     frame.magic = kLiveMagic;
-    frame.version = 2;
+    frame.version = 4;
     frame.type = 1;
     frame.sequence = ++sequence;
     frame.stateRevision = device_state::revision();
@@ -222,16 +227,34 @@ bool buildFrame(LiveFrame& frame) {
     for (uint8_t i = 0; i < sensors::SENSOR_COUNT; ++i) {
         if (sensors::isConfigured(readings[i])) frame.flags |= static_cast<uint16_t>(1U << (1 + i));
         if (sensors::isCalculationEligible(readings[i])) frame.flags |= static_cast<uint16_t>(1U << (4 + i));
+        if (readings[i].state == sensors::ReadingState::Valid ||
+            readings[i].state == sensors::ReadingState::OutOfRange) {
+            frame.flags |= static_cast<uint16_t>(1U << (7 + i));
+        }
     }
-    frame.inVoltage = sensors::isCalculationEligible(in) ? in.voltage : NAN;
-    frame.inCurrent = sensors::isCalculationEligible(in) ? in.current : NAN;
-    frame.inPower = sensors::isCalculationEligible(in) ? in.power : NAN;
-    frame.outVoltage = sensors::isCalculationEligible(out) ? out.voltage : NAN;
-    frame.outCurrent = sensors::isCalculationEligible(out) ? out.current : NAN;
-    frame.outPower = sensors::isCalculationEligible(out) ? out.power : NAN;
-    frame.auxPower = sensors::isCalculationEligible(aux) ? aux.power : NAN;
+    const auto observed = [](const sensors::Reading& reading) {
+        return reading.state == sensors::ReadingState::Valid ||
+               reading.state == sensors::ReadingState::OutOfRange;
+    };
+    frame.inVoltage = observed(in) ? in.voltage : NAN;
+    frame.inCurrent = observed(in) ? in.current : NAN;
+    frame.inPower = observed(in) ? in.power : NAN;
+    frame.outVoltage = observed(out) ? out.voltage : NAN;
+    frame.outCurrent = observed(out) ? out.current : NAN;
+    frame.outPower = observed(out) ? out.power : NAN;
+    frame.auxVoltage = observed(aux) ? aux.voltage : NAN;
+    frame.auxCurrent = observed(aux) ? aux.current : NAN;
+    frame.auxPower = observed(aux) ? aux.power : NAN;
     float net = NAN;
     frame.netBatteryPower = sensors::getNetBatteryPower(net) ? net : NAN;
+    const auto duty = [](sensors::SensorId id, const sensors::Reading& reading) {
+        if (!sensors::isCalculationEligible(reading)) return NAN;
+        const float value = sensors::getDutyCycle(id);
+        return std::isfinite(value) ? value : NAN;
+    };
+    frame.inDuty = duty(sensors::SENSOR_IN, in);
+    frame.outDuty = duty(sensors::SENSOR_OUT, out);
+    frame.auxDuty = duty(sensors::SENSOR_AUX, aux);
     return true;
 }
 
@@ -277,7 +300,7 @@ void update() {
     if (!buildFrame(frame)) return;
     lastPublishMs = millis();
     // Freeze the ring briefly while a new client walks it. That preserves the
-    // chronological snapshot without a second 3.84 KiB buffer per client.
+    // chronological snapshot without a second 5.04 KiB buffer per client.
     if (!hasReplayPending()) recordReplayFrame(frame);
     if (!hasClients()) return;
     pendingFrame = frame;

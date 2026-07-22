@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import LiveChart from './lib/LiveChart.svelte';
+  import SensorChart from './lib/SensorChart.svelte';
   import HistoryChart from './lib/HistoryChart.svelte';
   import {
     anchorTime,
@@ -18,6 +19,7 @@
     sendWifiStationCommand,
     saveCycleEndHour,
     saveSetup,
+    saveSensorCalibration,
   } from './lib/api.js';
 
   // ---------------------------------------------------------------------
@@ -97,11 +99,12 @@
   let statusPollTimer;
   let statusFetchedAt = 0;
   $: hasTouchDisplay = status?.capabilities?.touch_display !== false;
+  $: hasStatusDisplay = status?.capabilities?.status_display === true;
   $: webThemeOptions = hasTouchDisplay
     ? ['light', 'dark', 'auto', 'device']
     : ['light', 'dark', 'auto'];
   $: sensorModeOptions = [
-    ['adc', 'ADC'], ['uart', 'UART'], ['demo', 'Demo'],
+    ['adc', 'ESP32 ADC'], ['ads1115', 'ADS1115'], ['uart', 'UART'], ['demo', 'Demo'],
   ].filter(([mode]) => status?.capabilities?.sensor_modes?.[mode] !== false);
   $: if (status && !hasTouchDisplay && route === 'remote') {
     window.history.replaceState({}, '', routePath('setup'));
@@ -113,12 +116,34 @@
   let sensorStatus = null;
   let sensorStatusError = '';
   let sensorPollTimer;
+  let selectedSensor = 'in';
+  let calibrationEditor = null;
+  let calibrationReference = '';
+  let calibrationBusy = false;
+  let calibrationError = '';
+  let calibrationMessage = '';
+  $: selectedChannel = sensorStatus?.channels?.find((channel) => channel.id === selectedSensor) || null;
+  $: calibrationInput = !calibrationEditor || !selectedChannel
+    ? Number.NaN
+    : calibrationEditor.measurement === 'voltage'
+      ? selectedChannel.input_voltage_v
+      : selectedChannel.input_current_v;
+  $: sensorPoints = Object.fromEntries(['in', 'out', 'aux'].map((id) => [id, points.map((point) => ({
+    timestamp: point.timestamp, receivedAt: point.receivedAt, ...(point.sensors?.[id] || {}),
+  }))]));
+  $: selectedSensorPoints = sensorPoints[selectedSensor] || [];
+  // Pass dependencies explicitly: legacy Svelte reactive statements cannot
+  // discover state read indirectly inside a zero-argument helper.
+  $: calibrationPreviewPoints = previewCalibrationPoints(
+    calibrationEditor, selectedSensor, selectedChannel, selectedSensorPoints,
+  );
 
   // Setup writes are staged locally and applied together by the device.
   let setup = null;
   let setupHostname = '';
   let setupSensorMode = 'adc';
   let setupAppearance = 'auto';
+  let setupStatusDisplayMode = 'summary';
   let resetSetup = false;
   let resetWifi = false;
   let resetCalibration = false;
@@ -128,7 +153,8 @@
   let setupBusy = false;
   $: setupIsDirty = !!setup && (
     setupHostname !== setup.hostname || setupSensorMode !== setup.sensor_mode ||
-    setupAppearance !== setup.appearance || resetSetup || resetWifi ||
+    setupAppearance !== setup.appearance ||
+    setupStatusDisplayMode !== (setup.status_display_mode || 'summary') || resetSetup || resetWifi ||
     resetCalibration || resetUsage
   );
 
@@ -209,8 +235,6 @@
   // ---------------------------------------------------------------------
   // Small helpers
   // ---------------------------------------------------------------------
-
-  const meterName = () => status?.hostname || 'meter';
 
   function loadWebTheme() {
     try {
@@ -301,6 +325,12 @@
     return Number.isFinite(value) ? `${(value * 100).toFixed(0)}%` : '—';
   }
 
+  function dutyEmptyMessage(channel) {
+    if (channel?.duty?.state === 'invalid') return 'Duty reading unavailable.';
+    if (channel?.duty?.state === 'valid') return 'Waiting for readings…';
+    return 'Duty is not reported by this sensor.';
+  }
+
   function titleCase(value) {
     if (!value) return '—';
     return value.split('_').map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(' ');
@@ -318,11 +348,100 @@
     }
   }
 
+  function selectSensor(id) {
+    selectedSensor = id;
+    calibrationEditor = null;
+    calibrationError = calibrationMessage = '';
+  }
+
+  function openCalibration(sensor, measurement) {
+    const channel = sensorStatus?.channels?.find((candidate) => candidate.id === sensor);
+    const value = channel?.calibration?.[measurement];
+    if (!value) return;
+    selectSensor(sensor);
+    calibrationEditor = {
+      sensor, measurement,
+      gain: value.gain, offset: value.offset_input_v,
+      sensitivity: 1000 / value.gain,
+      defaultGain: value.default_gain, defaultOffset: value.default_offset_input_v,
+    };
+    calibrationReference = '';
+    calibrationError = calibrationMessage = '';
+  }
+
+  function previewCalibrationPoints(editor, sensor, channel, sensorReadings) {
+    if (!editor || editor.sensor !== sensor) return [];
+    const saved = channel?.calibration?.[editor.measurement];
+    if (!saved || !Number.isFinite(editor.sensitivity) || editor.sensitivity <= 0) return [];
+    const stagedGain = 1000 / editor.sensitivity;
+    return sensorReadings.map((point) => {
+      const displayed = point[editor.measurement];
+      if (!Number.isFinite(displayed)) return { ...point, preview: Number.NaN };
+      const input = displayed / saved.gain + saved.offset_input_v;
+      return { ...point, preview: (input - editor.offset) * stagedGain };
+    });
+  }
+
+  function zeroCalibration() {
+    if (Number.isFinite(calibrationInput)) {
+      calibrationEditor = { ...calibrationEditor, offset: calibrationInput };
+    }
+  }
+
+  function calculateCalibration() {
+    const reference = Number(calibrationReference);
+    const denominator = calibrationInput - calibrationEditor.offset;
+    if (!Number.isFinite(reference) || reference <= 0 || !Number.isFinite(denominator) || Math.abs(denominator) < 0.005) {
+      calibrationError = 'Enter a positive reference while the measured input is away from the configured zero.';
+      return;
+    }
+    calibrationEditor = { ...calibrationEditor, sensitivity: 1000 / (reference / denominator) };
+    calibrationError = '';
+  }
+
+  function resetCalibrationEditor() {
+    calibrationEditor = {
+      ...calibrationEditor,
+      gain: calibrationEditor.defaultGain,
+      offset: calibrationEditor.defaultOffset,
+      sensitivity: 1000 / calibrationEditor.defaultGain,
+    };
+  }
+
+  async function submitCalibration() {
+    if (!calibrationEditor || !Number.isFinite(calibrationEditor.sensitivity) || calibrationEditor.sensitivity <= 0) {
+      calibrationError = 'Sensitivity must be a positive number.';
+      return;
+    }
+    calibrationBusy = true;
+    calibrationError = calibrationMessage = '';
+    try {
+      sensorStatus = await saveSensorCalibration({
+        sensor: calibrationEditor.sensor,
+        measurement: calibrationEditor.measurement,
+        gain: 1000 / calibrationEditor.sensitivity,
+        offset_input_v: Number(calibrationEditor.offset),
+      });
+      calibrationMessage = 'Calibration saved.';
+      calibrationEditor = null;
+      // Retained observations were calculated with the previous coefficients;
+      // do not reinterpret that mixed window if calibration is reopened.
+      points = [];
+    } catch (err) {
+      calibrationError = describeError(err, 'save calibration');
+    } finally {
+      calibrationBusy = false;
+    }
+  }
+
   function sourceStateLabel(source) {
     if (!source) return 'Unknown';
     if (!source.transport) return 'Active';
     switch (source.transport.state) {
       case 'receiving': return 'Receiving';
+      case 'initializing': return 'Initializing';
+      case 'degraded': return 'Degraded';
+      case 'unavailable': return 'Unavailable';
       case 'stale': return 'Stale';
       case 'waiting': return 'Waiting for data';
       default: return 'Unknown';
@@ -480,6 +599,7 @@
     setupHostname = value.hostname;
     setupSensorMode = value.sensor_mode;
     setupAppearance = value.appearance;
+    setupStatusDisplayMode = value.status_display_mode || 'summary';
     resetSetup = resetWifi = resetCalibration = resetUsage = false;
     setupError = '';
     setupMessage = '';
@@ -612,6 +732,7 @@
     try {
       await saveSetup({
         hostname: setupHostname, sensor_mode: setupSensorMode, appearance: setupAppearance,
+        status_display_mode: setupStatusDisplayMode,
         reset_setup: resetSetup, reset_wifi: resetWifi,
         reset_calibration: resetCalibration, reset_usage: resetUsage,
       });
@@ -675,12 +796,27 @@
     if (frame.sequence <= lastSequence) return; // duplicate or out-of-order frame
     lastSequence = frame.sequence;
 
+    const timestamp = Number.isFinite(frame.unixMs) ? frame.unixMs : frame.uptimeMs;
+    const eligible = (index) => !!(frame.eligibleMask & (1 << index));
+    const observed = (index) => !!(frame.observedMask & (1 << index));
+    const liveSensor = (index, reading) => {
+      if (!observed(index)) return {};
+      return {
+        ...reading,
+        duty: Number.isFinite(reading.duty) ? reading.duty * 100 : Number.NaN,
+      };
+    };
     points = [
       ...points,
       {
-        in: frame.in.power,
-        out: frame.out.power,
-        timestamp: Number.isFinite(frame.unixMs) ? frame.unixMs : frame.uptimeMs,
+        in: eligible(0) ? frame.in.power : Number.NaN,
+        out: eligible(1) ? frame.out.power : Number.NaN,
+        timestamp, receivedAt: Date.now(),
+        sensors: {
+          in: liveSensor(0, frame.in),
+          out: liveSensor(1, frame.out),
+          aux: liveSensor(2, frame.aux),
+        },
       },
     ].slice(-MAX_LIVE_POINTS);
 
@@ -1019,7 +1155,7 @@
 
 <main>
   <header class="appbar">
-    <h1>{meterName()}</h1>
+    <h1>{status?.hostname || 'meter'}</h1>
     <span
       class="connection"
       class:live={connection === 'live'}
@@ -1223,6 +1359,16 @@
               </div>
             {/if}
 
+            {#if hasStatusDisplay}
+              <div class="field-label">Status display</div>
+              <div class="form-segments">
+                {#each ['summary', 'dense'] as option}
+                  <button type="button" class:active={setupStatusDisplayMode === option} aria-pressed={setupStatusDisplayMode === option} on:click={() => setupStatusDisplayMode = option}>{titleCase(option)}</button>
+                {/each}
+              </div>
+              <p class="field-note">Summary uses larger text; Dense shows full network and sensor diagnostics.</p>
+            {/if}
+
             <label class="field-label" for="hostname">Hostname</label>
             <input id="hostname" bind:value={setupHostname} maxlength="31" pattern="[a-z0-9](?:[a-z0-9-]{0,29}[a-z0-9])?" autocapitalize="none" autocomplete="off" spellcheck="false" />
 
@@ -1290,25 +1436,98 @@
           <h2>Live sensors</h2>
           <p>{sensorStatus?.source?.label || '—'} source · {sourceStateLabel(sensorStatus?.source)}</p>
         </div>
-        <button class="refresh" on:click={refreshSensors} aria-label="Refresh sensors" title="Refresh sensors">↻</button>
       </div>
-      <div class="sensor-grid">
+      <div class="sensor-tabs" role="tablist" aria-label="Sensor channel">
         {#each sensorStatus?.channels || [] as channel}
-          <article class="sensor-card" class:warning={channel.state === 'out_of_range'} class:bad={channel.state === 'invalid' || channel.state === 'stale'}>
-            <header>
-              <h3>{channel.label}</h3>
-              <span class="state" class:good={channel.state === 'valid'} class:warning={channel.state === 'out_of_range'} class:bad={channel.state === 'invalid' || channel.state === 'stale'}>{stateLabel(channel.state)}</span>
-            </header>
-            <dl class="measurements">
-              <dt>Voltage</dt><dd>{formatMeasurement(channel.voltage, 'V')}</dd>
-              <dt>Current</dt><dd>{formatMeasurement(channel.current, 'A')}</dd>
-              <dt>Power</dt><dd>{formatMeasurement(channel.power, 'W')}</dd>
-              <dt>Duty</dt><dd>{channel.duty?.state === 'valid' ? formatPercent(channel.duty.value) : '—'}</dd>
-            </dl>
-            {#if !channel.configured}<p class="sensor-note">This channel is not configured by the active source.</p>{/if}
-          </article>
+          <button type="button" role="tab" class:active={selectedSensor === channel.id}
+            aria-selected={selectedSensor === channel.id} on:click={() => selectSensor(channel.id)}>
+            {channel.label}
+          </button>
         {/each}
       </div>
+      {#if sensorStatus?.channels?.length}
+        <div class="sensor-grid" class:calibrating={!!calibrationEditor}>
+          {#each sensorStatus.channels as channel}
+            {#if !calibrationEditor || calibrationEditor.sensor === channel.id}
+              <section class="sensor-panel" class:active={selectedSensor === channel.id}>
+                {#if calibrationEditor?.sensor !== channel.id}
+                  <article class="sensor-card" class:warning={channel.state === 'out_of_range'}
+                    class:bad={channel.state === 'invalid' || channel.state === 'stale'}>
+                    <header>
+                      <h3>{channel.label}</h3>
+                      <span class="state" class:good={channel.state === 'valid'}
+                        class:warning={channel.state === 'out_of_range'}
+                        class:bad={channel.state === 'invalid' || channel.state === 'stale'}>{stateLabel(channel.state)}</span>
+                    </header>
+                    <dl class="measurements kpis">
+                      <dt>Voltage</dt><dd>{formatMeasurement(channel.voltage, 'V')}</dd>
+                      <dt>Current</dt><dd>{formatMeasurement(channel.current, 'A')}</dd>
+                      <dt>Power</dt><dd>{formatMeasurement(channel.power, 'W')}</dd>
+                      <dt>Duty</dt><dd>{channel.duty?.state === 'valid' ? formatPercent(channel.duty.value) : '—'}</dd>
+                    </dl>
+                    {#if !channel.configured}<p class="sensor-note">This channel is not configured by the active source.</p>{/if}
+                  </article>
+                {/if}
+
+                <div class="sensor-charts">
+                  {#if calibrationEditor?.sensor === channel.id}
+                    <SensorChart points={sensorPoints[channel.id] || []} field={calibrationEditor.measurement}
+                      title={calibrationEditor.measurement === 'voltage' ? 'Voltage' : 'Current'}
+                      unit={calibrationEditor.measurement === 'voltage' ? 'V' : 'A'}
+                      colorVariable={calibrationEditor.measurement === 'voltage' ? '--panel' : '--warning'}
+                      active={!livePaused} previewPoints={calibrationPreviewPoints} showPreviewLegend={true} />
+                  {:else}
+                    <SensorChart points={sensorPoints[channel.id] || []} field="voltage" title="Voltage" unit="V"
+                      colorVariable="--panel" active={!livePaused} />
+                    <SensorChart points={sensorPoints[channel.id] || []} field="current" title="Current" unit="A"
+                      colorVariable="--warning" active={!livePaused} />
+                    <SensorChart points={sensorPoints[channel.id] || []} field="power" title="Power" unit="W"
+                      colorVariable="--charge" active={!livePaused} />
+                    <SensorChart points={sensorPoints[channel.id] || []} field="duty" title="Duty" unit="%"
+                      colorVariable="--surplus" active={!livePaused}
+                      emptyMessage={dutyEmptyMessage(channel)} />
+                  {/if}
+                </div>
+
+                {#if channel.calibration?.editable && calibrationEditor?.sensor !== channel.id}
+                  <div class="calibration-actions">
+                    <button type="button" on:click={() => openCalibration(channel.id, 'voltage')}>Calibrate voltage</button>
+                    <button type="button" on:click={() => openCalibration(channel.id, 'current')}>Calibrate current</button>
+                  </div>
+                {/if}
+              </section>
+            {/if}
+          {/each}
+
+          {#if calibrationEditor}
+            <form class="calibration-editor" on:submit|preventDefault={submitCalibration}>
+              <h3>Calibrate {selectedChannel.label} {calibrationEditor.measurement}</h3>
+              <label>Offset / zero input (V)
+                <input type="number" step="0.0001" min="0" max="3.3" bind:value={calibrationEditor.offset} />
+              </label>
+              <label>Sensitivity (mV per {calibrationEditor.measurement === 'voltage' ? 'V' : 'A'})
+                <input type="number" step="0.001" min="0.001" bind:value={calibrationEditor.sensitivity} />
+              </label>
+              <div class="calibration-reference">
+                <label>Trusted reference ({calibrationEditor.measurement === 'voltage' ? 'V' : 'A'})
+                  <input type="number" step="0.001" min="0" bind:value={calibrationReference} />
+                </label>
+                <button type="button" on:click={calculateCalibration}>Calculate</button>
+              </div>
+              <p class="field-note">Latest ADC input: {formatMeasurement(calibrationInput, 'V', 4)}</p>
+              {#if calibrationError}<p class="error" role="alert">{calibrationError}</p>{/if}
+              <div class="calibration-editor-actions">
+                <button type="button" on:click={zeroCalibration}>Use latest as zero</button>
+                <button type="button" on:click={resetCalibrationEditor}>Defaults</button>
+                <button type="button" on:click={() => calibrationEditor = null}>Cancel</button>
+                <button class="primary" type="submit" disabled={calibrationBusy}>{calibrationBusy ? 'Saving…' : 'Save'}</button>
+              </div>
+            </form>
+          {/if}
+        </div>
+
+        {#if calibrationMessage}<p class="success" role="status">{calibrationMessage}</p>{/if}
+      {/if}
       {#if !sensorStatus && !sensorStatusError}<p class="empty">Loading sensors…</p>{/if}
     </section>
   {:else if route === 'cycle'}
@@ -2186,11 +2405,17 @@
     font-size: 0.8rem;
   }
 
-  .sensor-grid {
-    display: grid;
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.7rem;
+  .sensor-tabs {
+    display: flex;
+    margin-bottom: 0.7rem;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    overflow: hidden;
   }
+
+  .sensor-tabs button { flex: 1; min-height: 2.3rem; border-left: 1px solid var(--border); }
+  .sensor-tabs button:first-child { border-left: 0; }
+  .sensor-tabs button.active { color: white; background: var(--accent); }
 
   .sensor-card {
     padding: 0.75rem;
@@ -2200,6 +2425,9 @@
 
   .sensor-card.warning { border-color: var(--warning); }
   .sensor-card.bad { border-color: var(--battery); }
+
+  .sensor-panel { display: none; min-width: 0; }
+  .sensor-panel.active { display: block; }
 
   .sensor-card header {
     display: flex;
@@ -2223,6 +2451,66 @@
     color: var(--muted);
     margin-top: 0.7rem;
     font-size: 0.78rem;
+  }
+
+  .sensor-charts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.8rem;
+    margin-top: 0.7rem;
+  }
+
+  .calibration-actions,
+  .calibration-editor-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 0.45rem;
+    margin-top: 0.65rem;
+  }
+
+  .calibration-actions button,
+  .calibration-editor-actions button,
+  .calibration-reference button {
+    min-height: 2.2rem;
+    padding: 0.4rem 0.65rem;
+    border-color: var(--border);
+    border-radius: 0.3rem;
+    color: var(--text);
+  }
+
+  .calibration-editor {
+    margin-top: 0.8rem;
+    padding: 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    background: var(--surface);
+  }
+
+  .calibration-editor > label,
+  .calibration-reference label {
+    display: grid;
+    gap: 0.25rem;
+    margin-top: 0.6rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .calibration-editor input {
+    width: 100%;
+    padding: 0.48rem;
+    border: 1px solid var(--border);
+    border-radius: 0.25rem;
+    background: var(--background);
+    color: var(--text);
+    font: inherit;
+  }
+
+  .calibration-reference {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: end;
+    gap: 0.5rem;
   }
 
   dl {
@@ -2249,6 +2537,27 @@
     .connection.reconnecting b { animation: none; }
   }
 
+  @media (min-width: 64rem) {
+    .sensors-view { max-width: none; }
+    .sensor-tabs { display: none; }
+    .sensor-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      align-items: start;
+      gap: 1rem;
+    }
+    .sensor-grid.calibrating {
+      grid-template-columns: minmax(0, 2fr) minmax(18rem, 1fr);
+    }
+    .sensor-grid.calibrating .calibration-editor {
+      align-self: start;
+      margin-top: 0.7rem;
+    }
+    .sensor-panel,
+    .sensor-panel.active { display: block; }
+    .sensor-charts { grid-template-columns: 1fr; }
+  }
+
   @media (max-width: 34rem) {
     main {
       padding-left: 0.5rem;
@@ -2266,9 +2575,7 @@
       height: min(calc(100dvh - 6.7rem), 480px);
     }
 
-    .sensor-grid {
-      grid-template-columns: 1fr;
-    }
+    .sensor-charts { grid-template-columns: 1fr; }
 
     .wifi-grid { grid-template-columns: 1fr; }
   }

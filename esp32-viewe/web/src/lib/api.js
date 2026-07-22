@@ -10,6 +10,21 @@ export async function getSensors() {
   return response.json();
 }
 
+export async function saveSensorCalibration(calibration) {
+  const response = await fetch('/api/v1/sensors/calibration', {
+    method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(calibration)
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const error = new Error(result.error || `calibration ${response.status}`);
+    error.status = response.status;
+    error.userMessage = result.error;
+    throw error;
+  }
+  return result;
+}
+
 export async function getSetup() {
   const response = await fetch('/api/v1/setup', { cache: 'no-store' });
   if (!response.ok) throw new Error(`setup ${response.status}`);
@@ -98,9 +113,13 @@ export function openLiveSocket(onFrame, onState) {
     }
     if (!(event.data instanceof ArrayBuffer)) return;
     const view = new DataView(event.data);
-    if (view.byteLength !== 64 || view.getUint32(0, true) !== 0x324d5056 ||
-        view.getUint8(4) !== 2 || view.getUint8(5) !== 1 || view.getUint32(20, true) === 0) return;
+    const version = view.byteLength >= 5 ? view.getUint8(4) : 0;
+    const v2 = view.byteLength === 64 && view.getUint32(0, true) === 0x324d5056 && version === 2;
+    const v3 = view.byteLength === 72 && view.getUint32(0, true) === 0x334d5056 && version === 3;
+    const v4 = view.byteLength === 84 && view.getUint32(0, true) === 0x344d5056 && version === 4;
+    if ((!v2 && !v3 && !v4) || view.getUint8(5) !== 1 || view.getUint32(20, true) === 0) return;
     const flags = view.getUint16(6, true);
+    const duty = (offset) => v4 ? view.getFloat32(offset, true) : Number.NaN;
     onFrame({
       sequence: view.getUint32(8, true),
       stateRevision: view.getUint32(12, true),
@@ -109,10 +128,13 @@ export function openLiveSocket(onFrame, onState) {
       unixMs: view.getFloat64(24, true),
       configuredMask: (flags >> 1) & 0x07,
       eligibleMask: (flags >> 4) & 0x07,
-      in: { voltage: view.getFloat32(32, true), current: view.getFloat32(36, true), power: view.getFloat32(40, true) },
-      out: { voltage: view.getFloat32(44, true), current: view.getFloat32(48, true), power: view.getFloat32(52, true) },
-      auxPower: view.getFloat32(56, true),
-      netBatteryPower: view.getFloat32(60, true)
+      observedMask: (v3 || v4) ? (flags >> 7) & 0x07 : (flags >> 4) & 0x07,
+      in: { voltage: view.getFloat32(32, true), current: view.getFloat32(36, true), power: view.getFloat32(40, true), duty: duty(72) },
+      out: { voltage: view.getFloat32(44, true), current: view.getFloat32(48, true), power: view.getFloat32(52, true), duty: duty(76) },
+      aux: (v3 || v4)
+        ? { voltage: view.getFloat32(56, true), current: view.getFloat32(60, true), power: view.getFloat32(64, true), duty: duty(80) }
+        : { voltage: Number.NaN, current: Number.NaN, power: view.getFloat32(56, true) },
+      netBatteryPower: view.getFloat32((v3 || v4) ? 68 : 60, true)
     });
   };
   socket.onclose = () => onState?.(connectionLimit ? 'limited' : 'offline', connectionLimit);

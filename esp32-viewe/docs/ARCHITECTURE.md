@@ -10,7 +10,7 @@ future peer features.
 
 Both targets use one application entry point and common runtime. Compile-time
 hardware profiles select PSRAM policy, touch/LVGL support, status-display
-support, local sensor backend, and bounded sensor-history depth. Runtime APIs
+support, individual sensor-source capabilities, and bounded sensor-history depth. Runtime APIs
 publish those capabilities so one embedded web application can adapt without
 separate frontend builds.
 
@@ -56,7 +56,7 @@ hardware validation will establish per-channel offsets and gains.
 ## Layering
 
 ```text
-Demo / ADC / UART sources
+Demo / ESP32 ADC / ADS1115 / UART sources
         |
         v
 Sensor source contract -------> sensors (validation, buffers, derived values)
@@ -74,13 +74,15 @@ Network services --> Wi-Fi UI, NTP/browser time, web app/API, OTA, remote displa
 
 `sensors/` owns acquisition and exposes thread-safe normalized readings.
 `SensorSource` is the acquisition boundary. A source returns channel presence,
-health, timestamps, voltage/current, and optionally direct duty. ADC values are
-raw inputs to ESP32 calibration; Demo and UART values are already engineering
-units. The service validates values, applies calibration exactly once, derives
-power once, and owns short in-memory histories.
+health, timestamps, voltage/current, and optionally direct duty. ESP32 ADC and
+ADS1115 values are raw inputs to their own source-specific calibration; Demo
+and UART values are already engineering units. The service validates values,
+applies calibration exactly once, derives power once, and owns short in-memory
+histories.
 
 Realtime Demo remains valuable for exercising the complete live/history path.
-The ESP32 ADC source is the final local target. The UART source accepts
+The ESP32 ADC and external ADS1115 sources are independently build-selectable.
+The UART source accepts
 calibrated readings and optional duty from an external producer; the current
 Uno producer supplies `In`/`Out` while `Aux` is absent.
 One UART frame supplies a coherent multi-channel snapshot, so its receiver is a
@@ -90,7 +92,7 @@ Requirements for the production source:
 
 - fixed channel configuration and a clear channel/pin table;
 - calibrated millivolt reads, suitable attenuation, and bounded filtering;
-- per-channel persisted offset/gain values with safe defaults;
+- per-source, per-channel persisted offset/gain values with safe defaults;
 - independent channel presence and explicit waiting/invalid/stale states;
 - finite/plausibility validation for every source, including the local ADC,
   while retaining finite raw observations on Sensors for diagnosis;
@@ -129,10 +131,13 @@ Current top-level screens are:
   - **Debug:** SDK/chip/reset details, disjoint internal/PSRAM heap usage and
     largest free blocks, storage, and OTA diagnostics.
 
-The VIEWE display is a first-class offline interface. The initial
-`meter-wroom` milestone is web-first and runs Demo sensors; its SSD1306 status
-display and ADS1115 source are follow-up capabilities. Network operations must
-be asynchronous and must not stall sampling or rendering.
+The VIEWE display is a first-class offline interface. `meter-wroom` remains
+web-first but also drives a compact SSD1306 status surface showing network and
+high-level sensor state. The SSD1306 and ADS1115 share a serialized Arduino
+Wire bus on WROOM. An ADS-only VIEWE build instead uses ESP-IDF legacy I2C port
+1, avoiding the VIEWE panel stack's port-0 driver and Arduino Wire's incompatible
+driver-ng constructor. Network operations must be asynchronous and must not
+stall sampling or rendering.
 
 ### 3. Energy and durable history
 
@@ -223,8 +228,9 @@ The implemented local service layer includes:
 - signed OTA delivery and diagnostics;
 - remote display capture and input on a trusted local network.
 
-Browser calibration and storage tools remain incremental product backlog.
-Data export and synchronization between devices remain future work.
+Browser calibration is implemented against the same persisted source profiles
+used by LVGL. Data export and synchronization between devices remain future
+work.
 
 Mesh networking is a future architectural option, not a near-term dependency;
 the first network contract should work over ordinary Wi-Fi AP/station mode.
@@ -232,7 +238,8 @@ the first network contract should work over ordinary Wi-Fi AP/station mode.
 ## Configuration and persistence
 
 Configuration belongs in NVS/Preferences and is versioned. It includes the V1
-`ADC | UART | Demo` sensor source mode, calibration values, device identity, and
+`ADC | ADS1115 | UART | Demo` sensor source mode, source-specific calibration
+values, device identity, and
 Wi-Fi/AP settings. Persisted source-specific channel enable masks remain an
 active follow-up; source-advertised presence already flows through the runtime
 model. No alpha source-mode compatibility is required. Future peer/service

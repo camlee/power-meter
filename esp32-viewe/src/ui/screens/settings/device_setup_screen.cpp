@@ -5,6 +5,7 @@
 #include <cstring>
 
 #include "device/device_identity.h"
+#include "device/hardware_profile.h"
 #include "data/historical_storage.h"
 #include "network/network_manager.h"
 #include "sensors/sensor_mode.h"
@@ -18,6 +19,7 @@ lv_obj_t* deviceIdInput = nullptr;
 lv_obj_t* statusLabel = nullptr;
 lv_obj_t* keyboard = nullptr;
 lv_obj_t* adcModeButton = nullptr;
+lv_obj_t* ads1115ModeButton = nullptr;
 lv_obj_t* uartModeButton = nullptr;
 lv_obj_t* demoModeButton = nullptr;
 lv_obj_t* activeSensorStatusLabel = nullptr;
@@ -41,6 +43,7 @@ void updateActionState();
 const char* sensorModeLabel(sensor_mode::Mode mode) {
     switch (mode) {
         case sensor_mode::Mode::Adc: return "ADC";
+        case sensor_mode::Mode::Ads1115: return "ADS1115";
         case sensor_mode::Mode::Uart: return "UART";
         case sensor_mode::Mode::Demo: return "Demo";
     }
@@ -203,8 +206,9 @@ void saveChangesCb(lv_event_t*) {
 void sensorModeChangedCb(lv_event_t* event) {
     lv_obj_t* target = lv_event_get_target(event);
     pendingSensorMode = target == adcModeButton ? sensor_mode::Mode::Adc :
+                        target == ads1115ModeButton ? sensor_mode::Mode::Ads1115 :
                         target == uartModeButton ? sensor_mode::Mode::Uart : sensor_mode::Mode::Demo;
-    selectSegment(target, adcModeButton, uartModeButton, demoModeButton);
+    selectSegment(target, adcModeButton, ads1115ModeButton, uartModeButton, demoModeButton);
     updateActiveSensorStatus();
     updateActionState();
 }
@@ -226,8 +230,9 @@ void resetChangesCb(lv_event_t*) {
     pendingSensorMode = sensor_mode::get();
     pendingAppearance = ui_theme::mode();
     lv_obj_t* activeSensor = pendingSensorMode == sensor_mode::Mode::Adc ? adcModeButton :
+                             pendingSensorMode == sensor_mode::Mode::Ads1115 ? ads1115ModeButton :
                              pendingSensorMode == sensor_mode::Mode::Uart ? uartModeButton : demoModeButton;
-    selectSegment(activeSensor, adcModeButton, uartModeButton, demoModeButton);
+    selectSegment(activeSensor, adcModeButton, ads1115ModeButton, uartModeButton, demoModeButton);
     updateActiveSensorStatus();
     lv_obj_t* selected = pendingAppearance == ui_theme::Mode::Light ? lightModeButton : pendingAppearance == ui_theme::Mode::Dark ? darkModeButton : autoModeButton;
     selectSegment(selected, lightModeButton, darkModeButton, autoModeButton);
@@ -278,16 +283,27 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_label_set_text(modeLabel, "SENSOR MODE");
     ui_theme::styleSectionLabel(modeLabel);
     lv_obj_t* modeRow = createSegmentGroup(screen);
-    adcModeButton = lv_btn_create(modeRow); uartModeButton = lv_btn_create(modeRow); demoModeButton = lv_btn_create(modeRow);
-    lv_obj_set_flex_grow(adcModeButton, 1); lv_obj_set_flex_grow(uartModeButton, 1); lv_obj_set_flex_grow(demoModeButton, 1);
-    styleGroupedSegment(adcModeButton); styleGroupedSegment(uartModeButton); styleGroupedSegment(demoModeButton);
-    lv_label_set_text(lv_label_create(adcModeButton), "ADC"); lv_label_set_text(lv_label_create(uartModeButton), "UART"); lv_label_set_text(lv_label_create(demoModeButton), "Demo");
+    adcModeButton = lv_btn_create(modeRow); ads1115ModeButton = lv_btn_create(modeRow);
+    uartModeButton = lv_btn_create(modeRow); demoModeButton = lv_btn_create(modeRow);
+    lv_obj_set_flex_grow(adcModeButton, 1); lv_obj_set_flex_grow(ads1115ModeButton, 1);
+    lv_obj_set_flex_grow(uartModeButton, 1); lv_obj_set_flex_grow(demoModeButton, 1);
+    styleGroupedSegment(adcModeButton); styleGroupedSegment(ads1115ModeButton);
+    styleGroupedSegment(uartModeButton); styleGroupedSegment(demoModeButton);
+    lv_label_set_text(lv_label_create(adcModeButton), "ADC");
+    lv_label_set_text(lv_label_create(ads1115ModeButton), "ADS");
+    lv_label_set_text(lv_label_create(uartModeButton), "UART");
+    lv_label_set_text(lv_label_create(demoModeButton), "Demo");
     lv_obj_add_event_cb(adcModeButton, sensorModeChangedCb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_add_event_cb(ads1115ModeButton, sensorModeChangedCb, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(uartModeButton, sensorModeChangedCb, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(demoModeButton, sensorModeChangedCb, LV_EVENT_CLICKED, nullptr);
+    if (!hardware_profile::kHasEsp32Adc) lv_obj_add_flag(adcModeButton, LV_OBJ_FLAG_HIDDEN);
+    if (!hardware_profile::kHasAds1115) lv_obj_add_flag(ads1115ModeButton, LV_OBJ_FLAG_HIDDEN);
+    if (!hardware_profile::kSupportsUart) lv_obj_add_flag(uartModeButton, LV_OBJ_FLAG_HIDDEN);
     lv_obj_t* activeSensor = sensor_mode::get() == sensor_mode::Mode::Adc ? adcModeButton :
+                             sensor_mode::get() == sensor_mode::Mode::Ads1115 ? ads1115ModeButton :
                              sensor_mode::get() == sensor_mode::Mode::Uart ? uartModeButton : demoModeButton;
-    selectSegment(activeSensor, adcModeButton, uartModeButton, demoModeButton);
+    selectSegment(activeSensor, adcModeButton, ads1115ModeButton, uartModeButton, demoModeButton);
 
     activeSensorStatusLabel = lv_label_create(screen);
     lv_obj_set_width(activeSensorStatusLabel, lv_pct(100));

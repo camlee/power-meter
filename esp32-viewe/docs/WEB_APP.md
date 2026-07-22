@@ -35,8 +35,8 @@ PlatformIO pre-build action, so these normal commands always contain the web
 app:
 
 ```sh
-pio run -d esp32-viewe -e meter
-pio run -d esp32-viewe -e wroom32
+pio run -d esp32-viewe -e viewe
+pio run -d esp32-viewe -e wroom
 ```
 
 There is intentionally no CI/CD system for this project. The local checks are
@@ -124,7 +124,7 @@ POST /api/v1/cycles              {"end_hour":20}
 The WebSocket is on port 81 only for this first compatibility slice: port 80
 continues to use the established synchronous Arduino `WebServer` for the
 authenticated signed OTA workflow. The realtime listener is ESP-IDF's native
-HTTP server, has five client slots, and only publishes a 64-byte frame at 2 Hz.
+HTTP server, has five client slots, and only publishes an 84-byte frame at 2 Hz.
 The SPA computes that port from the host name, so the browser user never enters
 it. A later migration of OTA routes to the native server can unite both on port
 80 without changing the browser protocol path or frame layout.
@@ -149,22 +149,27 @@ and connected client MAC addresses. Applying a different active AP configuration
 can disconnect the browser, which must then join the new SSID.
 
 `/api/v1/web/status` publishes the hardware profile and capabilities, including
-touch/status displays, the local sensor backend, and supported sensor modes.
+touch/status displays and individually supported sensor modes.
 The SPA hides remote-display, LVGL appearance, and unsupported source controls
 at runtime, allowing the same embedded assets to serve both hardware targets.
 
-`/api/v1/sensors` is a read-only diagnostic model used by the Sensors and Setup
-pages. Each channel reports `configured`, `observed`, its
+`/api/v1/sensors` is the diagnostic and calibration read model used by the
+Sensors and Setup pages. Each channel reports `configured`, `observed`, its
 `valid | out_of_range | not_configured | waiting | invalid | stale` state,
 sample age, finite voltage/current/power observations, and optional duty. A
 finite out-of-range observation remains visible here; unavailable values are
 `null`. Operational Power and History interfaces remain calculation-eligible
 only. UART mode additionally exposes receiving/waiting/stale connection state,
 last-valid age, advertised channel mask, sequence and producer uptime, parser
-error, and bounded frame/error counters. ADC and Demo report `transport: null`
-rather than inventing connection semantics.
+error, and bounded frame/error counters. ADS1115 mode distinguishes initialization
+from recent conversion health and reports success age, consecutive failures,
+bus errors, and lock timeouts. Physical ADC modes also expose raw input volts
+and the active source's gain/offset/defaults. Calibration writes use
+`POST /api/v1/sensors/calibration`; unwired channels and non-calibrated sources
+are rejected. Demo reports `transport: null` rather than inventing connection
+semantics.
 
-The binary frame is exactly 64 bytes, packed and little-endian; do not map a
+The V4 binary frame is exactly 84 bytes, packed and little-endian; do not map a
 future C++ struct directly in browser code. Each new connection receives the
 most recent 60 frames (about 30 seconds) in chronological order before normal
 2 Hz delivery resumes. `web/src/lib/api.js` parses it with `DataView` and is
@@ -175,14 +180,20 @@ mistaking an ordinary reconnect for a reboot.
 
 | Offset | Type | Meaning |
 | ---: | --- | --- |
-| 0 | `u32` | magic `VPM2` (`0x324d5056`) |
-| 4 | `u8,u8,u16` | version `2`, type `1`; flags: bit 0 wall time, bits 1–3 configured mask, bits 4–6 eligible mask |
+| 0 | `u32` | magic `VPM4` (`0x344d5056`) |
+| 4 | `u8,u8,u16` | version `4`, type `1`; flags: bit 0 wall time, bits 1–3 configured, bits 4–6 eligible, bits 7–9 observed |
 | 8 | `u32` | increasing frame sequence |
 | 12 | `u32` | device state revision |
 | 16 | `u32` | uptime milliseconds |
 | 20 | `u32` | boot/session ID |
 | 24 | `f64` | Unix milliseconds, or NaN before anchoring |
-| 32 | `f32 × 8` | In V/A/W, Out V/A/W, Aux W, net battery W |
+| 32 | `f32 × 10` | In V/A/W, Out V/A/W, Aux V/A/W, net battery W |
+| 72 | `f32 × 3` | In, Out, and Aux duty; NaN when unavailable |
+
+The browser retains VPM2 and VPM3 parsing during the development transition,
+but new firmware publishes VPM4. Sensors charts retain the replayed 30-second window,
+draw gaps for unavailable observations, and can overlay a staged calibration
+preview without changing device state until Save succeeds.
 
 Cycle queries use the same asynchronous history worker pattern: the first GET
 returns a job ID and polling returns the bounded recent window through the
@@ -272,8 +283,8 @@ manual-refresh only. Queries remain asynchronous and hidden views do no work.
 - Web assets: 256 KiB gzip build budget; current build is reported by the local
   asset generator.
 - Static requests: read from flash; browser performs gzip decompression.
-- Live WebSocket: five clients, 2 Hz, 64-byte frames; it retains 60 frames
-  (3.84 KiB) for initial replay. A sixth client receives a `limit:5` text
+- Live WebSocket: five clients, 2 Hz, 84-byte frames; it retains 60 frames
+  (5.04 KiB) for initial replay. A sixth client receives a `limit:5` text
   notice and is closed. A queued send drops the next frame instead of building
   an unbounded backlog.
 - Remote viewer: uses full-resolution BMP snapshots. A 320×480 capture uses

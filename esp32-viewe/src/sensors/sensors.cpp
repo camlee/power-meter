@@ -2,6 +2,7 @@
 #include "sensor_config.h"
 #include "sensor_source.h"
 #include "sensor_source_adc.h"
+#include "sensor_source_ads1115.h"
 #include "sensor_source_sim.h"
 #include "sensor_source_uart.h"
 #include "sensor_mode.h"
@@ -43,11 +44,24 @@ SensorSource* makeSource(SensorId id) {
             const config::Pins& pins = config::kPins[id];
             return new Esp32AnalogSource(pins.voltage, pins.current);
         }
+        case sensor_mode::Mode::Ads1115:
+#if POWER_METER_HAS_ADS1115
+            switch (id) {
+                case SENSOR_IN: return new Ads1115SensorSource(id, 1, 0);
+                case SENSOR_OUT: return new Ads1115SensorSource(id, 3, 2);
+                case SENSOR_AUX: return new Ads1115SensorSource(id, 0, 0, false);
+                default: return nullptr;
+            }
+#else
+            return nullptr;
+#endif
     }
     return nullptr;
 }
 SensorSource* sources[SENSOR_COUNT] = {nullptr, nullptr, nullptr};
 bool sourceReady[SENSOR_COUNT] = {false, false, false};
+uint32_t lastSourceInitAttemptMs[SENSOR_COUNT] = {0, 0, 0};
+constexpr uint32_t kSourceInitRetryMs = 5000;
 
 Reading makeReading(uint32_t now, SensorSample sample, bool applyCalibration, uint8_t sensor) {
     Reading reading;
@@ -77,10 +91,13 @@ Reading makeReading(uint32_t now, SensorSample sample, bool applyCalibration, ui
     reading.voltage = sample.voltage;
     reading.current = sample.current;
     if (applyCalibration) {
+        const calibration::Source calibrationSource =
+            sensor_mode::get() == sensor_mode::Mode::Ads1115
+                ? calibration::Source::Ads1115 : calibration::Source::Esp32Adc;
         reading.voltage = calibration::apply(
-            sample.voltage, calibration::get(sensor, calibration::Measurement::Voltage));
+            sample.voltage, calibration::get(calibrationSource, sensor, calibration::Measurement::Voltage));
         reading.current = calibration::apply(
-            sample.current, calibration::get(sensor, calibration::Measurement::Current));
+            sample.current, calibration::get(calibrationSource, sensor, calibration::Measurement::Current));
     }
 
     if (sample.hasDutyCycle) {
@@ -110,16 +127,28 @@ void taskFn(void*) {
     TickType_t lastWake = xTaskGetTickCount();
     for (;;) {
         uint32_t now = millis();
-        xSemaphoreTake(mutex, portMAX_DELAY);
+        Reading readings[SENSOR_COUNT];
         for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
             SensorSample sample;
+            if (sources[i] && !sourceReady[i] &&
+                now - lastSourceInitAttemptMs[i] >= kSourceInitRetryMs) {
+                lastSourceInitAttemptMs[i] = now;
+                sourceReady[i] = sources[i]->init();
+                if (sourceReady[i]) Serial.printf("sensors: sensor %u recovered\n", i);
+            }
             if (!sources[i] || !sourceReady[i]) {
                 sample.state = SensorSampleState::Invalid;
                 sample.configured = sensor_mode::get() != sensor_mode::Mode::Uart;
             }
             else sample = sources[i]->read();
-            Reading r = makeReading(now, sample, sources[i] && sources[i]->requiresCalibration(), i);
-            buffer[i][writeIndex[i]] = r;
+            readings[i] = makeReading(now, sample,
+                                      sources[i] && sources[i]->requiresCalibration(), i);
+        }
+        // Physical I/O and calibration happen outside the history lock. API,
+        // display, and storage readers are blocked only for this short copy.
+        xSemaphoreTake(mutex, portMAX_DELAY);
+        for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
+            buffer[i][writeIndex[i]] = readings[i];
             writeIndex[i] = (writeIndex[i] + 1) % kHistorySize;
             if (count[i] < kHistorySize) count[i]++;
         }
@@ -141,6 +170,7 @@ void start() {
     randomSeed(esp_random());
     for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
         sources[i] = makeSource(static_cast<SensorId>(i));
+        lastSourceInitAttemptMs[i] = millis();
         sourceReady[i] = sources[i] && sources[i]->init();
         if (!sourceReady[i]) {
             Serial.printf("sensors: sensor %u failed to init\n", i);

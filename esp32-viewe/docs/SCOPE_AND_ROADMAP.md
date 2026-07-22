@@ -21,13 +21,15 @@ Wi-Fi must never be required for sensing, energy accounting, or retention.
   readings. `In - Out` is net battery power when both channels are available;
   `Aux` remains independent.
 - Accept readings from multiple source implementations behind one contract:
-  realtime simulation, the ESP32 ADC, and a versioned UART sensor interface.
+  realtime simulation, the ESP32 ADC, an external ADS1115, and a versioned UART
+  sensor interface.
 - Carry source health, sample age, channel presence, and optional direct duty
   cycle with every source. Validate finite and physically plausible values for
   all sources, including the local ADC, while preserving finite raw
   observations for diagnostics.
-- Apply calibration exactly once. The ESP32 applies its persisted calibration
-  to raw ADC input; UART readings arrive already calibrated in volts and amps.
+- Apply calibration exactly once. Each physical ADC source has independent,
+  per-channel persisted gain and zero/offset values; UART readings arrive
+  already calibrated in volts and amps.
 - Preserve enough source provenance and diagnostics to support a future remote
   sensor source without designing that network in the current phase.
 
@@ -41,8 +43,8 @@ Wi-Fi must never be required for sensing, energy accounting, or retention.
 - Serve a useful local web application with live readings, history, browser
   time contribution, cycle summaries, device information, and remote-display
   control.
-- Add browser calibration, settings writes, and storage features as they become useful;
-  they are product backlog, not blockers for the completed web-app milestone.
+- Continue browser storage/export and appearance refinements as they become
+  useful; calibration and core settings writes are implemented.
 
 ### Time, power loss, and history
 
@@ -71,15 +73,45 @@ accuracy is deliberately tracked in a later on-site milestone.
 | 1. Local live meter and source abstraction | Candidate implemented | Persist source-specific local enable masks and complete focused state tests. |
 | 2. Session-aware durable history V1 | Candidate implemented | Verify rotation, retention, interruption recovery, fixture isolation, and multi-day accuracy. |
 | 3. Local calibration | Implemented | Electrical calibration and accuracy validation belong to the on-site hardware milestone. |
-| 4. Embedded web application | Complete | Calibration, settings writes, storage tools, and appearance refinements are normal backlog. |
+| 4. Embedded web application | Complete | Continue usability and appearance refinements as normal backlog. |
 | 5. OTA and remote display | Verified for current workflow | Continue regression coverage as related services change. |
-| 6. WROOM web-first target | Demo bring-up verified | Add its OLED and ADS1115 in follow-up milestones. |
+| 6. WROOM web-first target | Hardware candidate implemented | Complete Summary-layout visual acceptance and calibrated electrical/polarity validation. |
 
 The current ESP32 firmware, Arduino firmware, and embedded web app build
 successfully. Candidate History V1, live, historical, and Cycle browser views,
 Wi-Fi/AP setup, browser/NTP time anchors, local calibration, signed OTA,
 diagnostics, and remote display control are in place. The shared on-device and
 browser Cycle view is complete for the current scope.
+
+### Roadmap checkpoint — 2026-07-21
+
+The WROOM candidate now has one mutex-protected I2C service, a 128×64 SSD1306
+status display, and a basic single-shot ADS1115 source configured for its
+nominal 860-SPS conversion rate. The attached WROOM has initialized the physical
+OLED on GPIO 5/4 and its orientation is visually confirmed. Summary mode uses
+three larger lines: alternating hostname/network status followed by dedicated
+In and Out power rows. Dense mode retains the full diagnostic layout and is
+selectable in Setup. Summary text size and readability have been visually
+accepted on the attached hardware.
+
+ADS1115 support is independent of the board profile: enabled for WROOM and
+disabled for the normal VIEWE build. ADS-only VIEWE builds use a separate
+ESP-IDF legacy-I2C port so they do not conflict with the panel library; OLED
+builds use Arduino Wire for the Adafruit display driver.
+
+Sensor modes now include `ADC | ADS1115 | UART | Demo`, filtered from runtime
+capabilities. Calibration storage V2 keeps separate gain and input-zero values
+for every physical source/channel/measurement and migrates the previous
+ESP32-ADC profile. The browser Sensors page now has 30-second 2 Hz charts,
+source health and raw inputs, calibration zero/reference/default actions, and
+staged previews. Live protocol V4 carries complete In/Out/Aux V/A/W observations,
+timestamped duty, and separate configured, eligible, and observed masks.
+
+The attached ADS1115 is responding at `0x48`; all four mapped inputs produce
+live readings without conversion failures in the latest run. The remaining
+bench work is calibrated electrical/polarity validation with known reference
+signals. High-rate averaging, true instantaneous power, and direct PWM duty extraction
+remain deliberately deferred until those basics are proven.
 
 ### Roadmap checkpoint — 2026-07-19
 
@@ -94,7 +126,7 @@ embedded SPA, runtime capability model, Wi-Fi read model, binary history query,
 headless route behavior, and live WebSocket have also been verified from a LAN
 client after station provisioning as `meter2.local`.
 
-The next WROOM checkpoints, after that minimal bring-up is verified, are a
+The next WROOM checkpoints, after that minimal bring-up was verified, were a
 shared/mutex-protected I2C service, the onboard SSD1306 status display, and the
 ADS1115 acquisition source with the established per-channel calibration and
 filtering behavior. ADS1115 work is not part of the initial Demo-mode milestone.
@@ -120,9 +152,10 @@ status-display follow-up; these details do not need to be rediscovered:
   `POWER_METER_HAS_TOUCH_UI=0`; set the separate status-display capability only
   after the SSD1306 service initializes successfully on the C++ target.
 
-The first OLED milestone should prove initialization, orientation, shared-bus
-ownership, and periodic status updates while retaining Demo sensing. ADS1115
-acquisition and electrical calibration remain a separate subsequent milestone.
+The first OLED milestone was intended to prove initialization, orientation,
+shared-bus ownership, and periodic status updates while retaining Demo sensing.
+ADS1115 acquisition and electrical calibration were a separate subsequent
+milestone.
 
 ### Roadmap checkpoint — 2026-07-15
 
@@ -172,7 +205,8 @@ Included work:
   history rather than coercing them to zero;
 - stop energy integration across missing/stale intervals and create honest
   history gaps;
-- replace the disposable Demo/Real boolean with the V1 `ADC | UART | Demo`
+- replace the disposable Demo/Real boolean with the V1
+  `ADC | ADS1115 | UART | Demo`
   source-mode enum; no alpha preference compatibility is required.
 
 Acceptance requires focused tests for partial channel configurations, source
@@ -254,6 +288,10 @@ work. Begin it when the final sensor assembly and installed system are available
   across expected voltage/current ranges.
 - Establish per-channel defaults, calibration procedure, filtering, plausible
   limits, noise behavior, and disconnected-input behavior.
+- Replace the basic four-conversion-per-report ADS1115 path with a measured
+  high-rate acquisition window. Evaluate the 860 SPS ceiling, channel-switch
+  settling, coherent voltage/current pairing, instantaneous-power averaging,
+  PWM duty extraction, aliasing, and the appropriate summary sent at 2 Hz.
 - Verify power, duty/available power, energy, and net battery calculations.
 - Run an on-site soak through normal charging/load cycles and power events.
 - Document the final hardware revision, reference equipment, results, and any

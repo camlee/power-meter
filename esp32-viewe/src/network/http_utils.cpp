@@ -2,6 +2,8 @@
 
 #include <cctype>
 #include <climits>
+#include <cmath>
+#include <cstdlib>
 #include <cstring>
 
 #include "ota_public_key.h"
@@ -173,6 +175,25 @@ bool jsonInteger64(const String& json, const char* name, int64_t& value) {
     value = negative
         ? (magnitude == (uint64_t{1} << 63) ? INT64_MIN : -static_cast<int64_t>(magnitude))
         : static_cast<int64_t>(magnitude);
+    return true;
+}
+
+bool jsonFloat(const String& json, const char* name, float& value) {
+    const String key = String("\"") + name + "\"";
+    const int keyAt = json.indexOf(key);
+    if (keyAt < 0) return false;
+    const int colon = json.indexOf(':', keyAt + key.length());
+    if (colon < 0) return false;
+    int start = colon + 1;
+    while (start < static_cast<int>(json.length()) &&
+           isspace(static_cast<unsigned char>(json[start]))) ++start;
+    if (start >= static_cast<int>(json.length())) return false;
+    char* end = nullptr;
+    const float parsed = strtof(json.c_str() + start, &end);
+    if (end == json.c_str() + start || !std::isfinite(parsed)) return false;
+    while (*end && isspace(static_cast<unsigned char>(*end))) ++end;
+    if (*end && *end != ',' && *end != '}') return false;
+    value = parsed;
     return true;
 }
 

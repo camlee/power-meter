@@ -15,6 +15,7 @@
 #include "data/energy_cycle.h"
 #include "data/history_query_service.h"
 #include "device/device_identity.h"
+#include "device/status_display.h"
 #include "device/hardware_profile.h"
 #include "device/device_state.h"
 #include "memory/heap_policy.h"
@@ -26,7 +27,9 @@
 #include "network/ota_service.h"
 #include "network/web_assets.generated.h"
 #include "sensors/pm1_uart_protocol.h"
+#include "sensors/sensor_calibration.h"
 #include "sensors/sensor_mode.h"
+#include "sensors/sensor_source_ads1115.h"
 #include "sensors/sensor_source_uart.h"
 #include "sensors/sensors.h"
 #include "time/time_service.h"
@@ -50,12 +53,7 @@ const char* resetReasonName(esp_reset_reason_t reason) {
 }
 
 const char* sensorModeName(sensor_mode::Mode mode) {
-    switch (mode) {
-        case sensor_mode::Mode::Adc: return "adc";
-        case sensor_mode::Mode::Uart: return "uart";
-        case sensor_mode::Mode::Demo: return "demo";
-    }
-    return "adc";
+    return sensor_mode::name(mode);
 }
 
 void serveWebAsset() {
@@ -132,12 +130,12 @@ void webStatus() {
     const size_t storageTotal = LittleFS.totalBytes();
     const unsigned storagePercent = storageTotal
         ? static_cast<unsigned>((LittleFS.usedBytes() * 100U) / storageTotal) : 0;
-    char response[1440];
+    char response[1536];
     snprintf(response, sizeof(response),
              "{\"api_version\":1,\"web_build\":\"%s\",\"state_revision\":%lu,"
              "\"hardware_profile\":\"%s\",\"capabilities\":{\"touch_display\":%s,"
-             "\"status_display\":%s,\"local_sensor\":\"%s\","
-             "\"sensor_modes\":{\"adc\":%s,\"uart\":%s,\"demo\":true}},"
+             "\"status_display\":%s,"
+             "\"sensor_modes\":{\"adc\":%s,\"ads1115\":%s,\"uart\":%s,\"demo\":true}},"
              "\"device_id\":\"%s\",\"hostname\":\"%s\",\"uptime_ms\":%lu,"
              "\"time_source\":\"%s\",\"date\":\"%s\",\"time\":\"%s\","
              "\"build_version\":\"%s\",\"build_date\":\"%s\",\"build_time\":\"%s\","
@@ -150,8 +148,8 @@ void webStatus() {
              web_assets::kBuildId, static_cast<unsigned long>(device_state::revision()),
              hardware_profile::kName, hardware_profile::kHasTouchUi ? "true" : "false",
              hardware_profile::kHasStatusDisplay ? "true" : "false",
-             hardware_profile::kLocalSensorBackend,
-             hardware_profile::kSupportsAdc ? "true" : "false",
+             hardware_profile::kHasEsp32Adc ? "true" : "false",
+             hardware_profile::kHasAds1115 ? "true" : "false",
              hardware_profile::kSupportsUart ? "true" : "false",
              device_identity::getDeviceId(), network_manager::getHostname(), static_cast<unsigned long>(millis()),
              timeSource, date, clock, BUILD_VERSION, BUILD_DATE, BUILD_TIME,
@@ -193,7 +191,35 @@ void appendJsonFloat(String& json, float value) {
     else json += String(value, 4);
 }
 
-void appendSensorJson(String& json, const char* id, const char* label, sensors::SensorId sensor) {
+bool calibrationSourceForMode(sensor_mode::Mode mode, sensors::calibration::Source& source) {
+    if (mode == sensor_mode::Mode::Adc) {
+        source = sensors::calibration::Source::Esp32Adc;
+        return true;
+    }
+    if (mode == sensor_mode::Mode::Ads1115) {
+        source = sensors::calibration::Source::Ads1115;
+        return true;
+    }
+    return false;
+}
+
+void appendCalibrationValue(String& json, sensors::calibration::Source source,
+                            uint8_t sensor, sensors::calibration::Measurement measurement) {
+    const auto value = sensors::calibration::get(source, sensor, measurement);
+    const auto defaults = sensors::calibration::defaults(source, sensor, measurement);
+    json += "{\"gain\":";
+    appendJsonFloat(json, value.gain);
+    json += ",\"offset_input_v\":";
+    appendJsonFloat(json, value.offsetInputV);
+    json += ",\"default_gain\":";
+    appendJsonFloat(json, defaults.gain);
+    json += ",\"default_offset_input_v\":";
+    appendJsonFloat(json, defaults.offsetInputV);
+    json += '}';
+}
+
+void appendSensorJson(String& json, const char* id, const char* label, sensors::SensorId sensor,
+                      sensor_mode::Mode mode) {
     sensors::Reading reading{};
     const bool hasReading = sensors::getLatest(sensor, reading);
     const bool observed = hasReading &&
@@ -217,11 +243,30 @@ void appendSensorJson(String& json, const char* id, const char* label, sensors::
     appendJsonFloat(json, hasReading ? reading.current : NAN);
     json += ",\"power\":";
     appendJsonFloat(json, hasReading ? reading.power : NAN);
+    json += ",\"input_voltage_v\":";
+    appendJsonFloat(json, hasReading ? reading.voltageInputV : NAN);
+    json += ",\"input_current_v\":";
+    appendJsonFloat(json, hasReading ? reading.currentInputV : NAN);
     json += ",\"duty\":{\"state\":\"";
     json += (hasReading ? dutyStateName(reading.dutyState) : "not_reported");
     json += "\",\"value\":";
     appendJsonFloat(json, hasReading ? reading.dutyCycle : NAN);
-    json += "}}";
+    json += "},\"calibration\":";
+    sensors::calibration::Source calibrationSource{};
+    if (calibrationSourceForMode(mode, calibrationSource)) {
+        json += "{\"editable\":";
+        json += (hasReading && reading.configured) ? "true" : "false";
+        json += ",\"voltage\":";
+        appendCalibrationValue(json, calibrationSource, sensor,
+                               sensors::calibration::Measurement::Voltage);
+        json += ",\"current\":";
+        appendCalibrationValue(json, calibrationSource, sensor,
+                               sensors::calibration::Measurement::Current);
+        json += '}';
+    } else {
+        json += "null";
+    }
+    json += '}';
 }
 
 void sendHistoryJobState(uint32_t job, const char* resource) {
@@ -251,10 +296,11 @@ void sendHistoryJobState(uint32_t job, const char* resource) {
 void webSensors() {
     const sensor_mode::Mode mode = sensor_mode::get();
     String json;
-    json.reserve(2300);
+    json.reserve(3600);
     json = "{\"api_version\":1,\"source\":{\"mode\":\"";
     switch (mode) {
         case sensor_mode::Mode::Adc: json += "adc"; break;
+        case sensor_mode::Mode::Ads1115: json += "ads1115"; break;
         case sensor_mode::Mode::Uart: json += "uart"; break;
         case sensor_mode::Mode::Demo: json += "demo"; break;
     }
@@ -302,18 +348,99 @@ void webSensors() {
         json += ",\"last_error\":\"";
         json += sensors::pm1::parseErrorLabel(diagnostics.lastError);
         json += "\"}";
+    } else if (mode == sensor_mode::Mode::Ads1115) {
+        const sensors::Ads1115Diagnostics diagnostics = sensors::getAds1115Diagnostics();
+        constexpr uint32_t kHealthyConversionAgeMs = 2000;
+        const bool hasSuccessfulConversion = diagnostics.successfulConversions > 0;
+        const uint32_t successAgeMs = hasSuccessfulConversion
+            ? millis() - diagnostics.lastSuccessMs : UINT32_MAX;
+        const bool healthy = diagnostics.ready && hasSuccessfulConversion &&
+                             successAgeMs <= kHealthyConversionAgeMs &&
+                             diagnostics.consecutiveFailures < 4;
+        const char* state = healthy ? "receiving" :
+            (diagnostics.ready ? (hasSuccessfulConversion ? "degraded" : "initializing") :
+                                 "unavailable");
+        json += "{\"type\":\"i2c\",\"state\":\"";
+        json += state;
+        json += "\",\"connected\":";
+        json += healthy ? "true" : "false";
+        json += ",\"initialized\":";
+        json += diagnostics.ready ? "true" : "false";
+        json += ",\"address\":";
+        json += String(diagnostics.address);
+        json += ",\"successful_conversions\":";
+        json += String(diagnostics.successfulConversions);
+        json += ",\"failed_conversions\":";
+        json += String(diagnostics.failedConversions);
+        json += ",\"lock_timeouts\":";
+        json += String(diagnostics.lockTimeouts);
+        json += ",\"last_conversion_us\":";
+        json += String(diagnostics.lastConversionUs);
+        json += ",\"last_success_age_ms\":";
+        if (hasSuccessfulConversion) json += String(successAgeMs);
+        else json += "null";
+        json += ",\"consecutive_failures\":";
+        json += String(diagnostics.consecutiveFailures);
+        json += ",\"bus_errors\":";
+        json += String(diagnostics.busErrors);
+        json += '}';
     } else {
         json += "null";
     }
     json += "},\"channels\":[";
-    appendSensorJson(json, "in", "In", sensors::SENSOR_IN);
+    appendSensorJson(json, "in", "In", sensors::SENSOR_IN, mode);
     json += ',';
-    appendSensorJson(json, "out", "Out", sensors::SENSOR_OUT);
+    appendSensorJson(json, "out", "Out", sensors::SENSOR_OUT, mode);
     json += ',';
-    appendSensorJson(json, "aux", "Aux", sensors::SENSOR_AUX);
+    appendSensorJson(json, "aux", "Aux", sensors::SENSOR_AUX, mode);
     json += "]}";
     server->sendHeader("Cache-Control", "no-store");
     server->send(200, "application/json", json);
+}
+
+void webSensorCalibration() {
+    const sensor_mode::Mode mode = sensor_mode::get();
+    sensors::calibration::Source source{};
+    if (!calibrationSourceForMode(mode, source)) {
+        server->send(409, "application/json", "{\"error\":\"active sensor source does not use calibration\"}");
+        return;
+    }
+    const String body = server->arg("plain");
+    String sensorName, measurementName;
+    float gain = NAN, offset = NAN;
+    if (!http_utils::jsonString(body, "sensor", sensorName) ||
+        !http_utils::jsonString(body, "measurement", measurementName) ||
+        !http_utils::jsonFloat(body, "gain", gain) ||
+        !http_utils::jsonFloat(body, "offset_input_v", offset)) {
+        server->send(400, "application/json", "{\"error\":\"invalid calibration request\"}");
+        return;
+    }
+    uint8_t sensor = sensors::SENSOR_COUNT;
+    if (sensorName == "in") sensor = sensors::SENSOR_IN;
+    else if (sensorName == "out") sensor = sensors::SENSOR_OUT;
+    else if (sensorName == "aux") sensor = sensors::SENSOR_AUX;
+    sensors::calibration::Measurement measurement;
+    if (measurementName == "voltage") measurement = sensors::calibration::Measurement::Voltage;
+    else if (measurementName == "current") measurement = sensors::calibration::Measurement::Current;
+    else {
+        server->send(400, "application/json", "{\"error\":\"invalid measurement\"}");
+        return;
+    }
+    const sensors::calibration::Value value{gain, offset};
+    if (sensor >= sensors::SENSOR_COUNT || !sensors::calibration::isValid(measurement, value)) {
+        server->send(400, "application/json", "{\"error\":\"calibration value is outside allowed limits\"}");
+        return;
+    }
+    sensors::Reading reading{};
+    if (!sensors::getLatest(static_cast<sensors::SensorId>(sensor), reading) || !reading.configured) {
+        server->send(409, "application/json", "{\"error\":\"sensor channel is not configured\"}");
+        return;
+    }
+    if (!sensors::calibration::set(source, sensor, measurement, value)) {
+        server->send(500, "application/json", "{\"error\":\"could not persist calibration\"}");
+        return;
+    }
+    webSensors();
 }
 
 // Browser history is an explicitly requested, bounded background job. The
@@ -393,14 +520,15 @@ void webSetup() {
         String response = String("{\"api_version\":1,\"hostname\":\"") +
             device_identity::getDeviceId() + "\",\"sensor_mode\":\"" +
             sensorModeName(sensor_mode::get()) + "\",\"appearance\":\"" +
-            display_web_api::appearanceModeName() + "\"}";
+            display_web_api::appearanceModeName() + "\",\"status_display_mode\":\"" +
+            status_display::modeName() + "\"}";
         server->sendHeader("Cache-Control", "no-store");
         server->send(200, "application/json", response);
         return;
     }
 
     const String body = server->arg("plain");
-    String hostname, requestedSensorMode, requestedAppearance;
+    String hostname, requestedSensorMode, requestedAppearance, requestedStatusDisplayMode;
     bool resetSetup = false, resetWifi = false, resetCalibration = false, resetUsage = false;
     if (!http_utils::jsonString(body, "hostname", hostname) ||
         !http_utils::jsonString(body, "sensor_mode", requestedSensorMode) ||
@@ -412,6 +540,12 @@ void webSetup() {
         server->send(400, "application/json", "{\"error\":\"invalid setup request\"}");
         return;
     }
+    requestedStatusDisplayMode = status_display::modeName();
+    if (body.indexOf("\"status_display_mode\"") >= 0 &&
+        !http_utils::jsonString(body, "status_display_mode", requestedStatusDisplayMode)) {
+        server->send(400, "application/json", "{\"error\":\"invalid status display mode\"}");
+        return;
+    }
     if (!device_identity::isValidDeviceId(hostname.c_str())) {
         server->send(400, "application/json", "{\"error\":\"Use lowercase letters, numbers, and hyphens (max 31); it cannot start or end with a hyphen.\"}");
         return;
@@ -419,6 +553,7 @@ void webSetup() {
 
     sensor_mode::Mode mode;
     if (requestedSensorMode == "adc") mode = sensor_mode::Mode::Adc;
+    else if (requestedSensorMode == "ads1115") mode = sensor_mode::Mode::Ads1115;
     else if (requestedSensorMode == "uart") mode = sensor_mode::Mode::Uart;
     else if (requestedSensorMode == "demo") mode = sensor_mode::Mode::Demo;
     else {
@@ -433,10 +568,17 @@ void webSetup() {
         server->send(400, "application/json", "{\"error\":\"invalid device appearance\"}");
         return;
     }
+    status_display::Mode statusDisplayMode;
+    if (requestedStatusDisplayMode == "summary") statusDisplayMode = status_display::Mode::Summary;
+    else if (requestedStatusDisplayMode == "dense") statusDisplayMode = status_display::Mode::Dense;
+    else {
+        server->send(400, "application/json", "{\"error\":\"invalid status display mode\"}");
+        return;
+    }
 
     if (resetSetup) {
         if (!clearPreferences("device") || !clearPreferences("sensors") ||
-            !clearPreferences("appearance")) {
+            !clearPreferences("appearance") || !clearPreferences("status_oled")) {
             server->send(500, "application/json", "{\"error\":\"Could not reset setup preferences.\"}");
             return;
         }
@@ -451,6 +593,11 @@ void webSetup() {
             return;
         }
         display_web_api::setAppearance(requestedAppearance);
+        if (hardware_profile::kHasStatusDisplay && statusDisplayMode != status_display::mode() &&
+            !status_display::setMode(statusDisplayMode)) {
+            server->send(500, "application/json", "{\"error\":\"Could not save status display mode.\"}");
+            return;
+        }
     }
     if (resetCalibration && !clearPreferences("sensor_cal")) {
         server->send(500, "application/json", "{\"error\":\"Could not reset sensor calibration.\"}");
@@ -934,6 +1081,7 @@ void registerRoutes(WebServer& value) {
     server->on("/api/v1/cycles", HTTP_POST, webCycles);
     server->on("/api/v1/web/status", HTTP_GET, webStatus);
     server->on("/api/v1/sensors", HTTP_GET, webSensors);
+    server->on("/api/v1/sensors/calibration", HTTP_POST, webSensorCalibration);
     server->on("/api/v1/setup", HTTP_GET, webSetup);
     server->on("/api/v1/setup", HTTP_POST, webSetup);
     server->on("/api/v1/wifi", HTTP_GET, webWifi);

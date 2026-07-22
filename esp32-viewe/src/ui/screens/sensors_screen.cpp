@@ -210,6 +210,12 @@ const char* measurementUnit(sensors::calibration::Measurement measurement) {
     return measurement == sensors::calibration::Measurement::Voltage ? "V" : "A";
 }
 
+sensors::calibration::Source activeCalibrationSource() {
+    return sensor_mode::get() == sensor_mode::Mode::Ads1115
+        ? sensors::calibration::Source::Ads1115
+        : sensors::calibration::Source::Esp32Adc;
+}
+
 void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Reading* readings = nullptr,
                              size_t n = 0, bool appendPoint = false);
 void refreshCalibrationInputs(SensorTab::CalibrationEditor& editor);
@@ -220,7 +226,7 @@ void closeCalibration(SensorTab& tab);
 bool latestCalibrationInput(const SensorTab::CalibrationEditor& editor, float& input) {
     sensors::Reading latest{};
     if (!sensors::getLatest(static_cast<sensors::SensorId>(editor.sensor), latest)) return false;
-    if (sensor_mode::get() == sensor_mode::Mode::Adc) {
+    if (sensor_mode::usesCalibration(sensor_mode::get())) {
         input = editor.measurement == sensors::calibration::Measurement::Voltage
             ? latest.voltageInputV : latest.currentInputV;
     } else {
@@ -379,11 +385,13 @@ void calibrationControlCb(lv_event_t* event) {
         return;
     }
     if (control->action == CalibrationAction::Reset) {
-        editor.staged = sensors::calibration::defaults(editor.measurement);
+        editor.staged = sensors::calibration::defaults(
+            activeCalibrationSource(), sensor, editor.measurement);
     }
     if (control->action == CalibrationAction::Save) {
-        if (sensor_mode::get() != sensor_mode::Mode::Adc ||
-            sensors::calibration::set(sensor, editor.measurement, editor.staged)) editor.saved = editor.staged;
+        if (!sensor_mode::usesCalibration(sensor_mode::get()) ||
+            sensors::calibration::set(activeCalibrationSource(), sensor,
+                                      editor.measurement, editor.staged)) editor.saved = editor.staged;
     }
     refreshCalibrationInputs(editor);
     updateCalibrationEditor(tab, sensor);
@@ -811,7 +819,7 @@ void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measu
     auto& editor = tab.calibration;
     if (!editor.root) createCalibrationEditor(tab.chartsColumn, tab, sensor);
     editor.measurement = measurement;
-    editor.saved = sensors::calibration::get(sensor, measurement);
+    editor.saved = sensors::calibration::get(activeCalibrationSource(), sensor, measurement);
     editor.staged = editor.saved;
     editor.visible = true;
     editor.calculatingGain = false;
@@ -848,7 +856,7 @@ void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measu
     if (editor.lastPreviewTimestamp) {
         const float oldValue = voltage ? latest.voltage : latest.current;
         const float newValue = sensors::calibration::apply(
-            sensor_mode::get() == sensor_mode::Mode::Adc
+            sensor_mode::usesCalibration(sensor_mode::get())
                 ? (voltage ? latest.voltageInputV : latest.currentInputV)
                 : oldValue / editor.saved.gain + editor.saved.offsetInputV,
             editor.staged);
@@ -1032,7 +1040,7 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Read
 
     const bool voltage = editor.measurement == sensors::calibration::Measurement::Voltage;
     const auto inputFor = [&](const sensors::Reading& reading) {
-        if (sensor_mode::get() == sensor_mode::Mode::Adc) return voltage ? reading.voltageInputV : reading.currentInputV;
+        if (sensor_mode::usesCalibration(sensor_mode::get())) return voltage ? reading.voltageInputV : reading.currentInputV;
         // Simulation supplies engineering units, not ADC volts. Reconstruct a
         // compatible input so the preview graph remains meaningful for UI
         // walkthroughs without ever applying/saving demo calibration.

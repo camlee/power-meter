@@ -12,12 +12,12 @@
 #define POWER_METER_HAS_STATUS_DISPLAY 0
 #endif
 
-#ifndef POWER_METER_LOCAL_SENSOR_BACKEND
-#define POWER_METER_LOCAL_SENSOR_BACKEND "esp32-adc"
+#ifndef POWER_METER_HAS_ESP32_ADC
+#define POWER_METER_HAS_ESP32_ADC 1
 #endif
 
-#ifndef POWER_METER_SUPPORTS_ADC
-#define POWER_METER_SUPPORTS_ADC 1
+#ifndef POWER_METER_HAS_ADS1115
+#define POWER_METER_HAS_ADS1115 0
 #endif
 
 #ifndef POWER_METER_SUPPORTS_UART
@@ -29,8 +29,8 @@ namespace hardware_profile {
 constexpr const char* kName = POWER_METER_HARDWARE_PROFILE;
 constexpr bool kHasTouchUi = POWER_METER_HAS_TOUCH_UI != 0;
 constexpr bool kHasStatusDisplay = POWER_METER_HAS_STATUS_DISPLAY != 0;
-constexpr const char* kLocalSensorBackend = POWER_METER_LOCAL_SENSOR_BACKEND;
-constexpr bool kSupportsAdc = POWER_METER_SUPPORTS_ADC != 0;
+constexpr bool kHasEsp32Adc = POWER_METER_HAS_ESP32_ADC != 0;
+constexpr bool kHasAds1115 = POWER_METER_HAS_ADS1115 != 0;
 constexpr bool kSupportsUart = POWER_METER_SUPPORTS_UART != 0;
 constexpr bool kSupportsDemo = true;
 

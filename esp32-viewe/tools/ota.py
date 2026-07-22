@@ -32,8 +32,8 @@ def main():
     parser.add_argument("device", nargs="*", help="mDNS name(s), with or without .local")
     parser.add_argument("--host", action="append", default=[], help="IP address, hostname, or http:// URL; repeatable")
     parser.add_argument("--version", help="optional version override (normally use the generated build version)")
-    parser.add_argument("-e", "--environment", default="meter",
-                        help="PlatformIO environment to build (default: meter)")
+    parser.add_argument("-e", "--environment", default="viewe",
+                        help="PlatformIO environment to build (default: viewe)")
     parser.add_argument("--no-wait", action="store_true", help="do not wait for the device to reboot")
     args = parser.parse_args()
     if not args.device and not args.host:
