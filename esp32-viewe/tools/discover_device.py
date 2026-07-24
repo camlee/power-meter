@@ -15,6 +15,8 @@ import socket
 import subprocess
 import sys
 
+from mdns_resolver import normalize_hostname, resolve_ipv4
+
 
 def add(found: dict[str, dict[str, str]], host: str, address: str, port: str = "80") -> None:
     if address:
@@ -40,6 +42,11 @@ def discover_avahi(found: dict[str, dict[str, str]]) -> None:
 
 
 def discover_hostname(found: dict[str, dict[str, str]], hostname: str) -> None:
+    if normalize_hostname(hostname).endswith(".local"):
+        for address in resolve_ipv4(hostname):
+            add(found, normalize_hostname(hostname), address)
+        if found:
+            return
     try:
         addresses = socket.getaddrinfo(hostname, 80, type=socket.SOCK_STREAM)
     except socket.gaierror:

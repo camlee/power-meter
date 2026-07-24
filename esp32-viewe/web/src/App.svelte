@@ -2,9 +2,12 @@
   import { onMount } from 'svelte';
   import LiveChart from './lib/LiveChart.svelte';
   import SensorChart from './lib/SensorChart.svelte';
+  import AdcCaptureChart from './lib/AdcCaptureChart.svelte';
   import HistoryChart from './lib/HistoryChart.svelte';
   import {
     anchorTime,
+    getAdcCaptureData,
+    getAdcCaptureStatus,
     getDebug,
     getCycles,
     getHistory,
@@ -14,6 +17,7 @@
     getStatus,
     getWifi,
     openLiveSocket,
+    requestAdcCapture,
     saveWifiAp,
     sendRemotePointer,
     sendWifiStationCommand,
@@ -79,6 +83,7 @@
     history: '/history',
     cycle: '/cycle',
     sensors: '/sensors',
+    raw: '/sensors/raw',
     wifi: '/wifi',
     setup: '/setup',
     info: '/info',
@@ -122,6 +127,14 @@
   let calibrationBusy = false;
   let calibrationError = '';
   let calibrationMessage = '';
+  let adcCapture = null;
+  let adcCaptureBusy = false;
+  let adcCaptureState = '';
+  let adcCaptureError = '';
+  let adcCaptureSensor = 'in';
+  let adcCaptureId = 0;
+  let adcCapturePollGeneration = 0;
+  let adcCapturePollTimer;
   $: selectedChannel = sensorStatus?.channels?.find((channel) => channel.id === selectedSensor) || null;
   $: calibrationInput = !calibrationEditor || !selectedChannel
     ? Number.NaN
@@ -348,10 +361,106 @@
     }
   }
 
+  function sensorLabel(id) {
+    return sensorStatus?.channels?.find((channel) => channel.id === id)?.label ||
+      ({ in: 'In', out: 'Out', aux: 'Aux' }[id] || 'Sensor');
+  }
+
   function selectSensor(id) {
     selectedSensor = id;
     calibrationEditor = null;
     calibrationError = calibrationMessage = '';
+  }
+
+  async function pollAdcCapture(
+    captureId = adcCaptureId,
+    generation = adcCapturePollGeneration,
+  ) {
+    try {
+      const captureStatus = await getAdcCaptureStatus();
+      if (route !== 'raw' || adcCaptureId !== captureId ||
+          adcCapturePollGeneration !== generation) return;
+      if (captureStatus.capture_id !== captureId) {
+        throw new Error('capture was replaced or expired');
+      }
+      adcCaptureState = captureStatus.state;
+      adcCaptureSensor = captureStatus.channel || adcCaptureSensor;
+      if (captureStatus.state === 'ready') {
+        const result = await getAdcCaptureData(captureId);
+        if (route !== 'raw' || adcCaptureId !== captureId ||
+            adcCapturePollGeneration !== generation) return;
+        adcCapture = result;
+        adcCaptureSensor = adcCapture.channel;
+        adcCaptureBusy = false;
+        adcCaptureState = 'ready';
+        return;
+      }
+      if (!['armed', 'capturing'].includes(captureStatus.state)) {
+        throw new Error(`capture entered ${captureStatus.state} state`);
+      }
+      adcCapturePollTimer = setTimeout(
+        () => pollAdcCapture(captureId, generation), 150,
+      );
+    } catch (err) {
+      if (adcCapturePollGeneration !== generation) return;
+      adcCaptureBusy = false;
+      adcCaptureError = describeError(err, 'capture ADC readings');
+    }
+  }
+
+  async function resumeAdcCapture() {
+    if (adcCaptureBusy) return;
+    const generation = ++adcCapturePollGeneration;
+    try {
+      const captureStatus = await getAdcCaptureStatus();
+      if (route !== 'raw' || adcCapturePollGeneration !== generation) return;
+      if (!['armed', 'capturing', 'ready'].includes(captureStatus.state)) return;
+      adcCaptureBusy = true;
+      adcCaptureError = '';
+      adcCaptureState = captureStatus.state;
+      adcCaptureSensor = captureStatus.channel || adcCaptureSensor;
+      adcCaptureId = captureStatus.capture_id;
+      pollAdcCapture(adcCaptureId, generation);
+    } catch (_) {
+      // This is opportunistic recovery after navigation or a page reload.
+      // A normal idle/unavailable meter needs no user-facing message.
+    }
+  }
+
+  async function startAdcCapture(channel = 'in') {
+    clearTimeout(adcCapturePollTimer);
+    adcCaptureSensor = channel;
+    adcCaptureBusy = true;
+    adcCapture = null;
+    adcCaptureError = '';
+    adcCaptureState = 'arming';
+    adcCaptureId = 0;
+    const generation = ++adcCapturePollGeneration;
+    if (route !== 'raw') navigate('raw');
+    try {
+      const existing = await getAdcCaptureStatus();
+      if (route !== 'raw' || adcCapturePollGeneration !== generation) return;
+      if (['armed', 'capturing', 'ready'].includes(existing.state)) {
+        if (existing.channel !== adcCaptureSensor) {
+          throw new Error(
+            `${sensorLabel(existing.channel)} already has an active capture`,
+          );
+        }
+        adcCaptureState = existing.state;
+        adcCaptureSensor = existing.channel || adcCaptureSensor;
+        adcCaptureId = existing.capture_id;
+        pollAdcCapture(adcCaptureId, generation);
+        return;
+      }
+      const started = await requestAdcCapture(adcCaptureSensor);
+      if (route !== 'raw' || adcCapturePollGeneration !== generation) return;
+      adcCaptureId = started.capture_id;
+      pollAdcCapture(adcCaptureId, generation);
+    } catch (err) {
+      if (adcCapturePollGeneration !== generation) return;
+      adcCaptureBusy = false;
+      adcCaptureError = describeError(err, 'start ADC capture');
+    }
   }
 
   function openCalibration(sensor, measurement) {
@@ -505,6 +614,11 @@
     clearTimeout(historyRefreshTimer);
     clearTimeout(cycleRefreshTimer);
     clearInterval(wifiPollTimer);
+    if (next !== 'raw') {
+      clearTimeout(adcCapturePollTimer);
+      adcCapturePollGeneration += 1;
+      adcCaptureBusy = false;
+    }
 
     if (next === 'history') {
       if (!history) {
@@ -544,6 +658,7 @@
     } else {
       clearInterval(sensorPollTimer);
     }
+    if (next === 'raw') resumeAdcCapture();
   }
 
   function navigate(next) {
@@ -1090,6 +1205,9 @@
       // Don't keep polling history/remote in the background either.
       clearTimeout(historyRefreshTimer);
       clearTimeout(cycleRefreshTimer);
+      clearTimeout(adcCapturePollTimer);
+      adcCapturePollGeneration += 1;
+      if (route === 'raw') adcCaptureBusy = false;
       clearInterval(sensorPollTimer);
       clearInterval(debugPollTimer);
       clearInterval(wifiPollTimer);
@@ -1109,6 +1227,7 @@
       refreshSensors();
       scheduleSensorRefresh();
     }
+    if (route === 'raw') resumeAdcCapture();
     if (route === 'debug') {
       refreshDebug();
       debugPollTimer = setInterval(refreshDebug, DEBUG_POLL_MS);
@@ -1144,6 +1263,8 @@
       clearTimeout(remoteRefreshTimer);
       clearTimeout(historyRefreshTimer);
       clearTimeout(cycleRefreshTimer);
+      clearTimeout(adcCapturePollTimer);
+      adcCapturePollGeneration += 1;
       socket?.close();
       if (remoteImage) URL.revokeObjectURL(remoteImage);
       colorSchemeMedia?.removeEventListener?.('change', colorSchemeChanged);
@@ -1182,7 +1303,8 @@
   </header>
 
   <nav class="main-nav" aria-label="Main navigation">
-    <button class:active={route === 'sensors'} on:click={() => navigate('sensors')}>Sensors</button>
+    <button class:active={route === 'sensors' || route === 'raw'}
+      on:click={() => navigate('sensors')}>Sensors</button>
     <button class:active={route === 'overview'} on:click={() => navigate('overview')}>Power</button>
     <button class:active={route === 'history'} on:click={() => navigate('history')}>Usage</button>
     <button class:active={route === 'cycle'} on:click={() => navigate('cycle')}>Cycle</button>
@@ -1428,6 +1550,65 @@
         <dt>History query</dt><dd>{debugHistoryLabel(debugStatus?.history_query)}</dd>
       </dl>
     </section>
+  {:else if route === 'raw'}
+    <section class="adc-capture-view" aria-live="polite">
+      <div class="adc-capture-toolbar">
+        <button class="compact secondary back-button" type="button"
+          on:click={() => navigate('sensors')} aria-label="Return to sensors">← Sensors</button>
+        <div>
+          <h2>{sensorLabel(adcCapture?.channel || adcCaptureSensor)} sensor raw capture</h2>
+          <p>Calibrated voltage and current observations used by the production reducer.</p>
+        </div>
+        <button class="primary compact" type="button" disabled={adcCaptureBusy}
+          on:click={() => startAdcCapture(adcCaptureSensor)}>
+          {adcCaptureBusy ? (adcCaptureState === 'capturing' ? 'Capturing…' : 'Arming…') : 'Capture again'}
+        </button>
+      </div>
+
+      {#if adcCaptureBusy}
+        <div class="adc-capture-progress">
+          <span class="progress" role="status" aria-label="Capturing ADC readings"></span>
+          <p>Collecting three 500 ms windows…</p>
+        </div>
+      {/if}
+      {#if adcCaptureError}<p class="error" role="alert">{adcCaptureError}</p>{/if}
+      {#if adcCapture}
+        <div class="adc-capture-heading">
+          <p>Raw observations and their three 500 ms production values.</p>
+          <span>{adcCapture.points.length} samples ·
+            {adcCapture.measuredIntervalUs > 0
+              ? `${(1_000_000 / adcCapture.measuredIntervalUs).toFixed(1)} Hz`
+              : 'rate unavailable'}</span>
+        </div>
+        <AdcCaptureChart capture={adcCapture} />
+        <div class="adc-window-table-wrap">
+          <table class="adc-window-table">
+            <thead><tr><th>Window</th><th>State</th><th>Voltage</th><th>Current</th><th>Power</th><th>Duty</th></tr></thead>
+            <tbody>
+              {#each adcCapture.windows as window, index}
+                <tr>
+                  <th>{index + 1}</th>
+                  <td class:warning={window.state === 'out_of_range'}
+                    class:bad={!window.eligible && window.state !== 'out_of_range'}>
+                    {stateLabel(window.state)}
+                  </td>
+                  <td>{formatMeasurement(window.voltage, 'V')}</td>
+                  <td>{formatMeasurement(window.current, 'A')}</td>
+                  <td>{formatMeasurement(window.power, 'W')}</td>
+                  <td>{formatPercent(window.duty)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+        </div>
+        <p class="field-note">Requested interval:
+          {(adcCapture.requestedIntervalUs / 1000).toFixed(1)} ms · measured:
+          {(adcCapture.measuredIntervalUs / 1000).toFixed(2)} ms · dropped:
+          {adcCapture.droppedPoints}</p>
+      {:else if !adcCaptureBusy && !adcCaptureError}
+        <p class="empty">No capture is available.</p>
+      {/if}
+    </section>
   {:else if route === 'sensors'}
     <section class="sensors-view" aria-live="polite">
       {#if sensorStatusError}<p class="error" role="alert">{sensorStatusError}</p>{/if}
@@ -1455,9 +1636,16 @@
                     class:bad={channel.state === 'invalid' || channel.state === 'stale'}>
                     <header>
                       <h3>{channel.label}</h3>
-                      <span class="state" class:good={channel.state === 'valid'}
-                        class:warning={channel.state === 'out_of_range'}
-                        class:bad={channel.state === 'invalid' || channel.state === 'stale'}>{stateLabel(channel.state)}</span>
+                      <div class="sensor-card-status">
+                        <span class="state" class:good={channel.state === 'valid'}
+                          class:warning={channel.state === 'out_of_range'}
+                          class:bad={channel.state === 'invalid' || channel.state === 'stale'}>{stateLabel(channel.state)}</span>
+                        {#if channel.configured &&
+                          ['adc', 'ads1115'].includes(sensorStatus?.source?.mode)}
+                          <button class="compact secondary" type="button"
+                            on:click={() => startAdcCapture(channel.id)}>View Raw</button>
+                        {/if}
+                      </div>
                     </header>
                     <dl class="measurements kpis">
                       <dt>Voltage</dt><dd>{formatMeasurement(channel.voltage, 'V')}</dd>
@@ -1527,6 +1715,7 @@
         </div>
 
         {#if calibrationMessage}<p class="success" role="status">{calibrationMessage}</p>{/if}
+
       {/if}
       {#if !sensorStatus && !sensorStatusError}<p class="empty">Loading sensors…</p>{/if}
     </section>
@@ -1845,6 +2034,7 @@
   .wifi-view,
   .setup-view,
   .sensors-view,
+  .adc-capture-view,
   .table-view {
     flex: 1;
     min-height: 0;
@@ -2405,6 +2595,87 @@
     font-size: 0.8rem;
   }
 
+  .adc-capture-view {
+    width: 100%;
+    max-width: 64rem;
+    margin-left: auto;
+    margin-right: auto;
+  }
+
+  .adc-capture-toolbar {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.8rem;
+    margin-bottom: 1rem;
+  }
+
+  .adc-capture-toolbar h2 { margin: 0; }
+  .adc-capture-toolbar p {
+    margin-top: 0.15rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .adc-capture-progress {
+    min-height: 10rem;
+    display: grid;
+    place-content: center;
+    justify-items: center;
+    gap: 0.5rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+  }
+
+  .adc-capture-heading {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.8rem;
+    margin-bottom: 0.45rem;
+  }
+
+  .adc-capture-heading p,
+  .adc-capture-heading span {
+    margin-top: 0.2rem;
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+
+  .adc-capture-heading span { white-space: nowrap; }
+
+  .sensor-card-status {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+  }
+
+  .adc-window-table-wrap {
+    margin-top: 0.5rem;
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: 0.3rem;
+  }
+
+  .adc-window-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .adc-window-table th,
+  .adc-window-table td {
+    padding: 0.45rem 0.6rem;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .adc-window-table th:first-child { text-align: left; }
+  .adc-window-table thead { color: var(--muted); font-size: 0.76rem; }
+  .adc-window-table tbody tr:nth-child(even) { background: var(--background); }
+  .adc-window-table td.warning { color: var(--warning); }
+  .adc-window-table td.bad { color: var(--battery); }
+
   .sensor-tabs {
     display: flex;
     margin-bottom: 0.7rem;
@@ -2576,6 +2847,16 @@
     }
 
     .sensor-charts { grid-template-columns: 1fr; }
+    .sensor-heading { align-items: flex-start; }
+    .adc-capture-heading { display: block; }
+    .adc-capture-toolbar {
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: start;
+    }
+    .adc-capture-toolbar .back-button {
+      grid-column: 1 / -1;
+      justify-self: start;
+    }
 
     .wifi-grid { grid-template-columns: 1fr; }
   }

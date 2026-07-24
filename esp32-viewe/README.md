@@ -89,14 +89,24 @@ signing key, bootloader, partition table, or LittleFS contents.
 ### Linux mDNS support
 
 The meter advertises its hostname through its built-in mDNS service, so
-`meter1.local` requires mDNS name resolution on the computer running the OTA
-tool. On Debian/Ubuntu Linux, install it once with:
+`tools/ota.py`, `tools/ota_upload.py`, and `tools/discover_device.py` include a
+bounded, dependency-free Python mDNS fallback. Check one or more names directly
+with:
+
+```sh
+python3 tools/mdns_resolver.py meter1 sensor1
+```
+
+Avahi remains useful when `.local` names should also work in `curl`, browsers,
+and other operating-system clients. On Debian/Ubuntu Linux, install it once
+with:
 
 ```sh
 sudo apt install avahi-daemon libnss-mdns
 ```
 
-This is not required when using `--host <IP-address>`.
+Neither mDNS method can cross a multicast-isolated network. In that case, use
+`--host <IP-address>` with the address shown on the display or serial console.
 
 ### OTA update: one meter
 
@@ -106,8 +116,9 @@ For a meter named `meter1` in Settings → Setup:
 python3 tools/ota.py -e wroom meter1
 ```
 
-This builds, signs, uploads to `meter1.local`, and waits for the reboot. If
-`.local` discovery is unavailable, use the Station/AP IP shown by the meter:
+This builds, signs, resolves `meter1.local` to a stable IP for the upload and
+reboot check, and waits for firmware confirmation. If multicast discovery is
+unavailable, use the Station/AP IP shown by the meter:
 
 ```sh
 python3 tools/ota.py --host 192.168.1.217
@@ -240,6 +251,21 @@ POWER_METER_HAS_ADS1115
 The normal VIEWE target disables ADS1115, but enabling it uses the ESP-IDF I2C
 backend on a separately configured port/pin pair rather than Arduino Wire,
 which cannot coexist with the VIEWE panel library's legacy I2C driver.
+
+Physical ADC sources acquire calibrated voltage/current pairs continuously and
+reduce those observations into the normal 500 ms reading stream. The ESP32 ADC
+targets 5 ms; the four-conversion WROOM ADS1115 path targets 15 ms. These are
+scheduler targets, and every diagnostic capture reports its measured interval.
+
+Raw observations are retained only for an on-demand capture. In the browser,
+select **View Raw** beside a configured channel on Sensors. On the VIEWE
+display, use the image icon at the right of that channel's KPI row. A capture
+contains voltage, current, and instantaneous power for one selected logical
+channel across three consecutive 500 ms production windows, alongside the
+actual reduced voltage/current/power/duty values. It uses the same calibrated
+observations as normal energy accounting and is discarded after the UI takes
+the result. Capture IDs protect the shared browser/display service from stale
+take or cancel operations; abandoned results expire automatically.
 
 ## Firmware constraints and development gotchas
 

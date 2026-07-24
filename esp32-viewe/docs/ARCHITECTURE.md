@@ -88,6 +88,28 @@ Uno producer supplies `In`/`Out` while `Aux` is absent.
 One UART frame supplies a coherent multi-channel snapshot, so its receiver is a
 shared frame source rather than three independent serial readers.
 
+Physical ADC sources use one continuous high-rate acquisition task. Its
+source-specific scheduler targets are 5 ms for the built-in ESP32 ADC and
+15 ms for ADS1115. Each loop acquires voltage and current together for every
+configured logical channel, calibrates those observations, and adds them to
+the production reducer. The reducer publishes one `Reading` per channel every
+500 ms; normal power, duty, energy, and history consumers continue to use that
+stream. ADS1115's nominal conversion rate applies to individual conversions,
+not logical samples: the WROOM mapping requires four sequential conversions
+for its In and Out voltage/current pairs.
+
+The same task supports a single shared, on-demand diagnostic capture without a
+second ADC read path. A request selects one logical channel and retains its
+exact calibrated voltage/current/power observations across three consecutive
+500 ms reducer windows. Each window also stores the resulting production
+reading and duty. Retention begins only at a reducer boundary and ends after
+three windows; taking the result releases it. Requests carry monotonically
+assigned IDs, take/cancel operations require the matching ID, and abandoned
+active/ready results expire. The browser and LVGL Sensors views share this
+capture service without allowing a stale consumer to cancel or consume a newer
+generation. Captures therefore reflect the acquisition that actually drives
+power and energy rather than a separate oscilloscope mode.
+
 Requirements for the production source:
 
 - fixed channel configuration and a clear channel/pin table;

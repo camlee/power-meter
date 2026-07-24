@@ -83,6 +83,32 @@ Wi-Fi/AP setup, browser/NTP time anchors, local calibration, signed OTA,
 diagnostics, and remote display control are in place. The shared on-device and
 browser Cycle view is complete for the current scope.
 
+### Roadmap checkpoint — 2026-07-23
+
+Physical ADC acquisition now runs continuously above the 2 Hz production
+reading cadence: the built-in ESP32 ADC targets 5 ms and the ADS1115 targets
+15 ms. Both feed the existing 500 ms reducer, so power, duty, energy, and
+history use the same observations exposed by diagnostics.
+
+The browser and VIEWE Sensors interfaces can request one on-demand raw capture
+for any configured logical channel. Voltage and current are captured together
+in calibrated engineering units across three complete 500 ms reducer windows,
+with instantaneous power and the resulting production V/A/W/duty values.
+Raw-sample retention exists only while a capture is active or awaiting its
+one-time transfer.
+
+On attached hardware, the Viewe built-in ADC held 4.999 ms (about 200 Hz)
+without capture drops. The four-conversion WROOM ADS1115 loop saturated around
+13.55 ms (about 74 logical In/Out observations per second) with a 10 ms target;
+the deployed 15 ms target measured about 14.66 ms (about 68 Hz) across the
+post-update check, also without capture drops. The requested interval is a
+scheduler target rather than a guaranteed minimum spacing, so the capture
+reports the actual cadence.
+
+Signed OTA uploads now resolve known `.local` names with a bounded,
+dependency-free Python mDNS query before falling back to the system resolver.
+Both current devices were built, uploaded by name, rebooted, and confirmed.
+
 ### Roadmap checkpoint — 2026-07-21
 
 The WROOM candidate now has one mutex-protected I2C service, a 128×64 SSD1306
@@ -288,10 +314,10 @@ work. Begin it when the final sensor assembly and installed system are available
   across expected voltage/current ranges.
 - Establish per-channel defaults, calibration procedure, filtering, plausible
   limits, noise behavior, and disconnected-input behavior.
-- Replace the basic four-conversion-per-report ADS1115 path with a measured
-  high-rate acquisition window. Evaluate the 860 SPS ceiling, channel-switch
-  settling, coherent voltage/current pairing, instantaneous-power averaging,
-  PWM duty extraction, aliasing, and the appropriate summary sent at 2 Hz.
+- Use the implemented acquisition capture to evaluate channel-switch settling,
+  voltage/current pairing, instantaneous-power averaging, PWM duty extraction,
+  aliasing, and the appropriate 500 ms reducer behavior against trusted bench
+  instruments and known waveforms.
 - Verify power, duty/available power, energy, and net battery calculations.
 - Run an on-site soak through normal charging/load cycles and power events.
 - Document the final hardware revision, reference equipment, results, and any

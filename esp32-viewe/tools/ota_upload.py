@@ -13,6 +13,8 @@ import time
 import urllib.error
 import urllib.request
 
+from mdns_resolver import normalize_hostname, resolve_ipv4
+
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
 
@@ -86,8 +88,14 @@ def main():
         sys.exit("VIEWE_OTA_TOKEN is required; set it in {} or pass --token.".format(args.env_file))
 
     host = args.host or args.device
-    if args.device and not host.endswith(".local"):
-        host += ".local"
+    if args.device:
+        host = normalize_hostname(host)
+        addresses = resolve_ipv4(host)
+        if addresses:
+            print("Resolved {} to {} with direct mDNS.".format(host, addresses[0]))
+            host = addresses[0]
+        else:
+            print("Direct mDNS did not resolve {}; trying the system resolver.".format(host))
     base_url = host.rstrip("/") if "://" in host else "http://" + host.rstrip("/")
     fields = {
         "manifest": manifest.read_text(encoding="ascii"),

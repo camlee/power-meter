@@ -66,6 +66,19 @@ point instead, use `python3 tools/ota.py --host 192.168.4.1`. The following
 commands remain useful when you want to retain an explicitly versioned release
 or debug one stage of the process.
 
+The OTA uploader first resolves `.local` device names with the repository's
+bounded, dependency-free Python mDNS resolver, then uses that IP for both the
+upload and post-reboot confirmation. This avoids depending on NSS/Avahi and
+avoids losing the target between the upload and reboot check. Diagnose names
+without building or uploading firmware with:
+
+```sh
+python3 tools/mdns_resolver.py meter1 sensor1
+```
+
+If the LAN blocks multicast, use the Station/AP IP from the display or serial
+log with `--host`.
+
 Each build receives a local, auto-incrementing `0.0.N` version. One command
 builds once, signs once, and can update several meters with that same version:
 

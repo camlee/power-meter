@@ -19,6 +19,14 @@ enum SensorId : uint8_t {
 };
 
 constexpr uint32_t kSampleIntervalMs = 500;
+// ADC sources sample each logical voltage/current pair at these target
+// cadences, then reduce the observations into the normal 500 ms Reading
+// stream. Actual cadence is included in every on-demand capture.
+constexpr uint32_t kEsp32AdcAcquisitionIntervalMs = 5;
+constexpr uint32_t kAds1115AcquisitionIntervalMs = 15;
+constexpr uint32_t kFastestAcquisitionIntervalMs =
+    kEsp32AdcAcquisitionIntervalMs < kAds1115AcquisitionIntervalMs
+        ? kEsp32AdcAcquisitionIntervalMs : kAds1115AcquisitionIntervalMs;
 #ifndef POWER_METER_SENSOR_HISTORY_SIZE
 #define POWER_METER_SENSOR_HISTORY_SIZE 600
 #endif
@@ -64,12 +72,76 @@ struct Reading {
     float dutyCycle = std::numeric_limits<float>::quiet_NaN();
 };
 
+// A raw-capture slice covers one selected logical channel. It retains the
+// exact calibrated observations that feed three consecutive 500 ms production
+// reducers, then transfers ownership to the requesting API.
+constexpr uint8_t kAdcCaptureWindowCount = 3;
+constexpr size_t kAdcCapturePointCapacity =
+    (kSampleIntervalMs / kFastestAcquisitionIntervalMs + 4) * kAdcCaptureWindowCount;
+constexpr uint32_t kAdcCaptureActiveTimeoutMs = 10000;
+constexpr uint32_t kAdcCaptureReadyTimeoutMs = 30000;
+
+enum class AdcCaptureState : uint8_t {
+    Unavailable,
+    Idle,
+    Armed,
+    Capturing,
+    Ready,
+};
+
+struct AdcCapturePoint {
+    uint32_t elapsedUs = 0;
+    float voltage = std::numeric_limits<float>::quiet_NaN();
+    float current = std::numeric_limits<float>::quiet_NaN();
+    float power = std::numeric_limits<float>::quiet_NaN();
+};
+
+struct AdcCaptureWindow {
+    uint32_t startUs = 0;
+    uint32_t endUs = 0;
+    uint16_t firstPoint = 0;
+    uint16_t pointCount = 0;
+    Reading reading{};
+};
+
+struct AdcCaptureStatus {
+    AdcCaptureState state = AdcCaptureState::Unavailable;
+    uint32_t captureId = 0;
+    SensorId channel = SENSOR_IN;
+    uint16_t pointCount = 0;
+    uint8_t windowCount = 0;
+    uint8_t targetWindowCount = kAdcCaptureWindowCount;
+    uint16_t droppedPoints = 0;
+};
+
+struct AdcCaptureResult {
+    uint32_t captureId = 0;
+    SensorId channel = SENSOR_IN;
+    uint32_t requestedIntervalUs = kFastestAcquisitionIntervalMs * 1000;
+    uint32_t measuredIntervalUs = 0;
+    uint16_t pointCount = 0;
+    uint8_t windowCount = 0;
+    uint16_t droppedPoints = 0;
+    AdcCaptureWindow windows[kAdcCaptureWindowCount]{};
+    AdcCapturePoint points[kAdcCapturePointCapacity]{};
+};
+
 bool isConfigured(const Reading& reading);
 bool isCalculationEligible(const Reading& reading);
 bool isDirectDutyEligible(const Reading& reading);
 uint8_t getConfiguredMask();
 
 void start();
+
+bool requestAdcCapture(SensorId channel, uint32_t& captureId);
+AdcCaptureStatus getAdcCaptureStatus();
+// Cancellation and transfer are generation-safe: a stale consumer cannot
+// affect a newer request that reused the shared capture service.
+bool cancelAdcCapture(uint32_t captureId);
+// Copies and releases the completed capture. The service retains no raw
+// samples after this succeeds.
+bool takeAdcCapture(uint32_t captureId, AdcCaptureResult& out);
+const char* adcCaptureStateName(AdcCaptureState state);
 
 // --- Per-sample history -----------------------------------------------------
 size_t getRecent(SensorId id, Reading* out, size_t maxCount);

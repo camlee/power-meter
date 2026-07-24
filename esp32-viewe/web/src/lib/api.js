@@ -25,6 +25,101 @@ export async function saveSensorCalibration(calibration) {
   return result;
 }
 
+export async function requestAdcCapture(channel) {
+  const response = await fetch('/api/v1/sensors/capture', {
+    method: 'POST',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel }),
+  });
+  if (!response.ok) throw await responseError(response, 'ADC capture');
+  return response.json();
+}
+
+export async function getAdcCaptureStatus() {
+  const response = await fetch('/api/v1/sensors/capture', { cache: 'no-store' });
+  if (!response.ok) throw await responseError(response, 'ADC capture');
+  return response.json();
+}
+
+export async function cancelAdcCapture(captureId) {
+  const response = await fetch(`/api/v1/sensors/capture?id=${encodeURIComponent(captureId)}`, {
+    method: 'DELETE',
+    cache: 'no-store',
+  });
+  if (!response.ok) throw await responseError(response, 'ADC capture');
+  return response.json();
+}
+
+export async function getAdcCaptureData(captureId) {
+  const response = await fetch(
+    `/api/v1/sensors/capture/data?id=${encodeURIComponent(captureId)}`,
+    { cache: 'no-store' },
+  );
+  if (!response.ok) throw await responseError(response, 'ADC capture');
+  return parseAdcCapture(await response.arrayBuffer(), captureId);
+}
+
+function parseAdcCapture(buffer, captureId) {
+  const view = new DataView(buffer);
+  if (view.byteLength < 32 || view.getUint32(0, true) !== 0x31434441 ||
+      view.getUint8(4) !== 1 || view.getUint8(5) !== 1) {
+    throw new Error('Unsupported ADC capture response');
+  }
+  const headerBytes = view.getUint16(6, true);
+  const pointCount = view.getUint16(8, true);
+  const windowCount = view.getUint8(10);
+  const pointBytes = view.getUint16(28, true);
+  const windowBytes = view.getUint16(30, true);
+  if (pointBytes !== 16 || windowBytes !== 32 ||
+      headerBytes !== 32 + windowCount * windowBytes ||
+      view.byteLength !== headerBytes + pointCount * pointBytes) {
+    throw new Error('Invalid ADC capture response');
+  }
+
+  const readingStates = [
+    'not_configured', 'waiting', 'valid', 'out_of_range', 'invalid', 'stale',
+  ];
+  const dutyStates = ['not_reported', 'valid', 'invalid'];
+  const windows = Array.from({ length: windowCount }, (_, index) => {
+    const offset = 32 + index * windowBytes;
+    const state = readingStates[view.getUint8(offset + 12)] || 'invalid';
+    return {
+      startUs: view.getUint32(offset, true),
+      endUs: view.getUint32(offset + 4, true),
+      firstPoint: view.getUint16(offset + 8, true),
+      pointCount: view.getUint16(offset + 10, true),
+      state,
+      configured: view.getUint8(offset + 13) !== 0,
+      dutyState: dutyStates[view.getUint8(offset + 14)] || 'invalid',
+      eligible: state === 'valid',
+      voltage: view.getFloat32(offset + 16, true),
+      current: view.getFloat32(offset + 20, true),
+      power: view.getFloat32(offset + 24, true),
+      duty: view.getFloat32(offset + 28, true),
+    };
+  });
+  const points = Array.from({ length: pointCount }, (_, index) => {
+    const offset = headerBytes + index * pointBytes;
+    return {
+      elapsedUs: view.getUint32(offset, true),
+      voltage: view.getFloat32(offset + 4, true),
+      current: view.getFloat32(offset + 8, true),
+      power: view.getFloat32(offset + 12, true),
+    };
+  });
+  return {
+    captureId,
+    channel: ['in', 'out', 'aux'][view.getUint8(22)] || 'in',
+    requestedIntervalUs: view.getUint32(12, true),
+    measuredIntervalUs: view.getUint32(16, true),
+    droppedPoints: view.getUint16(20, true),
+    durationUs: view.getUint32(24, true),
+    windows,
+    points,
+  };
+}
+
 export async function getSetup() {
   const response = await fetch('/api/v1/setup', { cache: 'no-store' });
   if (!response.ok) throw new Error(`setup ${response.status}`);

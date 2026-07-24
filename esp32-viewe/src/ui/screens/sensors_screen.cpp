@@ -2,7 +2,9 @@
 #include "../../sensors/sensors.h"
 #include "../../sensors/sensor_calibration.h"
 #include "../../sensors/sensor_mode.h"
+#include "../../memory/heap_policy.h"
 #include "../theme/ui_theme.h"
+#include <esp_heap_caps.h>
 #include <cstdio>
 #include <cmath>
 #include <algorithm>
@@ -92,6 +94,17 @@ struct SensorChartFrame {
     lv_obj_t* axisLabels[5] = {};
 };
 
+struct RawCaptureChartFrame {
+    float minimum = 0.0f;
+    float maximum = 1.0f;
+    float scale = 1.0f;
+    const char* unit = "";
+    lv_obj_t* axisLabels[4] = {};
+    uint16_t pointCount = 0;
+    uint16_t boundaries[sensors::kAdcCaptureWindowCount + 1] = {};
+    uint8_t boundaryCount = 0;
+};
+
 // Computes a new nice range that (a) always covers at least [defaultMin,
 // defaultMax], and (b) expands to cover the actual data + margin when the
 // data goes outside the default window (e.g. current spiking to 20A).
@@ -130,6 +143,7 @@ void computeDynamicRange(float dataMin, float dataMax, float defaultMin, float d
 
 struct SensorTab {
     lv_obj_t* contentRoot = nullptr;
+    lv_obj_t* kpiBlock = nullptr;
     lv_obj_t* kpiRow = nullptr;
     lv_obj_t* calibrationHeader = nullptr;
     lv_obj_t* chartsColumn = nullptr;
@@ -157,6 +171,7 @@ struct SensorTab {
     lv_obj_t* iValueLabel = nullptr;
     lv_obj_t* pValueLabel = nullptr;
     lv_obj_t* statusLabel = nullptr;
+    lv_obj_t* captureButton = nullptr;
 
     lv_obj_t* dutyRow = nullptr;    // hidden until duty is observed < threshold
     lv_obj_t* dutyValueLabel = nullptr;
@@ -171,6 +186,24 @@ struct SensorTab {
     AxisRangeState vRange;
     AxisRangeState iRange;
     lv_obj_t* calibrationParent = nullptr;
+
+    struct RawCaptureView {
+        lv_obj_t* root = nullptr;
+        lv_obj_t* statusLabel = nullptr;
+        lv_obj_t* voltageTitle = nullptr;
+        lv_obj_t* currentTitle = nullptr;
+        lv_obj_t* summaryLabel = nullptr;
+        lv_obj_t* windowStateLabel = nullptr;
+        lv_obj_t* voltageChart = nullptr;
+        lv_obj_t* currentChart = nullptr;
+        lv_chart_series_t* voltageSeries = nullptr;
+        lv_chart_series_t* currentSeries = nullptr;
+        RawCaptureChartFrame voltageFrame;
+        RawCaptureChartFrame currentFrame;
+        uint32_t requestId = 0;
+        bool visible = false;
+        bool ownsRequest = false;
+    } capture;
 
     struct CalibrationEditor {
         lv_obj_t* root = nullptr;
@@ -216,12 +249,20 @@ sensors::calibration::Source activeCalibrationSource() {
         : sensors::calibration::Source::Esp32Adc;
 }
 
+bool rawCaptureAvailable() {
+    const sensor_mode::Mode mode = sensor_mode::get();
+    return mode == sensor_mode::Mode::Adc || mode == sensor_mode::Mode::Ads1115;
+}
+
 void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Reading* readings = nullptr,
                              size_t n = 0, bool appendPoint = false);
 void refreshCalibrationInputs(SensorTab::CalibrationEditor& editor);
 void openVoltageCalibrationCb(lv_event_t* event);
 void openCurrentCalibrationCb(lv_event_t* event);
 void closeCalibration(SensorTab& tab);
+void openRawCaptureCb(lv_event_t* event);
+void closeRawCapture(SensorTab& tab);
+void createRawCaptureView(lv_obj_t* parent, SensorTab& tab, uint8_t sensor);
 
 bool latestCalibrationInput(const SensorTab::CalibrationEditor& editor, float& input) {
     sensors::Reading latest{};
@@ -420,7 +461,7 @@ void closeCalibration(SensorTab& tab) {
     if (editor.activeTitleRow) lv_obj_clear_flag(editor.activeTitleRow, LV_OBJ_FLAG_HIDDEN);
     editor.activeBlock = nullptr;
     editor.activeTitleRow = nullptr;
-    lv_obj_clear_flag(tab.kpiRow, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(tab.kpiBlock, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(tab.calibrationHeader, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(tab.vBlock, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(tab.iBlock, LV_OBJ_FLAG_HIDDEN);
@@ -436,7 +477,10 @@ void closeCalibration(SensorTab& tab) {
 }
 
 void exitAllCalibrationCb(lv_event_t*) {
-    for (SensorTab& tab : sensorTabs) closeCalibration(tab);
+    for (SensorTab& tab : sensorTabs) {
+        closeCalibration(tab);
+        closeRawCapture(tab);
+    }
 }
 
 // Given a batch of readings and where we left off last time, returns the
@@ -577,8 +621,11 @@ void addTimeAxisLabels(lv_obj_t* parent) {
 // Builds one minimally-styled chart block (title + chart + time axis) and
 // wires up dynamic Y-axis ticks. Returns the chart object; writes the
 // created series into *seriesOut.
-lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color,
-                            lv_obj_t** blockOut, lv_obj_t** editIconOut, SensorChartFrame* frame, const float* axisScale, lv_chart_series_t** seriesOut,
+lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, const char* unit,
+                            lv_color_t color, lv_obj_t** blockOut,
+                            lv_obj_t** valueLabelOut, lv_obj_t** editIconOut,
+                            SensorChartFrame* frame, const float* axisScale,
+                            lv_chart_series_t** seriesOut,
                             SensorTab* tab = nullptr, sensors::calibration::Measurement measurement = sensors::calibration::Measurement::Voltage) {
     lv_obj_t* block = lv_obj_create(parent);
     styleFlatContainer(block);
@@ -599,15 +646,34 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color
         lv_obj_set_flex_align(titleRow, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
         lv_obj_t* titleLabel = lv_label_create(titleRow);
         lv_label_set_text(titleLabel, title);
+        lv_obj_set_width(titleLabel, 64);
         lv_obj_set_style_text_font(titleLabel, &lv_font_montserrat_14, 0);
         lv_obj_set_style_text_color(titleLabel, ui_theme::mutedText(), 0);
+
+        lv_obj_t* valueLabel = lv_label_create(titleRow);
+        lv_label_set_text(valueLabel, "--.-");
+        lv_obj_set_width(valueLabel, 64);
+        lv_label_set_long_mode(valueLabel, LV_LABEL_LONG_CLIP);
+        lv_obj_set_style_text_align(valueLabel, LV_TEXT_ALIGN_RIGHT, 0);
+        lv_obj_set_style_text_font(valueLabel, &lv_font_montserrat_16, 0);
+        lv_obj_set_style_text_color(valueLabel, ui_theme::text(), 0);
+        if (valueLabelOut) *valueLabelOut = valueLabel;
+
+        lv_obj_t* unitLabel = lv_label_create(titleRow);
+        lv_label_set_text(unitLabel, unit);
+        lv_obj_set_width(unitLabel, 14);
+        lv_obj_set_style_text_font(unitLabel, &lv_font_montserrat_12, 0);
+        lv_obj_set_style_text_color(unitLabel, ui_theme::mutedText(), 0);
+        lv_obj_set_style_pad_top(unitLabel, 3, 0);
+
         if (tab) {
-            // Keep a finger-friendly target over the right quarter of the
-            // heading while leaving the title itself non-interactive. The
-            // glyph sits on the bottom edge, immediately above the plot.
+            // Let the calibration target consume the rest of the heading.
+            // Its glyph remains pinned right while the live value sits beside
+            // the chart title.
             lv_obj_t* editTarget = lv_obj_create(titleRow);
             lv_obj_remove_style_all(editTarget);
-            lv_obj_set_size(editTarget, lv_pct(25), lv_pct(100));
+            lv_obj_set_size(editTarget, 0, lv_pct(100));
+            lv_obj_set_flex_grow(editTarget, 1);
             lv_obj_add_flag(editTarget, LV_OBJ_FLAG_CLICKABLE);
             lv_obj_add_event_cb(editTarget,
                 measurement == sensors::calibration::Measurement::Voltage ? openVoltageCalibrationCb : openCurrentCalibrationCb,
@@ -666,7 +732,9 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, lv_color_t color
 lv_obj_t* createKpiItem(lv_obj_t* parent, const char* unit, lv_coord_t valueWidth, lv_obj_t** valueLabelOut) {
     lv_obj_t* item = lv_obj_create(parent);
     lv_obj_remove_style_all(item);
-    lv_obj_set_size(item, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+    lv_obj_set_size(item, LV_SIZE_CONTENT, 26);
+    lv_obj_clear_flag(item, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(item, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_border_width(item, 0, 0);
     lv_obj_set_style_pad_all(item, 0, 0);
     lv_obj_set_style_pad_column(item, 3, 0);
@@ -677,6 +745,7 @@ lv_obj_t* createKpiItem(lv_obj_t* parent, const char* unit, lv_coord_t valueWidt
     lv_label_set_text(valueLabel, "--.-");
     lv_obj_set_style_text_font(valueLabel, &lv_font_montserrat_20, 0);
     lv_obj_set_width(valueLabel, valueWidth);
+    lv_label_set_long_mode(valueLabel, LV_LABEL_LONG_CLIP);
     lv_obj_set_style_text_align(valueLabel, LV_TEXT_ALIGN_RIGHT, 0);
 
     lv_obj_t* unitLabel = lv_label_create(item);
@@ -830,7 +899,7 @@ void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measu
     lv_chart_set_series_color(editor.activeChart, voltage ? tab.vSeries : tab.iSeries,
                               lv_palette_main(LV_PALETTE_BLUE));
     editor.activeTitleRow = lv_obj_get_child(editor.activeBlock, 0);
-    lv_obj_add_flag(tab.kpiRow, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(tab.kpiBlock, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(tab.calibrationHeader, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(voltage ? tab.iBlock : tab.vBlock, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(editor.activeBlock, LV_OBJ_FLAG_HIDDEN);
@@ -881,6 +950,397 @@ void openCurrentCalibrationCb(lv_event_t* event) {
     openCalibration(*tab, sensor, sensors::calibration::Measurement::Current);
 }
 
+const char* sensorName(uint8_t sensor) {
+    static constexpr const char* names[sensors::SENSOR_COUNT] = {"In", "Out", "Aux"};
+    return sensor < sensors::SENSOR_COUNT ? names[sensor] : "Sensor";
+}
+
+const char* captureReadingStateLabel(sensors::ReadingState state) {
+    switch (state) {
+        case sensors::ReadingState::NotConfigured: return "Not configured";
+        case sensors::ReadingState::Waiting: return "Waiting";
+        case sensors::ReadingState::Valid: return "Good";
+        case sensors::ReadingState::OutOfRange: return "Out of range";
+        case sensors::ReadingState::Invalid: return "Invalid";
+        case sensors::ReadingState::Stale: return "Stale";
+    }
+    return "Invalid";
+}
+
+void rawCaptureGridDrawCb(lv_event_t* event) {
+    if (lv_event_get_code(event) != LV_EVENT_DRAW_MAIN) return;
+    auto* frame = static_cast<RawCaptureChartFrame*>(lv_event_get_user_data(event));
+    if (!frame) return;
+
+    lv_draw_ctx_t* ctx = lv_event_get_draw_ctx(event);
+    const lv_area_t& area = lv_event_get_target(event)->coords;
+    const lv_coord_t left = area.x1 + 2;
+    const lv_coord_t right = area.x2 - 3;
+    const lv_coord_t top = area.y1 + 3;
+    const lv_coord_t bottom = area.y2 - 3;
+    if (right <= left || bottom <= top) return;
+
+    lv_draw_line_dsc_t grid;
+    lv_draw_line_dsc_init(&grid);
+    grid.color = ui_theme::border();
+    grid.width = 1;
+    grid.opa = LV_OPA_50;
+    for (uint8_t i = 0; i < 4; ++i) {
+        const lv_coord_t y = top + (bottom - top) * i / 3;
+        lv_point_t p1{left, y}, p2{right, y};
+        lv_draw_line(ctx, &grid, &p1, &p2);
+    }
+
+    const uint16_t denominator = frame->pointCount > 1
+        ? frame->pointCount - 1 : 1;
+    for (uint8_t i = 0; i < frame->boundaryCount; ++i) {
+        const uint16_t point = std::min<uint16_t>(
+            frame->boundaries[i], denominator);
+        const lv_coord_t x = left +
+            static_cast<lv_coord_t>((right - left) * point / denominator);
+        lv_point_t p1{x, top}, p2{x, bottom};
+        lv_draw_line(ctx, &grid, &p1, &p2);
+    }
+}
+
+lv_obj_t* createRawCaptureChart(lv_obj_t* parent, lv_color_t color,
+                                const char* unit, RawCaptureChartFrame& frame,
+                                lv_obj_t** titleOut, lv_chart_series_t** seriesOut) {
+    lv_obj_t* block = lv_obj_create(parent);
+    styleFlatContainer(block);
+    lv_obj_set_size(block, lv_pct(100), 0);
+    lv_obj_set_flex_grow(block, 1);
+    lv_obj_set_flex_flow(block, LV_FLEX_FLOW_COLUMN);
+
+    lv_obj_t* title = lv_label_create(block);
+    lv_obj_set_width(title, lv_pct(100));
+    lv_label_set_long_mode(title, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(title, ui_theme::mutedText(), 0);
+    lv_label_set_text(title, "Waiting for capture");
+    *titleOut = title;
+
+    lv_obj_t* chartRow = lv_obj_create(block);
+    lv_obj_remove_style_all(chartRow);
+    lv_obj_set_size(chartRow, lv_pct(100), 0);
+    lv_obj_set_flex_grow(chartRow, 1);
+    lv_obj_set_flex_flow(chartRow, LV_FLEX_FLOW_ROW);
+
+    frame.unit = unit;
+    lv_obj_t* axis = lv_obj_create(chartRow);
+    lv_obj_remove_style_all(axis);
+    lv_obj_set_size(axis, 50, lv_pct(100));
+    lv_obj_set_flex_flow(axis, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(axis, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
+    for (uint8_t i = 0; i < 4; ++i) {
+        frame.axisLabels[i] = lv_label_create(axis);
+        char label[12];
+        snprintf(label, sizeof(label), "-- %s", unit);
+        lv_label_set_text(frame.axisLabels[i], label);
+        lv_obj_set_style_text_font(frame.axisLabels[i], &lv_font_montserrat_10, 0);
+        lv_obj_set_style_text_color(frame.axisLabels[i], ui_theme::mutedText(), 0);
+    }
+
+    lv_obj_t* chart = lv_chart_create(chartRow);
+    lv_obj_set_size(chart, 0, lv_pct(100));
+    lv_obj_set_flex_grow(chart, 1);
+    lv_chart_set_type(chart, LV_CHART_TYPE_LINE);
+    lv_chart_set_update_mode(chart, LV_CHART_UPDATE_MODE_SHIFT);
+    lv_chart_set_point_count(chart, 2);
+    lv_chart_set_div_line_count(chart, 0, 0);
+    lv_obj_set_style_clip_corner(chart, false, 0);
+    styleChartMinimal(chart);
+    lv_obj_add_event_cb(chart, rawCaptureGridDrawCb, LV_EVENT_DRAW_MAIN, &frame);
+    *seriesOut = lv_chart_add_series(chart, color, LV_CHART_AXIS_PRIMARY_Y);
+    return chart;
+}
+
+void formatCaptureValue(char* out, size_t size, float value, uint8_t decimals) {
+    if (!std::isfinite(value)) {
+        snprintf(out, size, "--");
+        return;
+    }
+    snprintf(out, size, decimals ? "%.1f" : "%.0f", value);
+}
+
+void setRawCaptureTitle(lv_obj_t* label, const char* name, const char* unit,
+                        const sensors::AdcCaptureResult& result, bool voltage) {
+    char values[sensors::kAdcCaptureWindowCount][12];
+    for (uint8_t i = 0; i < sensors::kAdcCaptureWindowCount; ++i) {
+        const float value = i < result.windowCount
+            ? (voltage ? result.windows[i].reading.voltage
+                       : result.windows[i].reading.current)
+            : NAN;
+        formatCaptureValue(values[i], sizeof(values[i]), value, 1);
+    }
+    char text[96];
+    snprintf(text, sizeof(text), "%s 500ms: %s / %s / %s %s",
+             name, values[0], values[1], values[2], unit);
+    lv_label_set_text(label, text);
+}
+
+void populateRawCaptureChart(lv_obj_t* chart, lv_chart_series_t* series,
+                             RawCaptureChartFrame& frame,
+                             const sensors::AdcCaptureResult& result, bool voltage) {
+    const uint16_t points = std::max<uint16_t>(2, result.pointCount);
+    lv_chart_set_point_count(chart, points);
+    lv_chart_set_all_value(chart, series, LV_CHART_POINT_NONE);
+
+    float minimum = INFINITY;
+    float maximum = -INFINITY;
+    for (uint16_t i = 0; i < result.pointCount; ++i) {
+        const float value = voltage ? result.points[i].voltage : result.points[i].current;
+        if (std::isfinite(value)) {
+            minimum = std::min(minimum, value);
+            maximum = std::max(maximum, value);
+        }
+        lv_chart_set_next_value(chart, series,
+            chartCoordinate(value, voltage ? kVoltageAxisScale : kCurrentAxisScale));
+    }
+    for (uint16_t i = result.pointCount; i < points; ++i) {
+        lv_chart_set_next_value(chart, series, LV_CHART_POINT_NONE);
+    }
+
+    if (!std::isfinite(minimum) || !std::isfinite(maximum)) {
+        minimum = 0.0f;
+        maximum = 1.0f;
+    }
+    const float minimumSpan = voltage ? 0.5f : 0.25f;
+    if (maximum - minimum < minimumSpan) {
+        const float middle = (maximum + minimum) * 0.5f;
+        minimum = middle - minimumSpan * 0.5f;
+        maximum = middle + minimumSpan * 0.5f;
+    }
+    const float step = niceStep((maximum - minimum) / 3.0f);
+    minimum = floorf(minimum / step) * step;
+    maximum = ceilf(maximum / step) * step;
+    const float scale = voltage ? kVoltageAxisScale : kCurrentAxisScale;
+    lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y,
+                       axisCoordinate(minimum, scale), axisCoordinate(maximum, scale));
+    frame.minimum = minimum;
+    frame.maximum = maximum;
+    frame.scale = scale;
+    frame.pointCount = result.pointCount;
+    frame.boundaryCount = std::min<uint8_t>(
+        result.windowCount + 1, sensors::kAdcCaptureWindowCount + 1);
+    for (uint8_t i = 0; i < result.windowCount; ++i) {
+        frame.boundaries[i] = result.windows[i].firstPoint;
+    }
+    if (frame.boundaryCount) {
+        frame.boundaries[frame.boundaryCount - 1] =
+            result.pointCount > 0 ? result.pointCount - 1 : 0;
+    }
+    const float span = maximum - minimum;
+    for (uint8_t i = 0; i < 4; ++i) {
+        char label[16];
+        snprintf(label, sizeof(label), "%.1f %s",
+                 maximum - span * i / 3.0f, frame.unit);
+        lv_label_set_text(frame.axisLabels[i], label);
+    }
+    lv_chart_refresh(chart);
+}
+
+void resetRawCaptureFrame(RawCaptureChartFrame& frame) {
+    frame.pointCount = 0;
+    frame.boundaryCount = 0;
+    for (lv_obj_t* label : frame.axisLabels) {
+        if (!label) continue;
+        char text[12];
+        snprintf(text, sizeof(text), "-- %s", frame.unit);
+        lv_label_set_text(label, text);
+    }
+}
+
+void showRawCaptureResult(SensorTab& tab, const sensors::AdcCaptureResult& result) {
+    auto& capture = tab.capture;
+    capture.ownsRequest = false;
+    capture.requestId = 0;
+    const float frequency = result.measuredIntervalUs
+        ? 1000000.0f / static_cast<float>(result.measuredIntervalUs) : NAN;
+    char status[64];
+    if (std::isfinite(frequency)) {
+        snprintf(status, sizeof(status), "%u samples  %.1f Hz  %u dropped",
+                 result.pointCount, frequency, result.droppedPoints);
+    } else {
+        snprintf(status, sizeof(status), "%u samples  rate unavailable",
+                 result.pointCount);
+    }
+    lv_label_set_text(capture.statusLabel, status);
+
+    setRawCaptureTitle(capture.voltageTitle, "Voltage", "V", result, true);
+    setRawCaptureTitle(capture.currentTitle, "Current", "A", result, false);
+    populateRawCaptureChart(capture.voltageChart, capture.voltageSeries,
+                            capture.voltageFrame, result, true);
+    populateRawCaptureChart(capture.currentChart, capture.currentSeries,
+                            capture.currentFrame, result, false);
+
+    char windowStates[112];
+    snprintf(windowStates, sizeof(windowStates), "Windows: %s / %s / %s",
+             result.windowCount > 0
+                 ? captureReadingStateLabel(result.windows[0].reading.state) : "--",
+             result.windowCount > 1
+                 ? captureReadingStateLabel(result.windows[1].reading.state) : "--",
+             result.windowCount > 2
+                 ? captureReadingStateLabel(result.windows[2].reading.state) : "--");
+    lv_label_set_text(capture.windowStateLabel, windowStates);
+
+    char power[sensors::kAdcCaptureWindowCount][12];
+    char duty[sensors::kAdcCaptureWindowCount][12];
+    for (uint8_t i = 0; i < sensors::kAdcCaptureWindowCount; ++i) {
+        const bool present = i < result.windowCount;
+        formatCaptureValue(power[i], sizeof(power[i]),
+                           present ? result.windows[i].reading.power : NAN, 0);
+        const sensors::Reading& reading = result.windows[i].reading;
+        formatCaptureValue(duty[i], sizeof(duty[i]),
+                           present && reading.dutyState == sensors::DutyState::Valid
+                               ? reading.dutyCycle * 100.0f : NAN, 0);
+    }
+    char summary[112];
+    snprintf(summary, sizeof(summary), "Power %s / %s / %s W   Duty %s / %s / %s %%",
+             power[0], power[1], power[2], duty[0], duty[1], duty[2]);
+    lv_label_set_text(capture.summaryLabel, summary);
+}
+
+void beginRawCapture(SensorTab& tab) {
+    const uint8_t sensor = static_cast<uint8_t>(&tab - sensorTabs);
+    if (!tab.capture.root) createRawCaptureView(tab.contentRoot, tab, sensor);
+    auto& capture = tab.capture;
+    if (capture.ownsRequest) sensors::cancelAdcCapture(capture.requestId);
+    capture.visible = true;
+    capture.ownsRequest = false;
+    capture.requestId = 0;
+    lv_obj_add_flag(tab.kpiBlock, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(tab.chartsColumn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(capture.root, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(capture.statusLabel, "Arming capture...");
+    lv_label_set_text(capture.voltageTitle, "Voltage");
+    lv_label_set_text(capture.currentTitle, "Current");
+    lv_label_set_text(capture.summaryLabel, "");
+    lv_label_set_text(capture.windowStateLabel, "");
+    lv_chart_set_all_value(capture.voltageChart, capture.voltageSeries, LV_CHART_POINT_NONE);
+    lv_chart_set_all_value(capture.currentChart, capture.currentSeries, LV_CHART_POINT_NONE);
+    resetRawCaptureFrame(capture.voltageFrame);
+    resetRawCaptureFrame(capture.currentFrame);
+    lv_chart_refresh(capture.voltageChart);
+    lv_chart_refresh(capture.currentChart);
+
+    if (!rawCaptureAvailable()) {
+        lv_label_set_text(capture.statusLabel, "Raw capture unavailable for this source");
+        return;
+    }
+    sensors::Reading latest{};
+    if (sensors::getLatest(static_cast<sensors::SensorId>(sensor), latest) &&
+        !sensors::isConfigured(latest)) {
+        lv_label_set_text(capture.statusLabel, "This sensor is not configured");
+        return;
+    }
+    capture.ownsRequest = sensors::requestAdcCapture(
+        static_cast<sensors::SensorId>(sensor), capture.requestId);
+    if (!capture.ownsRequest) {
+        lv_label_set_text(capture.statusLabel, "Another capture is already active");
+        return;
+    }
+    lv_label_set_text(capture.statusLabel, "Waiting for the next 500 ms window...");
+}
+
+void openRawCaptureCb(lv_event_t* event) {
+    auto* tab = static_cast<SensorTab*>(lv_event_get_user_data(event));
+    if (tab) beginRawCapture(*tab);
+}
+
+void closeRawCaptureCb(lv_event_t* event) {
+    auto* tab = static_cast<SensorTab*>(lv_event_get_user_data(event));
+    if (tab) closeRawCapture(*tab);
+}
+
+void closeRawCapture(SensorTab& tab) {
+    auto& capture = tab.capture;
+    if (!capture.visible) return;
+    if (capture.ownsRequest) sensors::cancelAdcCapture(capture.requestId);
+    capture.ownsRequest = false;
+    capture.requestId = 0;
+    capture.visible = false;
+    lv_chart_set_point_count(capture.voltageChart, 2);
+    lv_chart_set_point_count(capture.currentChart, 2);
+    lv_chart_set_all_value(capture.voltageChart, capture.voltageSeries, LV_CHART_POINT_NONE);
+    lv_chart_set_all_value(capture.currentChart, capture.currentSeries, LV_CHART_POINT_NONE);
+    resetRawCaptureFrame(capture.voltageFrame);
+    resetRawCaptureFrame(capture.currentFrame);
+    lv_obj_add_flag(capture.root, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(tab.kpiBlock, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(tab.chartsColumn, LV_OBJ_FLAG_HIDDEN);
+}
+
+void createRawCaptureView(lv_obj_t* parent, SensorTab& tab, uint8_t sensor) {
+    auto& capture = tab.capture;
+    capture.root = lv_obj_create(parent);
+    styleFlatContainer(capture.root);
+    lv_obj_set_size(capture.root, lv_pct(100), 0);
+    lv_obj_set_flex_grow(capture.root, 1);
+    lv_obj_set_flex_flow(capture.root, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(capture.root, 3, 0);
+
+    lv_obj_t* header = lv_obj_create(capture.root);
+    styleFlatContainer(header);
+    lv_obj_set_size(header, lv_pct(100), 30);
+    lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(header, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    lv_obj_t* back = lv_label_create(header);
+    lv_label_set_text(back, LV_SYMBOL_LEFT);
+    lv_obj_set_size(back, 36, 30);
+    lv_obj_set_style_pad_top(back, 5, 0);
+    lv_obj_set_style_text_align(back, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(back, &lv_font_montserrat_20, 0);
+    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(back, closeRawCaptureCb, LV_EVENT_CLICKED, &tab);
+
+    lv_obj_t* title = lv_label_create(header);
+    char titleText[24];
+    snprintf(titleText, sizeof(titleText), "%s Raw", sensorName(sensor));
+    lv_label_set_text(title, titleText);
+    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
+
+    lv_obj_t* refresh = lv_label_create(header);
+    lv_label_set_text(refresh, LV_SYMBOL_REFRESH);
+    lv_obj_set_size(refresh, 36, 30);
+    lv_obj_set_style_pad_top(refresh, 5, 0);
+    lv_obj_set_style_text_align(refresh, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(refresh, &lv_font_montserrat_20, 0);
+    lv_obj_add_flag(refresh, LV_OBJ_FLAG_CLICKABLE);
+    lv_obj_add_event_cb(refresh, openRawCaptureCb, LV_EVENT_CLICKED, &tab);
+
+    capture.statusLabel = lv_label_create(capture.root);
+    lv_obj_set_width(capture.statusLabel, lv_pct(100));
+    lv_obj_set_style_text_align(capture.statusLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(capture.statusLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(capture.statusLabel, ui_theme::mutedText(), 0);
+
+    capture.windowStateLabel = lv_label_create(capture.root);
+    lv_obj_set_width(capture.windowStateLabel, lv_pct(100));
+    lv_label_set_long_mode(capture.windowStateLabel, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_align(capture.windowStateLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(capture.windowStateLabel, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(capture.windowStateLabel, ui_theme::mutedText(), 0);
+
+    capture.voltageChart = createRawCaptureChart(
+        capture.root, lv_palette_main(LV_PALETTE_BLUE), "V", capture.voltageFrame,
+        &capture.voltageTitle, &capture.voltageSeries);
+    capture.currentChart = createRawCaptureChart(
+        capture.root, lv_palette_main(LV_PALETTE_ORANGE), "A", capture.currentFrame,
+        &capture.currentTitle, &capture.currentSeries);
+
+    capture.summaryLabel = lv_label_create(capture.root);
+    lv_obj_set_width(capture.summaryLabel, lv_pct(100));
+    lv_label_set_long_mode(capture.summaryLabel, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_align(capture.summaryLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(capture.summaryLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(capture.summaryLabel, ui_theme::mutedText(), 0);
+    lv_obj_add_flag(capture.root, LV_OBJ_FLAG_HIDDEN);
+}
+
 lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     lv_obj_set_style_bg_color(tabParent, ui_theme::background(), 0);
     lv_obj_set_style_bg_opa(tabParent, LV_OPA_COVER, 0);
@@ -903,26 +1363,61 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     t.contentRoot = tab;
 
     // --- KPI row -----------------------------------------------------------
-    t.kpiRow = lv_obj_create(tab);
+    // Voltage and current live in their chart headings. Keep this strip for
+    // power, conditional duty, a flexible warning, and the capture action.
+    t.kpiBlock = lv_obj_create(tab);
+    styleFlatContainer(t.kpiBlock);
+    lv_obj_set_size(t.kpiBlock, lv_pct(100), 30);
+    lv_obj_clear_flag(t.kpiBlock, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(t.kpiBlock, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_flex_flow(t.kpiBlock, LV_FLEX_FLOW_COLUMN);
+
+    t.kpiRow = lv_obj_create(t.kpiBlock);
     styleFlatContainer(t.kpiRow);
     lv_obj_set_size(t.kpiRow, lv_pct(100), 30);
+    lv_obj_clear_flag(t.kpiRow, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_scrollbar_mode(t.kpiRow, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_style_border_width(t.kpiRow, 0, 0);
     lv_obj_set_style_pad_all(t.kpiRow, 0, 0);
-    lv_obj_set_style_pad_column(t.kpiRow, 14, 0);
+    lv_obj_set_style_pad_column(t.kpiRow, 4, 0);
     lv_obj_set_flex_flow(t.kpiRow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(t.kpiRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-    createKpiItem(t.kpiRow, "V", 54, &t.vValueLabel);
-    createKpiItem(t.kpiRow, "A", 54, &t.iValueLabel);
-    createKpiItem(t.kpiRow, "W", 48, &t.pValueLabel);
+    createKpiItem(t.kpiRow, "W", 64, &t.pValueLabel);
     lv_label_set_text(t.pValueLabel, "--");
-    t.dutyRow = createKpiItem(t.kpiRow, "%", 32, &t.dutyValueLabel);
+    t.dutyRow = createKpiItem(t.kpiRow, "%", 48, &t.dutyValueLabel);
+
     t.statusLabel = lv_label_create(t.kpiRow);
+    lv_obj_set_width(t.statusLabel, 0);
     lv_obj_set_flex_grow(t.statusLabel, 1);
+    lv_label_set_long_mode(t.statusLabel, LV_LABEL_LONG_CLIP);
     lv_obj_set_style_text_align(t.statusLabel, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_style_text_font(t.statusLabel, &lv_font_montserrat_12, 0);
-    lv_obj_set_style_text_color(t.statusLabel, ui_theme::mutedText(), 0);
-    lv_label_set_text(t.statusLabel, "Waiting");
+    lv_obj_set_style_text_font(t.statusLabel, &lv_font_montserrat_10, 0);
+    lv_obj_set_style_text_color(
+        t.statusLabel, lv_palette_main(LV_PALETTE_AMBER), 0);
+    lv_label_set_text(t.statusLabel, LV_SYMBOL_WARNING " Waiting");
+    t.captureButton = lv_btn_create(t.kpiRow);
+    lv_obj_set_size(t.captureButton, 42, 24);
+    lv_obj_set_style_pad_all(t.captureButton, 0, 0);
+    lv_obj_set_style_radius(t.captureButton, 5, 0);
+    lv_obj_set_style_shadow_width(t.captureButton, 0, 0);
+    lv_obj_set_style_bg_color(t.captureButton, ui_theme::surfaceAlt(), 0);
+    lv_obj_set_style_bg_opa(t.captureButton, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(t.captureButton, 1, 0);
+    lv_obj_set_style_border_color(t.captureButton, ui_theme::accent(), 0);
+    lv_obj_set_style_text_color(t.captureButton, ui_theme::accent(), 0);
+    lv_obj_set_style_bg_color(
+        t.captureButton, ui_theme::accent(), LV_STATE_PRESSED);
+    lv_obj_set_style_text_color(
+        t.captureButton, lv_color_white(), LV_STATE_PRESSED);
+    lv_obj_add_event_cb(t.captureButton, openRawCaptureCb, LV_EVENT_CLICKED, &t);
+    lv_obj_t* captureLabel = lv_label_create(t.captureButton);
+    lv_label_set_text(captureLabel, "Raw");
+    lv_obj_set_style_text_font(captureLabel, &lv_font_montserrat_12, 0);
+    lv_obj_center(captureLabel);
+    // Reveal only after the update loop has confirmed this channel is
+    // configured for the active ADC source.
+    lv_obj_add_flag(t.captureButton, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(t.dutyRow, LV_OBJ_FLAG_HIDDEN); // hidden until it's seen below threshold
 
     t.calibrationHeader = lv_obj_create(tab);
@@ -1005,10 +1500,16 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
 
     t.vFrame.range = &t.vRange;
     t.iFrame.range = &t.iRange;
-    t.vChart = createChartBlock(t.chartsColumn, "Voltage (V)", lv_palette_main(LV_PALETTE_BLUE),
-                                 &t.vBlock, &t.vEditIcon, &t.vFrame, &kVoltageAxisScale, &t.vSeries, &t, sensors::calibration::Measurement::Voltage);
-    t.iChart = createChartBlock(t.chartsColumn, "Current (A)", lv_palette_main(LV_PALETTE_ORANGE),
-                                 &t.iBlock, &t.iEditIcon, &t.iFrame, &kCurrentAxisScale, &t.iSeries, &t, sensors::calibration::Measurement::Current);
+    t.vChart = createChartBlock(t.chartsColumn, "Voltage", "V",
+                                 lv_palette_main(LV_PALETTE_BLUE), &t.vBlock,
+                                 &t.vValueLabel, &t.vEditIcon, &t.vFrame,
+                                 &kVoltageAxisScale, &t.vSeries, &t,
+                                 sensors::calibration::Measurement::Voltage);
+    t.iChart = createChartBlock(t.chartsColumn, "Current", "A",
+                                 lv_palette_main(LV_PALETTE_ORANGE), &t.iBlock,
+                                 &t.iValueLabel, &t.iEditIcon, &t.iFrame,
+                                 &kCurrentAxisScale, &t.iSeries, &t,
+                                 sensors::calibration::Measurement::Current);
     t.vPreviewSeries = lv_chart_add_series(t.vChart, lv_palette_main(LV_PALETTE_ORANGE), LV_CHART_AXIS_PRIMARY_Y);
     t.iPreviewSeries = lv_chart_add_series(t.iChart, lv_palette_main(LV_PALETTE_ORANGE), LV_CHART_AXIS_PRIMARY_Y);
     lv_chart_hide_series(t.vChart, t.vPreviewSeries, true);
@@ -1070,12 +1571,62 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Read
     if (appended) lv_chart_refresh(editor.activeChart);
 }
 
+void updateRawCaptureViews() {
+    for (uint8_t sensor = 0; sensor < sensors::SENSOR_COUNT; ++sensor) {
+        SensorTab& tab = sensorTabs[sensor];
+        auto& capture = tab.capture;
+        if (!capture.visible || !capture.ownsRequest) continue;
+
+        const sensors::AdcCaptureStatus status = sensors::getAdcCaptureStatus();
+        if (status.captureId != capture.requestId ||
+            status.channel != static_cast<sensors::SensorId>(sensor)) {
+            capture.ownsRequest = false;
+            capture.requestId = 0;
+            lv_label_set_text(capture.statusLabel, "Capture expired or was replaced");
+            continue;
+        }
+        if (status.state == sensors::AdcCaptureState::Armed) {
+            lv_label_set_text(capture.statusLabel, "Waiting for the next 500 ms window...");
+            continue;
+        }
+        if (status.state == sensors::AdcCaptureState::Capturing) {
+            char progress[64];
+            snprintf(progress, sizeof(progress), "Capturing... %u/%u windows  %u samples",
+                     status.windowCount, status.targetWindowCount, status.pointCount);
+            lv_label_set_text(capture.statusLabel, progress);
+            continue;
+        }
+        if (status.state == sensors::AdcCaptureState::Ready) {
+            auto* result = static_cast<sensors::AdcCaptureResult*>(
+                heap_policy::mallocPreferred(sizeof(sensors::AdcCaptureResult)));
+            if (!result) {
+                lv_label_set_text(capture.statusLabel, "Not enough memory to display capture");
+                continue;
+            }
+            if (sensors::takeAdcCapture(capture.requestId, *result)) {
+                showRawCaptureResult(tab, *result);
+            } else {
+                capture.ownsRequest = false;
+                capture.requestId = 0;
+                lv_label_set_text(capture.statusLabel, "Capture result unavailable");
+            }
+            heap_caps_free(result);
+            continue;
+        }
+
+        capture.ownsRequest = false;
+        capture.requestId = 0;
+        lv_label_set_text(capture.statusLabel, "Capture stopped");
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Update loop
 // ---------------------------------------------------------------------------
 
 void updateCb(lv_timer_t* timer) {
     if (timer && timer->user_data && !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
+    updateRawCaptureViews();
     sensors::Reading readings[kChartPoints];
 
     for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
@@ -1084,6 +1635,11 @@ void updateCb(lv_timer_t* timer) {
 
         SensorTab& tab = sensorTabs[i];
         const sensors::Reading& latest = readings[n - 1];
+        if (rawCaptureAvailable() && sensors::isConfigured(latest)) {
+            lv_obj_clear_flag(tab.captureButton, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(tab.captureButton, LV_OBJ_FLAG_HIDDEN);
+        }
 
         size_t start = findStartAndAdvance(readings, n, tab.lastTimestamp, tab.primed);
         for (size_t k = start; k < n; k++) {
@@ -1158,7 +1714,13 @@ void updateCb(lv_timer_t* timer) {
                 case sensors::ReadingState::Stale: state = "Stale"; break;
                 case sensors::ReadingState::Valid: break;
             }
-            lv_label_set_text(tab.statusLabel, state);
+            char status[32];
+            if (state[0]) {
+                snprintf(status, sizeof(status), LV_SYMBOL_WARNING " %s", state);
+            } else {
+                status[0] = '\0';
+            }
+            lv_label_set_text(tab.statusLabel, status);
             tab.lastKpiTimestamp = latest.timestamp_ms;
             tab.kpiPrimed = true;
         }

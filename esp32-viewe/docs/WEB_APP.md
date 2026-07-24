@@ -76,9 +76,10 @@ python3 tools/discover_device.py --host 192.168.1.217
 ```
 
 `--host` is the deterministic fallback when the serial monitor has supplied an
-IP or the development machine does not resolve `.local` names. The helper uses
-`avahi-browse` when present and then attempts the configured `meter1.local`
-fallback; change `--hostname` for a renamed meter.
+IP or the LAN blocks multicast. The helper uses `avahi-browse` when present and
+then its dependency-free direct mDNS resolver for the configured
+`meter1.local` fallback; change `--hostname` for a renamed meter. Resolve known
+names directly with `python3 tools/mdns_resolver.py meter1 sensor1`.
 
 ## Serving and browser cache policy
 
@@ -168,6 +169,29 @@ and the active source's gain/offset/defaults. Calibration writes use
 `POST /api/v1/sensors/calibration`; unwired channels and non-calibrated sources
 are rejected. Demo reports `transport: null` rather than inventing connection
 semantics.
+
+Physical ADC modes also expose the shared on-demand acquisition capture:
+
+- `POST /api/v1/sensors/capture` with `{"channel":"in"}` (or `out`/`aux`)
+  arms capture at the next 500 ms reducer boundary and returns `capture_id`;
+- `GET /api/v1/sensors/capture` reports the bounded
+  `idle | armed | capturing | ready` lifecycle and current ID;
+- `GET /api/v1/sensors/capture/data?id=<capture_id>` transfers and releases the
+  completed versioned binary result;
+- `DELETE /api/v1/sensors/capture?id=<capture_id>` cancels that exact request.
+
+Only one capture can be active or awaiting transfer. It contains the selected
+channel's exact calibrated V/A/W observations and three corresponding
+production reducer windows; it does not initiate separate ADC reads. The
+self-describing header includes requested/measured intervals, point/window
+sizes, duration, and dropped-point count. Each window also carries its
+configured/reading/duty state, so a rejected finite observation is never
+presented as eligible production data. Active requests expire after 10 seconds
+and unclaimed ready results after 30 seconds. Generation-checked take/cancel
+operations prevent a stale display or browser from affecting a newer capture.
+`web/src/lib/api.js` is the normative binary parser. The Sensors page starts
+this flow with **View Raw**, switches to a focused capture view, and offers an
+explicit repeat capture.
 
 The V4 binary frame is exactly 84 bytes, packed and little-endian; do not map a
 future C++ struct directly in browser code. Each new connection receives the

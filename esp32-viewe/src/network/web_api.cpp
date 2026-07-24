@@ -191,6 +191,219 @@ void appendJsonFloat(String& json, float value) {
     else json += String(value, 4);
 }
 
+void writeU16(uint8_t* destination, uint16_t value) {
+    destination[0] = static_cast<uint8_t>(value);
+    destination[1] = static_cast<uint8_t>(value >> 8);
+}
+
+void writeU32(uint8_t* destination, uint32_t value) {
+    destination[0] = static_cast<uint8_t>(value);
+    destination[1] = static_cast<uint8_t>(value >> 8);
+    destination[2] = static_cast<uint8_t>(value >> 16);
+    destination[3] = static_cast<uint8_t>(value >> 24);
+}
+
+void writeF32(uint8_t* destination, float value) {
+    uint32_t bits = 0;
+    static_assert(sizeof(bits) == sizeof(value));
+    memcpy(&bits, &value, sizeof(bits));
+    writeU32(destination, bits);
+}
+
+constexpr uint32_t kAdcCaptureMagic = 0x31434441; // "ADC1" little endian
+constexpr size_t kAdcCaptureHeaderBytes = 32;
+constexpr size_t kAdcCaptureWindowBytes = 32;
+constexpr size_t kAdcCapturePointBytes = 16;
+
+const char* adcCaptureChannelName(sensors::SensorId channel) {
+    switch (channel) {
+        case sensors::SENSOR_IN: return "in";
+        case sensors::SENSOR_OUT: return "out";
+        case sensors::SENSOR_AUX: return "aux";
+        default: return "in";
+    }
+}
+
+bool parseAdcCaptureChannel(const String& value, sensors::SensorId& channel) {
+    if (value == "in") channel = sensors::SENSOR_IN;
+    else if (value == "out") channel = sensors::SENSOR_OUT;
+    else if (value == "aux") channel = sensors::SENSOR_AUX;
+    else return false;
+    return true;
+}
+
+bool parseAdcCaptureId(uint32_t& captureId) {
+    if (!server->hasArg("id")) return false;
+    const String value = server->arg("id");
+    if (value.isEmpty()) return false;
+    uint32_t parsed = 0;
+    for (size_t i = 0; i < value.length(); ++i) {
+        const char digit = value[i];
+        if (digit < '0' || digit > '9') return false;
+        const uint8_t number = static_cast<uint8_t>(digit - '0');
+        if (parsed > (UINT32_MAX - number) / 10U) return false;
+        parsed = parsed * 10U + number;
+    }
+    if (parsed == 0) return false;
+    captureId = parsed;
+    return true;
+}
+
+void encodeAdcCaptureHeader(uint8_t* out, const sensors::AdcCaptureResult& capture) {
+    memset(out, 0, kAdcCaptureHeaderBytes);
+    writeU32(out, kAdcCaptureMagic);
+    out[4] = 1;
+    out[5] = 1;
+    writeU16(out + 6, kAdcCaptureHeaderBytes +
+        capture.windowCount * kAdcCaptureWindowBytes);
+    writeU16(out + 8, capture.pointCount);
+    out[10] = capture.windowCount;
+    out[11] = sensors::kAdcCaptureWindowCount;
+    writeU32(out + 12, capture.requestedIntervalUs);
+    writeU32(out + 16, capture.measuredIntervalUs);
+    writeU16(out + 20, capture.droppedPoints);
+    out[22] = static_cast<uint8_t>(capture.channel);
+    const uint32_t durationUs = capture.windowCount
+        ? capture.windows[capture.windowCount - 1].endUs : 0;
+    writeU32(out + 24, durationUs);
+    writeU16(out + 28, kAdcCapturePointBytes);
+    writeU16(out + 30, kAdcCaptureWindowBytes);
+}
+
+void encodeAdcCaptureWindow(uint8_t* out, const sensors::AdcCaptureWindow& window) {
+    memset(out, 0, kAdcCaptureWindowBytes);
+    writeU32(out, window.startUs);
+    writeU32(out + 4, window.endUs);
+    writeU16(out + 8, window.firstPoint);
+    writeU16(out + 10, window.pointCount);
+    out[12] = static_cast<uint8_t>(window.reading.state);
+    out[13] = window.reading.configured ? 1 : 0;
+    out[14] = static_cast<uint8_t>(window.reading.dutyState);
+    writeF32(out + 16, window.reading.voltage);
+    writeF32(out + 20, window.reading.current);
+    writeF32(out + 24, window.reading.power);
+    writeF32(out + 28, window.reading.dutyState == sensors::DutyState::Valid
+        ? window.reading.dutyCycle : NAN);
+}
+
+void encodeAdcCapturePoint(uint8_t* out, const sensors::AdcCapturePoint& point) {
+    writeU32(out, point.elapsedUs);
+    writeF32(out + 4, point.voltage);
+    writeF32(out + 8, point.current);
+    writeF32(out + 12, point.power);
+}
+
+void webAdcCapture() {
+    if (server->method() == HTTP_DELETE) {
+        uint32_t captureId = 0;
+        if (!parseAdcCaptureId(captureId)) {
+            server->send(400, "application/json",
+                         "{\"error\":\"A valid capture id is required\"}");
+            return;
+        }
+        if (!sensors::cancelAdcCapture(captureId)) {
+            server->send(409, "application/json",
+                         "{\"error\":\"Capture id is no longer active\"}");
+            return;
+        }
+        server->sendHeader("Cache-Control", "no-store");
+        server->send(200, "application/json", "{\"state\":\"idle\"}");
+        return;
+    }
+
+    if (server->method() == HTTP_POST) {
+        const sensor_mode::Mode mode = sensor_mode::get();
+        if (mode != sensor_mode::Mode::Adc && mode != sensor_mode::Mode::Ads1115) {
+            server->send(409, "application/json",
+                         "{\"error\":\"An ADC sensor mode is not active\"}");
+            return;
+        }
+        String requestedChannel;
+        sensors::SensorId channel = sensors::SENSOR_IN;
+        if (!http_utils::jsonString(server->arg("plain"), "channel", requestedChannel) ||
+            !parseAdcCaptureChannel(requestedChannel, channel)) {
+            server->send(400, "application/json",
+                         "{\"error\":\"channel must be in, out, or aux\"}");
+            return;
+        }
+        uint32_t captureId = 0;
+        if (!sensors::requestAdcCapture(channel, captureId)) {
+            const sensors::AdcCaptureStatus status = sensors::getAdcCaptureStatus();
+            if (status.state == sensors::AdcCaptureState::Idle) {
+                server->send(503, "application/json",
+                             "{\"error\":\"Not enough memory to start capture\"}");
+            } else {
+                server->send(409, "application/json",
+                             "{\"error\":\"A capture is already pending or ready\"}");
+            }
+            return;
+        }
+        server->sendHeader("Cache-Control", "no-store");
+        char response[128];
+        snprintf(response, sizeof(response),
+                 "{\"state\":\"armed\",\"capture_id\":%lu,\"channel\":\"%s\",\"windows\":3}",
+                 static_cast<unsigned long>(captureId), adcCaptureChannelName(channel));
+        server->send(202, "application/json", response);
+        return;
+    }
+
+    const sensors::AdcCaptureStatus status = sensors::getAdcCaptureStatus();
+    char response[224];
+    snprintf(response, sizeof(response),
+             "{\"state\":\"%s\",\"capture_id\":%lu,\"channel\":\"%s\",\"points\":%u,"
+             "\"windows\":%u,\"target_windows\":%u,\"dropped_points\":%u}",
+             sensors::adcCaptureStateName(status.state),
+             static_cast<unsigned long>(status.captureId),
+             adcCaptureChannelName(status.channel), status.pointCount,
+             status.windowCount, status.targetWindowCount, status.droppedPoints);
+    server->sendHeader("Cache-Control", "no-store");
+    server->send(200, "application/json", response);
+}
+
+void webAdcCaptureData() {
+    uint32_t captureId = 0;
+    if (!parseAdcCaptureId(captureId)) {
+        server->send(400, "application/json",
+                     "{\"error\":\"A valid capture id is required\"}");
+        return;
+    }
+    auto* capture = static_cast<sensors::AdcCaptureResult*>(
+        heap_policy::mallocPreferred(sizeof(sensors::AdcCaptureResult)));
+    if (!capture) {
+        server->send(503, "application/json",
+                     "{\"error\":\"Not enough memory to transfer capture\"}");
+        return;
+    }
+    if (!sensors::takeAdcCapture(captureId, *capture)) {
+        heap_caps_free(capture);
+        server->send(409, "application/json",
+                     "{\"error\":\"Capture is not ready\"}");
+        return;
+    }
+
+    const size_t responseBytes = kAdcCaptureHeaderBytes +
+        capture->windowCount * kAdcCaptureWindowBytes +
+        capture->pointCount * kAdcCapturePointBytes;
+    server->sendHeader("Cache-Control", "no-store");
+    server->setContentLength(responseBytes);
+    server->send(200, "application/vnd.viewe.adc-capture-v1", "");
+    WiFiClient client = server->client();
+    client.setConnectionTimeout(1500);
+
+    uint8_t encoded[kAdcCaptureWindowBytes];
+    encodeAdcCaptureHeader(encoded, *capture);
+    bool sent = http_utils::writeClient(client, encoded, kAdcCaptureHeaderBytes);
+    for (uint8_t i = 0; sent && i < capture->windowCount; ++i) {
+        encodeAdcCaptureWindow(encoded, capture->windows[i]);
+        sent = http_utils::writeClient(client, encoded, kAdcCaptureWindowBytes);
+    }
+    for (uint16_t i = 0; sent && i < capture->pointCount; ++i) {
+        encodeAdcCapturePoint(encoded, capture->points[i]);
+        sent = http_utils::writeClient(client, encoded, kAdcCapturePointBytes);
+    }
+    heap_caps_free(capture);
+}
+
 bool calibrationSourceForMode(sensor_mode::Mode mode, sensors::calibration::Source& source) {
     if (mode == sensor_mode::Mode::Adc) {
         source = sensors::calibration::Source::Esp32Adc;
@@ -1082,6 +1295,10 @@ void registerRoutes(WebServer& value) {
     server->on("/api/v1/web/status", HTTP_GET, webStatus);
     server->on("/api/v1/sensors", HTTP_GET, webSensors);
     server->on("/api/v1/sensors/calibration", HTTP_POST, webSensorCalibration);
+    server->on("/api/v1/sensors/capture", HTTP_GET, webAdcCapture);
+    server->on("/api/v1/sensors/capture", HTTP_POST, webAdcCapture);
+    server->on("/api/v1/sensors/capture", HTTP_DELETE, webAdcCapture);
+    server->on("/api/v1/sensors/capture/data", HTTP_GET, webAdcCaptureData);
     server->on("/api/v1/setup", HTTP_GET, webSetup);
     server->on("/api/v1/setup", HTTP_POST, webSetup);
     server->on("/api/v1/wifi", HTTP_GET, webWifi);
