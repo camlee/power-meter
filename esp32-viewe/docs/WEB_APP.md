@@ -313,6 +313,9 @@ manual-refresh only. Queries remain asynchronous and hidden views do no work.
   an unbounded backlog.
 - Remote viewer: uses full-resolution BMP snapshots. A 320×480 capture uses
   about 450 KiB of temporary PSRAM and is rate-limited to four captures/second.
+- Debug telemetry reports the LVGL task's configured stack and minimum free
+  bytes observed since boot on touchscreen targets; web-first targets report
+  `lvgl_stack: null`.
 - History remains an asynchronous, bounded job in `history_query_service`;
   do not add a handler that scans files synchronously on the network/LVGL path.
 

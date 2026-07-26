@@ -875,6 +875,16 @@ bool lvgl_port_unlock(void)
     return true;
 }
 
+size_t lvgl_port_stack_size_bytes(void)
+{
+    return LVGL_PORT_TASK_STACK_SIZE;
+}
+
+size_t lvgl_port_stack_minimum_free_bytes(void)
+{
+    return lvgl_task_handle ? uxTaskGetStackHighWaterMark(lvgl_task_handle) : 0;
+}
+
 const uint8_t* lvgl_port_get_remote_framebuffer(uint16_t* width, uint16_t* height)
 {
     if (width) *width = remote_framebuffer_width;

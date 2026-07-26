@@ -46,7 +46,7 @@
  */
 #define LVGL_PORT_TASK_MAX_DELAY_MS             (500)       // The maximum delay of the LVGL timer task, in milliseconds
 #define LVGL_PORT_TASK_MIN_DELAY_MS             (2)         // The minimum delay of the LVGL timer task, in milliseconds
-#define LVGL_PORT_TASK_STACK_SIZE               (6 * 1024)  // The stack size of the LVGL timer task, in bytes
+#define LVGL_PORT_TASK_STACK_SIZE               (8 * 1024)  // The stack size of the LVGL timer task, in bytes
 #define LVGL_PORT_TASK_PRIORITY                 (2)         // The priority of the LVGL timer task
 #ifdef ARDUINO_RUNNING_CORE
 #define LVGL_PORT_TASK_CORE                     (ARDUINO_RUNNING_CORE)  // Valid if using Arduino
@@ -168,6 +168,11 @@ bool lvgl_port_lock(int timeout_ms);
  * @return true if success, otherwise false
  */
 bool lvgl_port_unlock(void);
+
+// Stack size and minimum free space observed since the LVGL task started.
+// ESP-IDF reports the high-water mark in bytes.
+size_t lvgl_port_stack_size_bytes(void);
+size_t lvgl_port_stack_minimum_free_bytes(void);
 
 // Valid while the caller holds lvgl_port_lock(). Returns a RGB565 shadow of
 // the pixels sent to SPI/QSPI panels; RGB panels may expose their framebuffer.

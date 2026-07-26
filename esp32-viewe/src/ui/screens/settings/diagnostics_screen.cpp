@@ -6,6 +6,7 @@
 #include <esp_heap_caps.h>
 #include <esp_system.h>
 #include "data/history_query_service.h"
+#include "lvgl_v8_port.h"
 #include "network/ota_service.h"
 #include "../../theme/ui_theme.h"
 
@@ -14,6 +15,7 @@ namespace {
 
 lv_obj_t* internalMemoryLabel = nullptr;
 lv_obj_t* psramMemoryLabel = nullptr;
+lv_obj_t* lvglStackLabel = nullptr;
 lv_obj_t* storageLabel = nullptr;
 lv_obj_t* otaHealthLabel = nullptr;
 lv_obj_t* otaSlotLabel = nullptr;
@@ -84,6 +86,10 @@ void updateCb(lv_timer_t* timer) {
     snprintf(buffer, sizeof(buffer), "%u%% used; max %uK", psramUsedPercent,
              static_cast<unsigned>(psramLargest / 1024));
     lv_label_set_text(psramMemoryLabel, buffer);
+    snprintf(buffer, sizeof(buffer), "min %u B free / %u B",
+             static_cast<unsigned>(lvgl_port_stack_minimum_free_bytes()),
+             static_cast<unsigned>(lvgl_port_stack_size_bytes()));
+    lv_label_set_text(lvglStackLabel, buffer);
 
     const size_t total = LittleFS.totalBytes();
     if (total == 0) {
@@ -149,6 +155,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     addRow(list, "Last reset", resetReasonStr(esp_reset_reason()));
     internalMemoryLabel = addRow(list, "Internal heap", "--");
     psramMemoryLabel = addRow(list, "PSRAM heap", "--");
+    lvglStackLabel = addRow(list, "LVGL stack", "--");
     storageLabel = addRow(list, "Data storage", "--");
     otaHealthLabel = addRow(list, "OTA", "--");
     otaSlotLabel = addRow(list, "OTA slots", "--");

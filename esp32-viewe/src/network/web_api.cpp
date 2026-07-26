@@ -34,6 +34,10 @@
 #include "sensors/sensors.h"
 #include "time/time_service.h"
 
+#if POWER_METER_HAS_TOUCH_UI
+#include "lvgl_v8_port.h"
+#endif
+
 namespace web_api {
 namespace {
 
@@ -844,7 +848,7 @@ void webDebug() {
     history_query_service::getTiming(timing);
 
     String response;
-    response.reserve(1050);
+    response.reserve(1150);
     response = String("{\"api_version\":1,\"lvgl\":\"") + display_web_api::lvglVersion() +
         "\",\"sdk\":\"" + ESP.getSdkVersion() +
         "\",\"chip\":\"" + ESP.getChipModel() + " rev " + ESP.getChipRevision() +
@@ -856,7 +860,14 @@ void webDebug() {
         "},\"psram_heap\":{\"used_percent\":" +
         (psramTotal ? ((psramTotal - psramFree) * 100 + psramTotal / 2) / psramTotal : 0) +
         ",\"largest_free_kb\":" + (heap_caps_get_largest_free_block(kPsramCaps) / 1024) +
-        "},\"storage\":{\"mounted\":" + (storageTotal ? "true" : "false") +
+        "},\"lvgl_stack\":";
+#if POWER_METER_HAS_TOUCH_UI
+    response += String("{\"size_bytes\":") + lvgl_port_stack_size_bytes() +
+        ",\"minimum_free_bytes\":" + lvgl_port_stack_minimum_free_bytes() + "}";
+#else
+    response += "null";
+#endif
+    response += String(",\"storage\":{\"mounted\":") + (storageTotal ? "true" : "false") +
         ",\"used_kb\":" + (LittleFS.usedBytes() / 1024) + ",\"total_kb\":" +
         (storageTotal / 1024) + "},\"ota\":{\"health\":\"" + ota_service::healthStatus() +
         "\",\"validation_remaining_ms\":" + validationRemaining + ",\"running_slot\":\"" +

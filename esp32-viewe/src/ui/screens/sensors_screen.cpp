@@ -231,6 +231,7 @@ struct SensorTab {
 SensorTab sensorTabs[sensors::SENSOR_COUNT];
 
 lv_timer_t* updateTimer = nullptr;
+lv_timer_t* captureUpdateTimer = nullptr;
 
 enum class CalibrationAction : uint8_t {
     Back, OffsetDown, OffsetUp, GainDown, GainUp, AutoZero, CalculateGain,
@@ -254,8 +255,10 @@ bool rawCaptureAvailable() {
     return mode == sensor_mode::Mode::Adc || mode == sensor_mode::Mode::Ads1115;
 }
 
-void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Reading* readings = nullptr,
-                             size_t n = 0, bool appendPoint = false);
+void updateCalibrationEditor(SensorTab& tab, uint8_t sensor,
+                             const sensors::Reading* readings, size_t n,
+                             bool appendPoint);
+void refreshCalibrationEditor(SensorTab& tab, uint8_t sensor);
 void refreshCalibrationInputs(SensorTab::CalibrationEditor& editor);
 void openVoltageCalibrationCb(lv_event_t* event);
 void openCurrentCalibrationCb(lv_event_t* event);
@@ -325,7 +328,7 @@ void finishCalibrationKeyboard(SensorTab::CalibrationEditor& editor, bool confir
     if (editor.activeBlock) lv_obj_clear_flag(editor.activeBlock, LV_OBJ_FLAG_HIDDEN);
     if (editor.actionRow) lv_obj_clear_flag(editor.actionRow, LV_OBJ_FLAG_HIDDEN);
     refreshCalibrationInputs(editor);
-    updateCalibrationEditor(tab, editor.sensor);
+    refreshCalibrationEditor(tab, editor.sensor);
 }
 
 void hideCalibrationKeyboard(lv_event_t* event) {
@@ -376,7 +379,7 @@ void calibrationInputChangedCb(lv_event_t* event) {
     if (!end || end == lv_textarea_get_text(static_cast<lv_obj_t*>(lv_event_get_target(event))) || *end != '\0') return;
     if (lv_event_get_target(event) == editor->offsetInput) editor->staged.offsetInputV = value;
     else if (lv_event_get_target(event) == editor->gainInput && value > 0.0f) editor->staged.gain = 1000.0f / value;
-    updateCalibrationEditor(sensorTabs[editor->sensor], editor->sensor);
+    refreshCalibrationEditor(sensorTabs[editor->sensor], editor->sensor);
 }
 
 void calibrationControlCb(lv_event_t* event) {
@@ -435,7 +438,7 @@ void calibrationControlCb(lv_event_t* event) {
                                       editor.measurement, editor.staged)) editor.saved = editor.staged;
     }
     refreshCalibrationInputs(editor);
-    updateCalibrationEditor(tab, sensor);
+    refreshCalibrationEditor(tab, sensor);
 }
 
 void closeCalibration(SensorTab& tab) {
@@ -1525,19 +1528,11 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     return tab;
 }
 
-void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Reading* suppliedReadings,
-                             size_t suppliedCount, bool appendPoint) {
+void updateCalibrationEditor(SensorTab& tab, uint8_t sensor,
+                             const sensors::Reading* readings, size_t n,
+                             bool appendPoint) {
     auto& editor = tab.calibration;
-    if (!editor.visible) return;
-
-    sensors::Reading local[kChartPoints];
-    const sensors::Reading* readings = suppliedReadings;
-    size_t n = suppliedCount;
-    if (!readings) {
-        n = sensors::getRecent(static_cast<sensors::SensorId>(sensor), local, kChartPoints);
-        readings = local;
-    }
-    if (n == 0) return;
+    if (!editor.visible || !readings || n == 0) return;
 
     const bool voltage = editor.measurement == sensors::calibration::Measurement::Voltage;
     const auto inputFor = [&](const sensors::Reading& reading) {
@@ -1569,6 +1564,17 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor, const sensors::Read
         appended = true;
     }
     if (appended) lv_chart_refresh(editor.activeChart);
+}
+
+void refreshCalibrationEditor(SensorTab& tab, uint8_t sensor) {
+    // This snapshot path is used by discrete calibration controls. The regular
+    // Sensors timer already owns an equivalent buffer and passes it directly
+    // to updateCalibrationEditor(), avoiding two 60-reading arrays on the
+    // bounded LVGL task stack.
+    sensors::Reading readings[kChartPoints];
+    const size_t n = sensors::getRecent(
+        static_cast<sensors::SensorId>(sensor), readings, kChartPoints);
+    updateCalibrationEditor(tab, sensor, readings, n, false);
 }
 
 void updateRawCaptureViews() {
@@ -1620,13 +1626,20 @@ void updateRawCaptureViews() {
     }
 }
 
+void captureUpdateCb(lv_timer_t* timer) {
+    if (timer && timer->user_data &&
+        !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
+    // Keep capture formatting on a separate LVGL timer invocation so its
+    // scratch buffers are unwound before the chart/calibration refresh runs.
+    updateRawCaptureViews();
+}
+
 // ---------------------------------------------------------------------------
 // Update loop
 // ---------------------------------------------------------------------------
 
 void updateCb(lv_timer_t* timer) {
     if (timer && timer->user_data && !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
-    updateRawCaptureViews();
     sensors::Reading readings[kChartPoints];
 
     for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
@@ -1765,6 +1778,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     }
 
     updateTimer = lv_timer_create(updateCb, kUpdateIntervalMs, tabview);
+    captureUpdateTimer = lv_timer_create(captureUpdateCb, kUpdateIntervalMs, tabview);
 
     return tabview;
 }

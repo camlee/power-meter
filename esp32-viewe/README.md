@@ -295,7 +295,8 @@ prefer PSRAM; DMA/display buffers use their explicit allocator. Avoid large
 automatic arrays in the Arduino `loopTask` or network handlers. Settings ->
 Debug reports internal and PSRAM heap usage separately and includes each heap's
 largest free block, which is often more useful than total free bytes when
-diagnosing fragmentation.
+diagnosing fragmentation. On the touchscreen target it also reports the LVGL
+task's configured stack size and minimum free bytes observed since boot.
 
 LVGL's `lv_snprintf()` build does not support floating-point `%f` formats
 (including forms such as `%.2f`); it emits the literal `f` instead of a number.
