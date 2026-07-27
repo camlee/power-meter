@@ -417,10 +417,6 @@ bool readRecord(Dataset dataset, const CatalogEntry& entry, uint16_t index,
     return true;
 }
 
-uint64_t sequenceOf(const LocatedRecord& record) {
-    return (static_cast<uint64_t>(record.sessionId) << 32) | record.minute;
-}
-
 void clearBucket(PowerBucket& bucket) {
     memset(&bucket, 0, sizeof(bucket));
 }
@@ -762,9 +758,10 @@ bool seedDemoHistory(bool force = false) {
     return true;
 }
 
-size_t queryTimeBuckets(Dataset dataset, PowerBucket* out, size_t maxBuckets,
-                        int64_t startMs, int64_t endMs, int64_t nowMs,
-                        uint16_t bucketMinutes, QueryStatus* status) {
+size_t queryBuckets(Dataset dataset, PowerBucket* out, size_t maxBuckets,
+                    int64_t startMs, int64_t endMs, int64_t nowMs,
+                    uint16_t bucketMinutes, TimelineBasis basis,
+                    QueryStatus* status) {
     if (status) *status = {};
     if (!out || !maxBuckets || !bucketMinutes || endMs <= startMs) return 0;
     const int64_t bucketMs = static_cast<int64_t>(bucketMinutes) * kMinuteMs;
@@ -775,20 +772,28 @@ size_t queryTimeBuckets(Dataset dataset, PowerBucket* out, size_t maxBuckets,
     }
     for (size_t i = 0; i < bucketCount; ++i) {
         clearBucket(out[i]);
-        out[i].startUnixMs = startMs + static_cast<int64_t>(i) * bucketMs;
-        const int64_t finish = std::min(out[i].startUnixMs + bucketMs, endMs);
+        out[i].startTimeMs = startMs + static_cast<int64_t>(i) * bucketMs;
+        const int64_t finish = std::min(out[i].startTimeMs + bucketMs, endMs);
         out[i].durationMinutes = static_cast<uint16_t>(
-            (finish - out[i].startUnixMs + kMinuteMs - 1) / kMinuteMs);
+            (finish - out[i].startTimeMs + kMinuteMs - 1) / kMinuteMs);
     }
 
     CatalogEntry* catalog = catalogScratch;
     const size_t files = buildCatalog(dataset, catalog, kCatalogCapacity);
     uint64_t coveredMs = 0, inferredMs = 0;
     const int64_t dataEndMs = std::min(endMs, nowMs);
+    const int64_t dataStartMs = basis == TimelineBasis::CurrentSessionMonotonic
+        ? std::max<int64_t>(startMs, 0) : startMs;
+    const uint32_t currentSession = time_service::currentSessionId();
     for (size_t f = 0; f < files; ++f) {
         int64_t fileStart = 0;
         uint8_t flags = TIME_NONE;
-        if (!resolveEntry(dataset, catalog, files, catalog[f], fileStart, flags, bucketMs)) continue;
+        if (basis == TimelineBasis::WallClock) {
+            if (!resolveEntry(dataset, catalog, files, catalog[f], fileStart, flags, bucketMs)) continue;
+        } else {
+            if (catalog[f].sessionId != currentSession) continue;
+            fileStart = static_cast<int64_t>(catalog[f].firstMinute) * kMinuteMs;
+        }
         const uint16_t rows = catalog[f].records + (catalog[f].active ? ramCount : 0);
         const int64_t fileEnd = fileStart + static_cast<int64_t>(rows) * kMinuteMs;
         if (fileEnd <= startMs || fileStart >= dataEndMs) continue;
@@ -816,15 +821,14 @@ size_t queryTimeBuckets(Dataset dataset, PowerBucket* out, size_t maxBuckets,
             const size_t firstBucket = static_cast<size_t>((clippedStart - startMs) / bucketMs);
             const size_t lastBucket = static_cast<size_t>((clippedEnd - 1 - startMs) / bucketMs);
             for (size_t b = firstBucket; b <= lastBucket && b < bucketCount; ++b) {
-                const int64_t overlapStart = std::max(clippedStart, out[b].startUnixMs);
-                const int64_t overlapEnd = std::min(clippedEnd, out[b].startUnixMs + bucketMs);
+                const int64_t overlapStart = std::max(clippedStart, out[b].startTimeMs);
+                const int64_t overlapEnd = std::min(clippedEnd, out[b].startTimeMs + bucketMs);
                 const uint32_t overlap = static_cast<uint32_t>(
                     std::max<int64_t>(0, overlapEnd - overlapStart));
                 if (!overlap) continue;
                 addRecord(out[b], record.energy, overlap);
                 out[b].coveredMs += overlap;
                 out[b].timeFlags |= flags;
-                if (!out[b].startSequence) out[b].startSequence = sequenceOf(record);
                 coveredMs += overlap;
                 if (flags & TIME_INFERRED) inferredMs += overlap;
             }
@@ -834,20 +838,22 @@ size_t queryTimeBuckets(Dataset dataset, PowerBucket* out, size_t maxBuckets,
     }
     bool measurementIncomplete = false;
     for (size_t i = 0; i < bucketCount; ++i) {
-        const int64_t bucketEnd = out[i].startUnixMs +
+        const int64_t bucketEnd = out[i].startTimeMs +
                                   static_cast<int64_t>(out[i].durationMinutes) * kMinuteMs;
-        const uint32_t elapsedMs = dataEndMs > out[i].startUnixMs
-            ? static_cast<uint32_t>(std::min<int64_t>(bucketEnd, dataEndMs) - out[i].startUnixMs)
+        const int64_t elapsedStart = std::max(out[i].startTimeMs, dataStartMs);
+        const uint32_t elapsedMs = dataEndMs > elapsedStart
+            ? static_cast<uint32_t>(std::min<int64_t>(bucketEnd, dataEndMs) - elapsedStart)
             : 0;
         finishBucket(out[i], elapsedMs);
         measurementIncomplete |= elapsedMs && (out[i].timeFlags & TIME_INCOMPLETE) != 0;
     }
 
-    const uint64_t elapsedSpan = dataEndMs > startMs ? dataEndMs - startMs : 0;
+    const uint64_t elapsedSpan = dataEndMs > dataStartMs ? dataEndMs - dataStartMs : 0;
     const uint64_t missing = elapsedSpan > coveredMs ? elapsedSpan - coveredMs : 0;
     if (status) {
-        status->startUnixMs = startMs;
-        status->endUnixMs = endMs;
+        status->startTimeMs = startMs;
+        status->endTimeMs = endMs;
+        status->timelineBasis = basis;
         status->coveredMinutes = coveredMs / kMinuteMs;
         status->missingMinutes = missing / kMinuteMs;
         status->inferredMinutes = inferredMs / kMinuteMs;
@@ -1008,16 +1014,22 @@ size_t getPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBu
                                  QueryStatus* status) {
     Lock lock;
     if (status) *status = {};
-    if (!lock || !ready || !out || !maxBuckets || !lookbackMinutes || !bucketMinutes ||
-        !time_service::hasCurrentTime()) return 0;
-    int64_t nowMs = 0;
-    if (!time_service::resolveUnixTimeMs(time_service::currentSessionId(),
-            time_service::monotonicUs(), nowMs)) return 0;
+    if (!lock || !ready || !out || !maxBuckets || !lookbackMinutes || !bucketMinutes) return 0;
+    const uint64_t monotonicUs = time_service::monotonicUs();
+    int64_t nowMs = static_cast<int64_t>(monotonicUs / 1000);
+    TimelineBasis basis = TimelineBasis::CurrentSessionMonotonic;
+    int64_t resolvedNowMs = 0;
+    if (time_service::hasCurrentTime() &&
+        time_service::resolveUnixTimeMs(time_service::currentSessionId(),
+                                        monotonicUs, resolvedNowMs)) {
+        nowMs = resolvedNowMs;
+        basis = TimelineBasis::WallClock;
+    }
     const int64_t endMs = nowMs - static_cast<int64_t>(endOffsetMinutes) * kMinuteMs;
     const int64_t startMs = endMs - static_cast<int64_t>(lookbackMinutes) * kMinuteMs;
     (void)includePartial;
-    return queryTimeBuckets(dataset, out, maxBuckets, startMs, endMs, nowMs,
-                            bucketMinutes, status);
+    return queryBuckets(dataset, out, maxBuckets, startMs, endMs, nowMs,
+                        bucketMinutes, basis, status);
 }
 
 size_t getPowerBuckets(PowerBucket* out, size_t maxBuckets,
@@ -1067,8 +1079,8 @@ size_t getCalendarPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size
             break;
         }
     }
-    return queryTimeBuckets(dataset, out, maxBuckets, startMs, endMs, nowMs,
-                            bucketMinutes, status);
+    return queryBuckets(dataset, out, maxBuckets, startMs, endMs, nowMs,
+                        bucketMinutes, TimelineBasis::WallClock, status);
 }
 
 size_t getCalendarPowerBuckets(PowerBucket* out, size_t maxBuckets,
@@ -1076,6 +1088,23 @@ size_t getCalendarPowerBuckets(PowerBucket* out, size_t maxBuckets,
                                QueryStatus* status) {
     return getCalendarPowerBucketsForDataset(activeDataset(), out, maxBuckets,
                                              range, bucketMinutes, status);
+}
+
+size_t getSinceBootPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
+                                          uint16_t bucketMinutes, QueryStatus* status) {
+    Lock lock;
+    if (status) *status = {};
+    if (!lock || !ready || !out || !maxBuckets) return 0;
+    const int64_t nowMs = static_cast<int64_t>(time_service::monotonicUs() / 1000);
+    if (!bucketMinutes) bucketMinutes = automaticBucketMinutes(nowMs);
+    return queryBuckets(dataset, out, maxBuckets, 0, nowMs, nowMs, bucketMinutes,
+                        TimelineBasis::CurrentSessionMonotonic, status);
+}
+
+size_t getSinceBootPowerBuckets(PowerBucket* out, size_t maxBuckets,
+                                uint16_t bucketMinutes, QueryStatus* status) {
+    return getSinceBootPowerBucketsForDataset(activeDataset(), out, maxBuckets,
+                                              bucketMinutes, status);
 }
 
 size_t getTimePowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
@@ -1088,8 +1117,8 @@ size_t getTimePowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t m
     int64_t nowMs = 0;
     if (!time_service::resolveUnixTimeMs(time_service::currentSessionId(),
             time_service::monotonicUs(), nowMs)) return 0;
-    return queryTimeBuckets(dataset, out, maxBuckets, startUnixMs, endUnixMs,
-                            nowMs, bucketMinutes, status);
+    return queryBuckets(dataset, out, maxBuckets, startUnixMs, endUnixMs,
+                        nowMs, bucketMinutes, TimelineBasis::WallClock, status);
 }
 
 size_t getTimePowerBuckets(PowerBucket* out, size_t maxBuckets,

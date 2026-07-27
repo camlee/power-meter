@@ -16,6 +16,11 @@ struct Series {
     bool positive;
 };
 
+enum class AxisMode : uint8_t {
+    Relative,
+    WallClock,
+};
+
 struct Data {
     const Series* series;
     uint8_t seriesCount;
@@ -23,9 +28,8 @@ struct Data {
     uint32_t durationMinutes;
     uint32_t tickMinutes;
     const char* yAxisTitle;
-    // Zero keeps the existing relative labels. A Unix start time selects
-    // fixed-offset local clock/date labels for calendar-aligned queries.
-    int64_t axisStartUnixMs = 0;
+    AxisMode axisMode = AxisMode::Relative;
+    int64_t axisStartTimeMs = 0;
     int16_t utcOffsetMinutes = 0;
 };
 

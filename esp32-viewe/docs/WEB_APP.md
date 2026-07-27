@@ -236,21 +236,25 @@ reconstruct historic daylight-saving transitions; see `ARCHITECTURE.md`.
 
 History uses a separate magic/type and an explicitly documented compact bucket
 schema. The two-step asynchronous query starts a bounded history worker job,
-polls until ready, then receives a binary VPH2 response (32-byte header
+polls until ready, then receives a binary VPH3 response (32-byte header
 followed by 80-byte buckets). `range` supports the calendar ranges `today`,
-`yesterday`, `last2days`, `lastweek`, `lasttwoweeks`, and `all`, plus the
-rolling `last1hour`, `last6hours`, and `last24hours` ranges. The firmware, not
-the browser, performs anchoring, gap, and calendar calculations. The browser turns
+`yesterday`, `lasttwoweeks`, and `all`; rolling `last1hour`, `last6hours`,
+`last24hours`, `last2days`, and `lastweek`; and monotonic `sinceboot`. The
+firmware, not the browser, performs anchoring, gap, and calendar calculations.
+The browser turns
 the compact Wh fields into average watts to use the same stacked chart semantics
 and colours as the LVGL Usage screen.
 
-VPH2 replaces the incompatible alpha VPH1 layout. Its 80-byte record keeps the
+VPH3 replaces VPH2 by making the timestamp domain explicit. Header flag bit 2
+selects current-session monotonic milliseconds; when clear, timestamps are Unix
+milliseconds. Header flag bits 0 and 1 continue to mean incomplete coverage and
+inferred wall time. Its 80-byte record keeps the
 energy fields together and adds configured/time/quality flags plus independent
 channel and component coverage:
 
 | Offset | Type | Meaning |
 | ---: | --- | --- |
-| 0 | `f64` | Bucket start Unix milliseconds |
+| 0 | `f64` | Bucket start milliseconds in the header-selected timeline |
 | 8 | `u32` | Timeline coverage milliseconds |
 | 12 | `u8 × 4` | Configured mask, time flags, quality flags, reserved zero |
 | 16 | `f32 × 3` | In, Out, Aux energy Wh |
@@ -259,7 +263,7 @@ channel and component coverage:
 | 60 | `u32 × 5` | Per-component valid coverage milliseconds |
 
 History always follows the active sensor source and exposes no Real/Demo
-request parameter. Storage-format V1 and browser-protocol VPH2 are separate
+request parameter. Storage-format V1 and browser-protocol VPH3 are separate
 contracts.
 
 ## Keeping web and LVGL state synchronized
@@ -298,9 +302,11 @@ than starting a second radio operation.
 
 While Usage is visible, both browser and LVGL refresh just after a monotonic
 storage boundary at a cadence equal to one displayed x-axis bucket (2 minutes
-for Last 1 Hour through 4 hours for Last Week). The firmware-selected All
-bucket controls its cadence after the first result. Yesterday is complete and
-manual-refresh only. Queries remain asynchronous and hidden views do no work.
+for Last 1 Hour through 4 hours for Last Week). Firmware-selected All History
+and Since Boot buckets control their cadence after the first result. Yesterday
+is complete and manual-refresh only. A newly accepted anchor immediately
+refreshes the range list and graph. Queries remain asynchronous and hidden
+views do no work.
 
 ## Resource limits
 

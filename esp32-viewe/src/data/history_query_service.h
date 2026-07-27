@@ -23,8 +23,14 @@ enum class JobState : uint8_t {
     Gone,
 };
 
+enum class UsageQueryKind : uint8_t {
+    Rolling,
+    Calendar,
+    SinceBoot,
+};
+
 struct UsageRequest {
-    bool calendar;
+    UsageQueryKind kind;
     historical_storage::CalendarRange calendarRange;
     uint32_t lookbackMinutes;
     uint16_t bucketMinutes;

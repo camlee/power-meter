@@ -61,16 +61,24 @@
   // multi-day query is not repeated just because another minute elapsed.
   // The all-history bucket is selected by the firmware and learned from the
   // response. Yesterday is complete and therefore manual-refresh only.
-  const historyRanges = [
+  const rollingHistoryRanges = [
     { id: 'last1hour', label: 'Last 1 Hour', minutes: 2, tickMinutes: 15, refreshMs: 2 * 60_000 },
     { id: 'last6hours', label: 'Last 6 Hours', minutes: 15, tickMinutes: 60, refreshMs: 15 * 60_000 },
     { id: 'last24hours', label: 'Last 24 Hours', minutes: 30, tickMinutes: 180, refreshMs: 30 * 60_000 },
-    { id: 'today', label: 'Today', minutes: 30, tickMinutes: 180, refreshMs: 30 * 60_000 },
-    { id: 'yesterday', label: 'Yesterday', minutes: 30, tickMinutes: 180, refreshMs: null },
     { id: 'last2days', label: 'Last 2 Days', minutes: 60, tickMinutes: 360, refreshMs: 60 * 60_000 },
     { id: 'lastweek', label: 'Last Week', minutes: 240, tickMinutes: 1440, refreshMs: 240 * 60_000 },
-    { id: 'all', label: 'All', minutes: 0, tickMinutes: 0, refreshMs: null },
   ];
+  const clockHistoryRanges = [
+    ...rollingHistoryRanges,
+    { id: 'today', label: 'Today', minutes: 30, tickMinutes: 180, refreshMs: 30 * 60_000 },
+    { id: 'yesterday', label: 'Yesterday', minutes: 30, tickMinutes: 180, refreshMs: null },
+    { id: 'all', label: 'All History', minutes: 0, tickMinutes: 0, refreshMs: null },
+  ];
+  const relativeHistoryRanges = [
+    ...rollingHistoryRanges,
+    { id: 'sinceboot', label: 'Since Boot', minutes: 0, tickMinutes: 0, refreshMs: null },
+  ];
+  let historyRanges = relativeHistoryRanges;
 
   // Route <-> path mapping. Declared here (not down in the "Routing"
   // section) because `route` below initializes eagerly by calling
@@ -222,6 +230,8 @@
   let historyRange = historyRanges[0];
   let historyFetchedAt = 0;
   let historyRefreshTimer;
+  let historyRequestGeneration = 0;
+  let historyRangesHaveTime = false;
 
   // Energy cycle view.
   let cycles = null;
@@ -684,6 +694,7 @@
       if (Number.isFinite(status?.ws_connection_limit)) {
         connectionLimit = status.ws_connection_limit;
       }
+      syncHistoryRanges(status.time_source !== 'unanchored');
       statusError = '';
     } catch (err) {
       // A tab returning from the background can briefly outrun the browser's
@@ -1063,18 +1074,37 @@
   // History
   // ---------------------------------------------------------------------
 
+  function syncHistoryRanges(hasTime) {
+    if (hasTime === historyRangesHaveTime) return;
+    historyRangesHaveTime = hasTime;
+    historyRanges = hasTime ? clockHistoryRanges : relativeHistoryRanges;
+    let nextRange = historyRanges.find((range) => range.id === historyRange.id);
+    if (!nextRange) {
+      nextRange = hasTime
+        ? historyRanges.find((range) => range.id === 'today')
+        : historyRanges.find((range) => range.id === 'sinceboot');
+    }
+    historyRange = nextRange || historyRanges[0];
+    history = null;
+    if (route === 'history' && !document.hidden) refreshHistory(historyRange);
+  }
+
   async function refreshHistory(range = historyRange, { silent = false } = {}) {
+    const generation = ++historyRequestGeneration;
     historyRange = range;
     clearTimeout(historyRefreshTimer);
     if (!silent) historyBusy = true;
 
     try {
-      history = await getHistory(range.id, range.minutes);
+      const result = await getHistory(range.id, range.minutes);
+      if (generation !== historyRequestGeneration) return;
+      history = result;
       historyFetchedAt = Date.now();
       historyError = '';
       historyBusy = false;
       scheduleHistoryRefresh();
     } catch (err) {
+      if (generation !== historyRequestGeneration) return;
       historyError = describeError(err, 'load usage history');
       historyBusy = false;
       // Retry sooner than the normal cadence after a failure, so a
@@ -1092,11 +1122,11 @@
     clearTimeout(historyRefreshTimer);
     if (route !== 'history') return;
 
-    // "All" uses a firmware-selected bucket size; other ranges have a fixed
-    // bucket. Align to the device's monotonic minute boundaries, just after
-    // storage closes the minute, instead of drifting from page-open time.
+    // "All History" and "Since Boot" use firmware-selected bucket sizes;
+    // other ranges have fixed buckets. Align to the device's monotonic minute
+    // boundaries, just after storage closes the minute.
     const interval = historyRange.refreshMs ||
-      (historyRange.id === 'all' && history?.bucketMinutes
+      (['all', 'sinceboot'].includes(historyRange.id) && history?.bucketMinutes
         ? history.bucketMinutes * 60_000
         : null);
     if (!interval) return; // this range is manual-refresh only
@@ -1116,6 +1146,10 @@
   function selectHistory(event) {
     const range = historyRanges.find((item) => item.id === event.currentTarget.value);
     if (range) refreshHistory(range);
+  }
+
+  async function contributeBrowserTime() {
+    if (await anchorTime()) await refreshStatus();
   }
 
   // ---------------------------------------------------------------------
@@ -1216,7 +1250,7 @@
 
     // Tab is visible again: resync the clock, reconnect live data, and
     // refresh whatever view is open if its data has gone stale.
-    anchorTime();
+    contributeBrowserTime();
     resumeLive();
     refreshStatus();
 
@@ -1244,7 +1278,7 @@
     colorSchemeMedia.addEventListener?.('change', colorSchemeChanged);
     applyWebTheme();
     refreshStatus();
-    anchorTime();
+    contributeBrowserTime();
     connectLive();
     enterRoute(route);
 
@@ -1799,8 +1833,9 @@
       {#if history}
         <HistoryChart
           buckets={history.buckets}
-          startUnixMs={history.startUnixMs}
-          endUnixMs={history.endUnixMs}
+          timelineBasis={history.timelineBasis}
+          startTimeMs={history.startTimeMs}
+          endTimeMs={history.endTimeMs}
           tickMinutes={historyRange.tickMinutes}
         />
         {#if history.flags & 1}

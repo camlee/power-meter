@@ -27,10 +27,14 @@ unanchored block is placed only when anchored data surrounds it and its
 unexplained downtime fits the selected graph bucket. Reserved session-zero Demo
 fixtures have separate fixed-anchor metadata.
 
-Rolling and calendar ranges leave unresolved time empty rather than moving data
-to now. Calendar views use a persisted fixed UTC offset and provide Today,
-Yesterday, Last 2 Days, Last Week, Last Two Weeks, and All. Full timezone/DST
-rules remain future work.
+Rolling ranges remain useful before wall time is known: they use the current
+boot's exact monotonic timeline, show relative labels, and do not include older
+sessions whose intervening downtime is unknown. The unanchored Usage selector
+offers Last 1 Hour, Last 6 Hours, Last 24 Hours, Last 2 Days, Last Week, and
+Since Boot. Once wall time is available, those rolling ranges can span resolved
+sessions and Today, Yesterday, and All History replace Since Boot. Calendar
+views use a persisted fixed UTC offset. Full timezone/DST rules remain future
+work.
 
 Time uncertainty and measurement availability are independent:
 

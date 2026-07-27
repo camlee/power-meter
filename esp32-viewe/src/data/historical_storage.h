@@ -65,13 +65,16 @@ enum TimeFlags : uint8_t {
     TIME_INCOMPLETE = 1 << 2,
 };
 
+enum class TimelineBasis : uint8_t {
+    WallClock = 0,
+    CurrentSessionMonotonic = 1,
+};
+
 struct PowerBucket {
-    uint32_t startUptime_m;
     uint16_t durationMinutes;
     uint8_t timeFlags;
     uint8_t qualityFlags;
-    uint64_t startSequence;
-    int64_t startUnixMs;
+    int64_t startTimeMs;
     uint32_t coveredMs;
     float energyWh[kSensorCount];
     float componentEnergyWh[COMPONENT_COUNT];
@@ -92,8 +95,9 @@ enum class CalendarRange : uint8_t {
 };
 
 struct QueryStatus {
-    int64_t startUnixMs;
-    int64_t endUnixMs;
+    int64_t startTimeMs;
+    int64_t endTimeMs;
+    TimelineBasis timelineBasis;
     uint32_t coveredMinutes;
     uint32_t missingMinutes;
     uint32_t inferredMinutes;
@@ -144,6 +148,9 @@ size_t getPowerBuckets(PowerBucket* out, size_t maxBuckets,
 size_t getCalendarPowerBuckets(PowerBucket* out, size_t maxBuckets,
                                CalendarRange range, uint16_t bucketMinutes,
                                QueryStatus* status = nullptr);
+size_t getSinceBootPowerBuckets(PowerBucket* out, size_t maxBuckets,
+                                uint16_t bucketMinutes = 0,
+                                QueryStatus* status = nullptr);
 
 // Internal dataset-aware variants support the on-device view filter and
 // deterministic tests. External HTTP handlers continue to call the wrappers
@@ -155,6 +162,9 @@ size_t getPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBu
 size_t getCalendarPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
                                          CalendarRange range, uint16_t bucketMinutes,
                                          QueryStatus* status = nullptr);
+size_t getSinceBootPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
+                                          uint16_t bucketMinutes = 0,
+                                          QueryStatus* status = nullptr);
 
 // Internal shared-model query for feature-specific wall-clock aggregation
 // (for example energy cycles). Browser endpoints should expose their feature

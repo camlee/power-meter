@@ -230,6 +230,11 @@ An unanchored boot block may be reconciled when anchors bound both sides. Its
 total unexplained downtime is explicit timestamp uncertainty and the block is
 shown only where that uncertainty fits the selected Usage bucket, retaining
 otherwise valid energy without placing it falsely at now.
+While the current boot itself is unanchored, Usage still queries that session
+directly in its monotonic domain. Both LVGL and Web show rolling ranges with
+relative labels plus a Since Boot view; calendar-only choices appear after an
+anchor is available. Older sessions are never compressed onto that relative
+axis.
 Missing or uncertain coverage is considered user-significant only when it exceeds
 one minute; smaller restart gaps remain in the data model but do not raise the UI
 warning symbol.

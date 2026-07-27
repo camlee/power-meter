@@ -33,30 +33,45 @@ float readLeFloat(const uint8_t* data) {
     return value;
 }
 
-void testHeaderPreservesVph2WireLayout() {
+void testHeaderPreservesVph3WallClockLayout() {
     historical_storage::QueryStatus status{};
-    status.startUnixMs = 1712345678000LL;
-    status.endUnixMs = 1712349278000LL;
+    status.startTimeMs = 1712345678000LL;
+    status.endTimeMs = 1712349278000LL;
+    status.timelineBasis = historical_storage::TimelineBasis::WallClock;
     status.incomplete = true;
     status.hasInferredTime = true;
 
     uint8_t output[history_response_encoder::kHeaderBytes];
     history_response_encoder::encodeHeader(output, 0x12345678, 336, status);
 
-    TEST_ASSERT_EQUAL_HEX32(0x32485056, readLe32(output));
-    TEST_ASSERT_EQUAL_UINT8(2, output[4]);
+    TEST_ASSERT_EQUAL_HEX32(0x33485056, readLe32(output));
+    TEST_ASSERT_EQUAL_UINT8(3, output[4]);
     TEST_ASSERT_EQUAL_UINT8(2, output[5]);
     TEST_ASSERT_EQUAL_HEX16(3, readLe16(output + 6));
     TEST_ASSERT_EQUAL_UINT16(336, readLe16(output + 8));
     TEST_ASSERT_EQUAL_UINT16(80, readLe16(output + 10));
     TEST_ASSERT_EQUAL_HEX32(0x12345678, readLe32(output + 12));
-    TEST_ASSERT_TRUE(std::fabs(readLeDouble(output + 16) - static_cast<double>(status.startUnixMs)) < 0.5);
-    TEST_ASSERT_TRUE(std::fabs(readLeDouble(output + 24) - static_cast<double>(status.endUnixMs)) < 0.5);
+    TEST_ASSERT_TRUE(std::fabs(readLeDouble(output + 16) - static_cast<double>(status.startTimeMs)) < 0.5);
+    TEST_ASSERT_TRUE(std::fabs(readLeDouble(output + 24) - static_cast<double>(status.endTimeMs)) < 0.5);
 }
 
-void testRecordPreservesVph2WireLayoutAndZeroesReservedByte() {
+void testHeaderMarksCurrentSessionMonotonicTime() {
+    historical_storage::QueryStatus status{};
+    status.startTimeMs = -3600000;
+    status.endTimeMs = 12345;
+    status.timelineBasis = historical_storage::TimelineBasis::CurrentSessionMonotonic;
+
+    uint8_t output[history_response_encoder::kHeaderBytes];
+    history_response_encoder::encodeHeader(output, 7, 30, status);
+
+    TEST_ASSERT_EQUAL_HEX16(4, readLe16(output + 6));
+    TEST_ASSERT_TRUE(std::fabs(readLeDouble(output + 16) -
+                              static_cast<double>(status.startTimeMs)) < 0.5);
+}
+
+void testRecordPreservesVph3WireLayoutAndZeroesReservedByte() {
     historical_storage::PowerBucket bucket{};
-    bucket.startUnixMs = 1712345678000LL;
+    bucket.startTimeMs = 1712345678000LL;
     bucket.coveredMs = 54321;
     bucket.configuredChannelMask = 0x05;
     bucket.timeFlags = 0x03;
@@ -74,7 +89,7 @@ void testRecordPreservesVph2WireLayoutAndZeroesReservedByte() {
     std::memset(output, 0xff, sizeof(output));
     history_response_encoder::encodeRecord(output, bucket);
 
-    TEST_ASSERT_TRUE(std::fabs(readLeDouble(output) - static_cast<double>(bucket.startUnixMs)) < 0.5);
+    TEST_ASSERT_TRUE(std::fabs(readLeDouble(output) - static_cast<double>(bucket.startTimeMs)) < 0.5);
     TEST_ASSERT_EQUAL_UINT32(bucket.coveredMs, readLe32(output + 8));
     TEST_ASSERT_EQUAL_HEX8(0x05, output[12]);
     TEST_ASSERT_EQUAL_HEX8(0x03, output[13]);
@@ -93,7 +108,8 @@ void tearDown() {}
 
 int main() {
     UNITY_BEGIN();
-    RUN_TEST(testHeaderPreservesVph2WireLayout);
-    RUN_TEST(testRecordPreservesVph2WireLayoutAndZeroesReservedByte);
+    RUN_TEST(testHeaderPreservesVph3WallClockLayout);
+    RUN_TEST(testHeaderMarksCurrentSessionMonotonicTime);
+    RUN_TEST(testRecordPreservesVph3WireLayoutAndZeroesReservedByte);
     return UNITY_END();
 }

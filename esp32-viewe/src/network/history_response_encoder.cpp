@@ -34,22 +34,25 @@ void putLeDouble(uint8_t* dest, double value) {
 void encodeHeader(uint8_t (&output)[kHeaderBytes], uint32_t jobId, size_t count,
                   const historical_storage::QueryStatus& status) {
     memset(output, 0, sizeof(output));
-    putLe32(output, 0x32485056); // "VPH2"; VPH1 was the incompatible alpha layout.
-    output[4] = 2;
+    putLe32(output, 0x33485056); // "VPH3"; timestamp fields now have an explicit domain.
+    output[4] = 3;
     output[5] = 2;
-    const uint16_t flags = (status.incomplete ? 1 : 0) | (status.hasInferredTime ? 2 : 0);
+    const uint16_t flags = (status.incomplete ? 1 : 0) |
+                           (status.hasInferredTime ? 2 : 0) |
+                           (status.timelineBasis ==
+                                historical_storage::TimelineBasis::CurrentSessionMonotonic ? 4 : 0);
     putLe16(output + 6, flags);
     putLe16(output + 8, static_cast<uint16_t>(count));
     putLe16(output + 10, kRecordBytes);
     putLe32(output + 12, jobId);
-    putLeDouble(output + 16, static_cast<double>(status.startUnixMs));
-    putLeDouble(output + 24, static_cast<double>(status.endUnixMs));
+    putLeDouble(output + 16, static_cast<double>(status.startTimeMs));
+    putLeDouble(output + 24, static_cast<double>(status.endTimeMs));
 }
 
 void encodeRecord(uint8_t (&output)[kRecordBytes],
                   const historical_storage::PowerBucket& bucket) {
     memset(output, 0, sizeof(output));
-    putLeDouble(output, static_cast<double>(bucket.startUnixMs));
+    putLeDouble(output, static_cast<double>(bucket.startTimeMs));
     putLe32(output + 8, bucket.coveredMs);
     output[12] = bucket.configuredChannelMask;
     output[13] = bucket.timeFlags;

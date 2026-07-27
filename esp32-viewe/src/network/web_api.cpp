@@ -665,17 +665,31 @@ void webSensorCalibration() {
 // and serializes one bounded record at a time, avoiding two full-size copies.
 void webHistoryQuery() {
     if (!server->hasArg("job")) {
-        bool calendar = true;
+        auto kind = history_query_service::UsageQueryKind::Calendar;
         historical_storage::CalendarRange range = historical_storage::CalendarRange::Today;
         uint32_t lookbackMinutes = 0;
         uint16_t defaultBucketMinutes = 30;
         const String rangeArg = server->arg("range");
-        if (rangeArg == "last1hour") { calendar = false; lookbackMinutes = 60; defaultBucketMinutes = 2; }
-        else if (rangeArg == "last6hours") { calendar = false; lookbackMinutes = 360; defaultBucketMinutes = 15; }
-        else if (rangeArg == "last24hours") { calendar = false; lookbackMinutes = 1440; defaultBucketMinutes = 30; }
+        if (rangeArg == "last1hour") {
+            kind = history_query_service::UsageQueryKind::Rolling;
+            lookbackMinutes = 60; defaultBucketMinutes = 2;
+        } else if (rangeArg == "last6hours") {
+            kind = history_query_service::UsageQueryKind::Rolling;
+            lookbackMinutes = 360; defaultBucketMinutes = 15;
+        } else if (rangeArg == "last24hours") {
+            kind = history_query_service::UsageQueryKind::Rolling;
+            lookbackMinutes = 1440; defaultBucketMinutes = 30;
+        } else if (rangeArg == "last2days") {
+            kind = history_query_service::UsageQueryKind::Rolling;
+            lookbackMinutes = 2880; defaultBucketMinutes = 60;
+        } else if (rangeArg == "lastweek") {
+            kind = history_query_service::UsageQueryKind::Rolling;
+            lookbackMinutes = 10080; defaultBucketMinutes = 240;
+        } else if (rangeArg == "sinceboot") {
+            kind = history_query_service::UsageQueryKind::SinceBoot;
+            defaultBucketMinutes = 0;
+        }
         else if (rangeArg == "yesterday") range = historical_storage::CalendarRange::Yesterday;
-        else if (rangeArg == "last2days") range = historical_storage::CalendarRange::Last2Days;
-        else if (rangeArg == "lastweek") range = historical_storage::CalendarRange::LastWeek;
         else if (rangeArg == "lasttwoweeks") range = historical_storage::CalendarRange::LastTwoWeeks;
         else if (rangeArg == "all") { range = historical_storage::CalendarRange::All; defaultBucketMinutes = 0; }
         else if (!rangeArg.isEmpty() && rangeArg != "today") {
@@ -685,10 +699,13 @@ void webHistoryQuery() {
         uint16_t bucketMinutes = defaultBucketMinutes;
         if (server->hasArg("bucket_minutes")) {
             const int requested = server->arg("bucket_minutes").toInt();
-            bucketMinutes = range == historical_storage::CalendarRange::All && requested == 0
+            bucketMinutes = ((kind == history_query_service::UsageQueryKind::Calendar &&
+                              range == historical_storage::CalendarRange::All) ||
+                             kind == history_query_service::UsageQueryKind::SinceBoot) &&
+                                requested == 0
                 ? 0 : constrain(requested, 1, 1440);
         }
-        const uint32_t job = history_query_service::requestUsage({calendar,
+        const uint32_t job = history_query_service::requestUsage({kind,
             range, lookbackMinutes, bucketMinutes});
         if (!job) {
             server->sendHeader("Retry-After", "1");

@@ -55,13 +55,23 @@ bool runJob(const Job& job, Timing& timing) {
     const uint32_t started = millis();
     if (job.kind == JobKind::Usage) {
         historical_storage::QueryStatus status{};
-        const size_t count = job.usage.calendar
-            ? historical_storage::getCalendarPowerBuckets(
-                  usageBuffer, kMaxUsageBuckets, job.usage.calendarRange,
-                  job.usage.bucketMinutes, &status)
-            : historical_storage::getPowerBuckets(
-                  usageBuffer, kMaxUsageBuckets, job.usage.lookbackMinutes,
-                  job.usage.bucketMinutes, 0, true, &status);
+        size_t count = 0;
+        switch (job.usage.kind) {
+            case UsageQueryKind::Calendar:
+                count = historical_storage::getCalendarPowerBuckets(
+                    usageBuffer, kMaxUsageBuckets, job.usage.calendarRange,
+                    job.usage.bucketMinutes, &status);
+                break;
+            case UsageQueryKind::SinceBoot:
+                count = historical_storage::getSinceBootPowerBuckets(
+                    usageBuffer, kMaxUsageBuckets, job.usage.bucketMinutes, &status);
+                break;
+            case UsageQueryKind::Rolling:
+                count = historical_storage::getPowerBuckets(
+                    usageBuffer, kMaxUsageBuckets, job.usage.lookbackMinutes,
+                    job.usage.bucketMinutes, 0, true, &status);
+                break;
+        }
         timing.lastDurationMs = millis() - started;
         timing.lastRecordsRead = status.recordsRead;
         timing.lastFilesRead = status.filesRead;

@@ -92,7 +92,7 @@ size_t query(Summary* out, size_t maxSummaries) {
     for (size_t i = 0; i < count; ++i) {
         Summary& summary = out[i];
         summary = {};
-        summary.startUnixMs = buckets[i].startUnixMs;
+        summary.startUnixMs = buckets[i].startTimeMs;
         summary.endUnixMs = summary.startUnixMs + kDayMs;
         summary.current = i + 1 == count;
         const int64_t measuredEnd = std::min(nowMs, summary.endUnixMs);

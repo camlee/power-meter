@@ -21,23 +21,37 @@ constexpr uint32_t kQueryRetryMs = 30000;
 
 struct Range {
     const char* title;
+    history_query_service::UsageQueryKind kind;
     uint32_t lookbackMinutes;
     uint16_t bucketMinutes;
     uint16_t tickMinutes;
-    bool calendar;
     historical_storage::CalendarRange calendarRange;
 };
 
 constexpr Range kRanges[] = {
-    {"Last 1 Hour", 60, 2, 15, false, historical_storage::CalendarRange::Today},
-    {"Last 6 Hours", 360, 15, 60, false, historical_storage::CalendarRange::Today},
-    {"Last 24 Hours", 1440, 30, 180, false, historical_storage::CalendarRange::Today},
-    {"Today", 1440, 30, 180, true, historical_storage::CalendarRange::Today},
-    {"Yesterday", 1440, 30, 180, true, historical_storage::CalendarRange::Yesterday},
-    {"Last 2 Days", 2880, 60, 360, true, historical_storage::CalendarRange::Last2Days},
-    {"Last Week", 10080, 240, 1440, true, historical_storage::CalendarRange::LastWeek},
-    {"All", 0, 0, 0, true, historical_storage::CalendarRange::All},
+    {"Last 1 Hour", history_query_service::UsageQueryKind::Rolling,
+     60, 2, 15, historical_storage::CalendarRange::Today},
+    {"Last 6 Hours", history_query_service::UsageQueryKind::Rolling,
+     360, 15, 60, historical_storage::CalendarRange::Today},
+    {"Last 24 Hours", history_query_service::UsageQueryKind::Rolling,
+     1440, 30, 180, historical_storage::CalendarRange::Today},
+    {"Last 2 Days", history_query_service::UsageQueryKind::Rolling,
+     2880, 60, 360, historical_storage::CalendarRange::Today},
+    {"Last Week", history_query_service::UsageQueryKind::Rolling,
+     10080, 240, 1440, historical_storage::CalendarRange::Today},
+    {"Today", history_query_service::UsageQueryKind::Calendar,
+     0, 30, 180, historical_storage::CalendarRange::Today},
+    {"Yesterday", history_query_service::UsageQueryKind::Calendar,
+     0, 30, 180, historical_storage::CalendarRange::Yesterday},
+    {"All History", history_query_service::UsageQueryKind::Calendar,
+     0, 0, 0, historical_storage::CalendarRange::All},
+    {"Since Boot", history_query_service::UsageQueryKind::SinceBoot,
+     0, 0, 0, historical_storage::CalendarRange::Today},
 };
+constexpr uint8_t kRollingRangeCount = 5;
+constexpr uint8_t kTodayRange = 5;
+constexpr uint8_t kAllHistoryRange = 7;
+constexpr uint8_t kSinceBootRange = 8;
 
 lv_obj_t* chart = nullptr;
 float chartValues[5][kMaxPoints] = {};
@@ -52,6 +66,9 @@ lv_obj_t* statusIcon = nullptr;
 lv_obj_t* statusText = nullptr;
 lv_obj_t* progress = nullptr;
 uint8_t selectedRange = 0;
+uint8_t visibleRanges[sizeof(kRanges) / sizeof(kRanges[0])] = {};
+uint8_t visibleRangeCount = 0;
+bool rangeOptionsHaveTime = false;
 lv_obj_t* screenObject = nullptr;
 uint32_t pendingJob = 0;
 uint32_t nextRefreshAtMs = 0;
@@ -86,25 +103,39 @@ void setStatus(const char* text, bool warning = false) {
     else lv_obj_add_flag(statusBadge, LV_OBJ_FLAG_HIDDEN);
 }
 
-void updateRangeOptions()
+void updateRangeOptions(bool hasTime)
 {
+    if (hasTime && selectedRange == kSinceBootRange) selectedRange = kTodayRange;
+    if (!hasTime && selectedRange >= kTodayRange && selectedRange <= kAllHistoryRange) {
+        selectedRange = kSinceBootRange;
+    }
     char options[144] = {};
     size_t used = 0;
+    visibleRangeCount = 0;
     for (uint8_t i = 0; i < sizeof(kRanges) / sizeof(kRanges[0]); ++i) {
-        if (i && used + 1 < sizeof(options)) options[used++] = '\n';
+        const bool visible = i < kRollingRangeCount ||
+                             (hasTime ? i >= kTodayRange && i <= kAllHistoryRange
+                                      : i == kSinceBootRange);
+        if (!visible) continue;
+        if (visibleRangeCount && used + 1 < sizeof(options)) options[used++] = '\n';
         const int written = lv_snprintf(options + used, sizeof(options) - used, "%s", kRanges[i].title);
         if (written > 0) used += static_cast<size_t>(written);
+        visibleRanges[visibleRangeCount++] = i;
     }
     lv_dropdown_set_options(rangeDropdown, options);
-    lv_dropdown_set_selected(rangeDropdown, selectedRange);
+    uint8_t visibleSelection = 0;
+    while (visibleSelection + 1 < visibleRangeCount &&
+           visibleRanges[visibleSelection] != selectedRange) ++visibleSelection;
+    lv_dropdown_set_selected(rangeDropdown, visibleSelection);
+    rangeOptionsHaveTime = hasTime;
 }
 
 void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
                  const historical_storage::QueryStatus& status)
 {
     const Range& range = kRanges[selectedRange];
-    const uint32_t axisMinutes = status.endUnixMs > status.startUnixMs
-        ? static_cast<uint32_t>((status.endUnixMs - status.startUnixMs + 59999) / 60000)
+    const uint32_t axisMinutes = status.endTimeMs > status.startTimeMs
+        ? static_cast<uint32_t>((status.endTimeMs - status.startTimeMs + 59999) / 60000)
         : range.lookbackMinutes;
     const size_t expectedPoints = count;
     renderedBucketMinutes = count ? buckets[0].durationMinutes : range.bucketMinutes;
@@ -115,31 +146,37 @@ void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
         const float charge = bucket.componentAveragePowerW[historical_storage::BATTERY_CHARGING];
         const float use = bucket.componentAveragePowerW[historical_storage::BATTERY_USAGE];
         const float panel = bucket.componentAveragePowerW[historical_storage::PANEL_IN];
+        const float load = bucket.componentAveragePowerW[historical_storage::PANEL_USAGE];
         const float surplus = bucket.componentAveragePowerW[historical_storage::PANEL_SURPLUS];
 
         chartValues[0][point] = charge;
         chartValues[1][point] = panel;
         chartValues[2][point] = surplus;
         chartValues[3][point] = use;
-        chartValues[4][point] = panel;
+        chartValues[4][point] = load;
     }
-    if (!time_service::hasCurrentTime()) setStatus("Set time to view history", true);
-    else if (status.hasInferredTime) setStatus("some timestamps inferred", true);
+    const bool relative =
+        status.timelineBasis == historical_storage::TimelineBasis::CurrentSessionMonotonic;
+    if (status.hasInferredTime) setStatus("some timestamps inferred", true);
     else if (status.incomplete) setStatus("sensor data gaps", true);
     // Keep time inference and measurement gaps explicit rather than rendering
     // missing coverage as a zero-height observation.
     else if (!status.coveredMinutes) setStatus("No complete intervals yet");
     else setStatus("");
-    const uint16_t tickMinutes = range.calendarRange == historical_storage::CalendarRange::All
-        ? automaticTickMinutes(axisMinutes) : range.tickMinutes;
+    const uint16_t tickMinutes = range.tickMinutes
+        ? range.tickMinutes : automaticTickMinutes(axisMinutes);
     stacked_bar_chart::setData(chart, {chartSeries, 5, expectedPoints, axisMinutes,
-                                      tickMinutes, nullptr, status.startUnixMs,
+                                      tickMinutes, nullptr,
+                                      relative ? stacked_bar_chart::AxisMode::Relative
+                                               : stacked_bar_chart::AxisMode::WallClock,
+                                      status.startTimeMs,
                                       time_service::utcOffsetMinutes()});
 }
 
 uint16_t refreshMinutes() {
     const Range& range = kRanges[selectedRange];
-    if (range.calendar && range.calendarRange == historical_storage::CalendarRange::Yesterday) {
+    if (range.kind == history_query_service::UsageQueryKind::Calendar &&
+        range.calendarRange == historical_storage::CalendarRange::Yesterday) {
         return 0;
     }
     return range.bucketMinutes ? range.bucketMinutes : renderedBucketMinutes;
@@ -168,7 +205,7 @@ void startQuery(bool replacePending = false)
         pendingJob = 0;
     }
     const Range& range = kRanges[selectedRange];
-    pendingJob = history_query_service::requestUsage({range.calendar, range.calendarRange,
+    pendingJob = history_query_service::requestUsage({range.kind, range.calendarRange,
                                                        range.lookbackMinutes, range.bucketMinutes});
     if (!pendingJob) {
         setStatus("history service unavailable", true);
@@ -201,7 +238,16 @@ void completionCb(lv_timer_t*) {
 }
 
 void autoRefreshCb(lv_timer_t*) {
-    if (!screenObject || !lv_obj_is_visible(screenObject) || pendingJob || !nextRefreshAtMs) return;
+    if (!screenObject || !lv_obj_is_visible(screenObject)) return;
+    const bool hasTime = time_service::hasCurrentTime();
+    if (hasTime != rangeOptionsHaveTime) {
+        updateRangeOptions(hasTime);
+        nextRefreshAtMs = 0;
+        renderedBucketMinutes = 0;
+        startQuery(true);
+        return;
+    }
+    if (pendingJob || !nextRefreshAtMs) return;
     if (static_cast<int32_t>(millis() - nextRefreshAtMs) < 0) return;
     startQuery();
 }
@@ -218,8 +264,8 @@ void rangeChangedCb(lv_event_t* event)
     }
     if (lv_event_get_code(event) != LV_EVENT_VALUE_CHANGED) return;
     const uint16_t selected = lv_dropdown_get_selected(lv_event_get_target(event));
-    if (selected >= sizeof(kRanges) / sizeof(kRanges[0])) return;
-    selectedRange = selected;
+    if (selected >= visibleRangeCount) return;
+    selectedRange = visibleRanges[selected];
     nextRefreshAtMs = 0;
     renderedBucketMinutes = 0;
     startQuery(true);
@@ -228,7 +274,10 @@ void rangeChangedCb(lv_event_t* event)
 void screenRefreshCb(lv_event_t* event) {
     // Replace a stale hidden-screen query with one for the currently selected
     // range when this screen becomes active again.
-    if (lv_event_get_code(event) == LV_EVENT_REFRESH) startQuery(true);
+    if (lv_event_get_code(event) != LV_EVENT_REFRESH) return;
+    const bool hasTime = time_service::hasCurrentTime();
+    if (hasTime != rangeOptionsHaveTime) updateRangeOptions(hasTime);
+    startQuery(true);
 }
 
 void addLegendItem(lv_obj_t* parent, lv_color_t color, const char* text)
@@ -298,7 +347,7 @@ lv_obj_t* create(lv_obj_t* parent)
     progress = linear_progress::create(screen);
     lv_obj_add_event_cb(screen, screenRefreshCb, LV_EVENT_REFRESH, nullptr);
 
-    updateRangeOptions();
+    updateRangeOptions(time_service::hasCurrentTime());
     // This timer only transfers completed background results into LVGL; it
     // never performs filesystem work or aggregation.
     lv_timer_create(completionCb, 40, nullptr);

@@ -238,11 +238,12 @@ export function openLiveSocket(onFrame, onState) {
 
 function parseHistory(buffer) {
   const view = new DataView(buffer);
-  if (view.byteLength < 32 || view.getUint32(0, true) !== 0x32485056 || view.getUint8(4) !== 2 || view.getUint8(5) !== 2) throw new Error('Unsupported history response');
+  if (view.byteLength < 32 || view.getUint32(0, true) !== 0x33485056 || view.getUint8(4) !== 3 || view.getUint8(5) !== 2) throw new Error('Unsupported history response');
   const flags = view.getUint16(6, true), count = view.getUint16(8, true), recordBytes = view.getUint16(10, true);
   if (recordBytes !== 80 || view.byteLength !== 32 + count * recordBytes) throw new Error('Invalid history response');
-  const startUnixMs = view.getFloat64(16, true);
-  const endUnixMs = view.getFloat64(24, true);
+  const startTimeMs = view.getFloat64(16, true);
+  const endTimeMs = view.getFloat64(24, true);
+  const timelineBasis = flags & 4 ? 'relative' : 'wall-clock';
   const buckets = [];
   for (let index = 0; index < count; index += 1) {
     const offset = 32 + index * recordBytes;
@@ -251,7 +252,7 @@ function parseHistory(buffer) {
     const componentCoverageMs = Array.from({ length: 5 }, (_, value) => view.getUint32(offset + 60 + value * 4, true));
     const watts = (value, coverage) => coverage ? value * 3600000 / coverage : Number.NaN;
     buckets.push({
-      unixMs: view.getFloat64(offset, true), coveredMs,
+      timeMs: view.getFloat64(offset, true), coveredMs,
       configuredChannelMask: view.getUint8(offset + 12), timeFlags: view.getUint8(offset + 13),
       qualityFlags: view.getUint8(offset + 14), channelCoverageMs, componentCoverageMs,
       in: watts(view.getFloat32(offset + 16, true), channelCoverageMs[0]),
@@ -265,11 +266,11 @@ function parseHistory(buffer) {
     });
   }
   const bucketMinutes = count > 1
-    ? Math.max(1, Math.round((buckets[1].unixMs - buckets[0].unixMs) / 60_000))
-    : (count === 1 && endUnixMs > startUnixMs
-      ? Math.max(1, Math.round((endUnixMs - startUnixMs) / 60_000))
+    ? Math.max(1, Math.round((buckets[1].timeMs - buckets[0].timeMs) / 60_000))
+    : (count === 1 && endTimeMs > startTimeMs
+      ? Math.max(1, Math.round((endTimeMs - startTimeMs) / 60_000))
       : 0);
-  return { flags, startUnixMs, endUnixMs, bucketMinutes, buckets };
+  return { flags, timelineBasis, startTimeMs, endTimeMs, bucketMinutes, buckets };
 }
 
 export async function getCycles() {

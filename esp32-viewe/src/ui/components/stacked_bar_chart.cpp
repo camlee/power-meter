@@ -17,9 +17,9 @@ float niceStep(float value) {
 }
 void relativeLabel(char* out, size_t size, uint32_t minutes) {
     if (!minutes) lv_snprintf(out, size, "now");
-    else if (minutes < 60) lv_snprintf(out, size, "-%um", (unsigned)minutes);
-    else if (minutes < 1440) lv_snprintf(out, size, "-%uh", (unsigned)(minutes / 60));
-    else lv_snprintf(out, size, "-%ud", (unsigned)(minutes / 1440));
+    else if (minutes < 60) lv_snprintf(out, size, "%um ago", (unsigned)minutes);
+    else if (minutes < 1440) lv_snprintf(out, size, "%uh ago", (unsigned)(minutes / 60));
+    else lv_snprintf(out, size, "%ud ago", (unsigned)(minutes / 1440));
 }
 void calendarLabel(char* out, size_t size, int64_t unixMs, uint32_t durationMinutes,
                    uint32_t tickMinutes, int16_t utcOffsetMinutes) {
@@ -78,13 +78,13 @@ void drawCb(lv_event_t* event) {
         constexpr int labelGap = 4;
         const int plotSpan = right - left;
         int previousLabelRight = a.x1 - labelGap;
-        if (state->data.axisStartUnixMs) {
+        if (state->data.axisMode == AxisMode::WallClock) {
             const int64_t minuteMs = 60000LL;
             const int64_t tickMs = static_cast<int64_t>(tickMinutes) * minuteMs;
             const int64_t durationMs = static_cast<int64_t>(state->data.durationMinutes) * minuteMs;
-            const int64_t axisEnd = state->data.axisStartUnixMs + durationMs;
+            const int64_t axisEnd = state->data.axisStartTimeMs + durationMs;
             const int64_t offsetMs = static_cast<int64_t>(state->data.utcOffsetMinutes) * minuteMs;
-            const int64_t localStart = state->data.axisStartUnixMs + offsetMs;
+            const int64_t localStart = state->data.axisStartTimeMs + offsetMs;
             const int64_t firstLocalTick = ((localStart + tickMs - 1) / tickMs) * tickMs;
             const int64_t firstTick = firstLocalTick - offsetMs;
             const uint32_t tickCount = firstTick <= axisEnd
@@ -96,7 +96,7 @@ void drawCb(lv_event_t* event) {
                 const int64_t tickUnixMs = firstTick + static_cast<int64_t>(tick) * tickMs;
                 if (tick % labelEvery != 0) continue;
                 const int x = left + static_cast<int>(
-                    static_cast<int64_t>(plotSpan) * (tickUnixMs - state->data.axisStartUnixMs) / durationMs);
+                    static_cast<int64_t>(plotSpan) * (tickUnixMs - state->data.axisStartTimeMs) / durationMs);
                 lv_point_t p1{(lv_coord_t)x, (lv_coord_t)top}, p2{(lv_coord_t)x, (lv_coord_t)bottom};
                 line.width = 1;
                 lv_draw_line(ctx, &line, &p1, &p2);

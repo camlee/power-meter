@@ -193,6 +193,12 @@ For ordinary recorded Real and Demo sessions, anchors follow the same rules:
   bound its uncertainty within the selected query bucket;
 - compact an anchor only when neither dataset retains a referenced file.
 
+Before the current boot has an anchor, rolling queries aggregate only its
+matching session ID in the monotonic-minute domain. This placement is exact,
+not inferred. Previous sessions and fixture history remain absent because
+their relationship to current uptime cannot be known honestly. Calendar
+queries continue to require wall time.
+
 Time is a device property, not a history-view property: NTP/browser contribution
 never depends on whether Real or Demo is being viewed. Reserved fixture session
 zero uses separate fixed Demo-fixture anchor metadata and never participates in

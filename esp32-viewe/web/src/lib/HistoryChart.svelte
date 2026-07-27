@@ -2,8 +2,9 @@
   import { onMount } from 'svelte';
 
   export let buckets = [];
-  export let startUnixMs = 0;
-  export let endUnixMs = 0;
+  export let timelineBasis = 'wall-clock';
+  export let startTimeMs = 0;
+  export let endTimeMs = 0;
   export let tickMinutes = 0;
 
   // ---------------------------------------------------------------------
@@ -72,6 +73,14 @@
     const hour = hour24 % 12 || 12;
     const minutes = String(date.getMinutes()).padStart(2, '0');
     return `${hour}:${minutes} ${hour24 < 12 ? 'AM' : 'PM'}`;
+  }
+
+  function formatRelativeLabel(timeMs) {
+    const minutes = Math.max(0, Math.round((endTimeMs - timeMs) / 60_000));
+    if (!minutes) return 'now';
+    if (minutes < 60) return `${minutes}m ago`;
+    if (minutes < 1440) return `${Math.round(minutes / 60)}h ago`;
+    return `${Math.round(minutes / 1440)}d ago`;
   }
 
   // ---------------------------------------------------------------------
@@ -156,24 +165,32 @@
   }
 
   function drawTimeLabels(ctx, plot, colors) {
-    const durationMinutes = Math.max(1, Math.round((endUnixMs - startUnixMs) / 60_000));
+    const durationMinutes = Math.max(1, Math.round((endTimeMs - startTimeMs) / 60_000));
     const intervalMinutes = tickMinutes || automaticTickMinutes(durationMinutes);
     const intervalMs = intervalMinutes * 60_000;
-    if (!Number.isFinite(startUnixMs) || !Number.isFinite(endUnixMs) ||
-        endUnixMs <= startUnixMs || intervalMs <= 0) return;
+    if (!Number.isFinite(startTimeMs) || !Number.isFinite(endTimeMs) ||
+        endTimeMs <= startTimeMs || intervalMs <= 0) return;
 
-    // Align ticks to local clock boundaries, as the fixed-offset device does.
-    const localOffsetMs = -new Date(startUnixMs).getTimezoneOffset() * 60_000;
-    const firstTick = Math.ceil((startUnixMs + localOffsetMs) / intervalMs) * intervalMs - localOffsetMs;
-    const tickPixels = plot.width * intervalMs / Math.max(1, endUnixMs - startUnixMs);
+    let ticks = [];
+    if (timelineBasis === 'relative') {
+      for (let tick = endTimeMs; tick >= startTimeMs; tick -= intervalMs) ticks.push(tick);
+      ticks.reverse();
+    } else {
+      // Align wall-clock ticks to local boundaries, as the fixed-offset device does.
+      const localOffsetMs = -new Date(startTimeMs).getTimezoneOffset() * 60_000;
+      const firstTick = Math.ceil((startTimeMs + localOffsetMs) / intervalMs) * intervalMs - localOffsetMs;
+      for (let tick = firstTick; tick <= endTimeMs; tick += intervalMs) ticks.push(tick);
+    }
+    const tickPixels = plot.width * intervalMs / Math.max(1, endTimeMs - startTimeMs);
     const labelEvery = Math.max(1, Math.ceil(MIN_TIME_LABEL_SPACING_PX / Math.max(1, tickPixels)));
     let previousLabelRight = -Infinity;
 
     ctx.textBaseline = 'top';
     ctx.fillStyle = colors.muted;
-    for (let tick = firstTick, index = 0; tick <= endUnixMs; tick += intervalMs, index += 1) {
+    for (let index = 0; index < ticks.length; index += 1) {
       if (index % labelEvery) continue;
-      const x = plot.left + plot.width * (tick - startUnixMs) / (endUnixMs - startUnixMs);
+      const tick = ticks[index];
+      const x = plot.left + plot.width * (tick - startTimeMs) / (endTimeMs - startTimeMs);
 
       ctx.strokeStyle = colors.grid;
       ctx.lineWidth = 1;
@@ -182,7 +199,9 @@
       ctx.lineTo(x, plot.top + plot.height);
       ctx.stroke();
 
-      const text = formatTimeLabel(tick, durationMinutes, intervalMinutes);
+      const text = timelineBasis === 'relative'
+        ? formatRelativeLabel(tick)
+        : formatTimeLabel(tick, durationMinutes, intervalMinutes);
       const textWidth = ctx.measureText(text).width;
       const labelX = Math.max(1, Math.min(x - textWidth / 2, plot.left + plot.width - textWidth));
       if (labelX < previousLabelRight + 4) continue;
@@ -254,7 +273,7 @@
   // Lifecycle
   // ---------------------------------------------------------------------
 
-  $: buckets, startUnixMs, endUnixMs, tickMinutes, draw();
+  $: buckets, timelineBasis, startTimeMs, endTimeMs, tickMinutes, draw();
 
   onMount(() => {
     const observer = new ResizeObserver(draw);
