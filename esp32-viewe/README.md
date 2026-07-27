@@ -38,6 +38,19 @@ Development builds derive a short SemVer-compatible identity from the nearest
 one `MAJOR.MINOR.PATCH` version from their Git tag so both hardware artifacts
 share the exact release identity.
 
+### Publish an Internet OTA release
+
+Commit the release source, then run one command with the new version:
+
+```sh
+python3 tools/publish_github_release.py 0.1.2
+```
+
+It tests the project, builds and signs both hardware targets, creates and
+pushes `v0.1.2` with the current branch, and uploads all eight assets to a
+draft GitHub release. Open the URL it prints, review the draft, and publish it.
+The OTA private key remains only on the local build machine.
+
 ### USB / hardwired update
 
 Connect one meter over USB, then run:

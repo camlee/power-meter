@@ -102,27 +102,36 @@ POST /api/v1/updates/install
 PUT  /api/v1/updates/settings   {"automatic":true}
 ```
 
-## Build GitHub release assets
+## Publish a GitHub release
 
-Stable release identity comes from one tag-supplied `MAJOR.MINOR.PATCH`
-version, ensuring both hardware builds contain the same version.
+Stable release identity comes from one `MAJOR.MINOR.PATCH` argument, ensuring
+both hardware builds and the Git tag contain the same version.
 
 Commit the intended release, then:
 
 ```sh
-git tag -a v0.1.0 -m "Power meter v0.1.0"
-git push origin main
-git push origin v0.1.0
-
-python3 tools/build_github_release.py 0.1.0
+python3 tools/publish_github_release.py 0.1.2
 ```
 
-The command builds both PlatformIO environments, signs both manifests with the
-local private key, explicitly suppresses developer `.env` AP credentials from
-the public binaries, and creates:
+The command:
+
+1. Requires committed source, the local signing key, and authenticated `gh`.
+2. Runs the native, signing, and web tests.
+3. Builds and signs both PlatformIO environments while suppressing developer
+   `.env` AP credentials from the public binaries.
+4. Creates the annotated `v0.1.2` tag only after the tests pass.
+5. Atomically pushes the current branch and tag to its configured upstream.
+6. Creates a draft release in the repository configured by `platformio.ini`
+   and uploads all eight assets.
+
+It prints the draft URL when it finishes. Inspect the draft, confirm all eight
+assets are present, and publish it as the latest release. Drafts and
+prereleases are not consumed by the stable updater.
+
+The generated files are retained locally in:
 
 ```text
-dist/v0.1.0/
+dist/v0.1.2/
   firmware-meter-viewe.bin
   firmware-meter-wroom.bin
   manifest-meter-viewe.json
@@ -136,41 +145,36 @@ dist/v0.1.0/
 The `manifest-*` files are retained for inspection; devices download only the
 small `ota-*` descriptor and their matching firmware asset.
 
-## GitHub publication steps
+If a push or GitHub upload fails, run the same command again. It validates and
+reuses assets only when they were built from the current tagged commit, and it
+can resume an existing draft release. Use `--dry-run` to inspect the resolved
+version, branch, remote, repository, and output path without changing anything.
+`--skip-tests` is available for recovery but should not be used for a normal
+release.
 
-The configured repository is `camlee/power-meter`. It must be public for
-token-free device downloads. If the source must remain private, create a
-dedicated public binary-release repository and change
-`custom_ota_release_repo` in both PlatformIO environments before the first
-Internet-capable device build.
+The configured release repository must be public for token-free device
+downloads. If the source must remain private, create a dedicated public
+binary-release repository and change `custom_ota_release_repo` in both
+PlatformIO environments before the first Internet-capable device build.
 
-1. In GitHub, open **Settings → General → Releases** and enable release
-   immutability. It applies only to future releases.
-2. Install/authenticate GitHub CLI if desired: `gh auth login`.
-3. Create a draft and upload every generated asset:
+One-time GitHub setup:
 
-   ```sh
-   gh release create v0.1.0 --draft --verify-tag \
-     --title v0.1.0 dist/v0.1.0/*
-   ```
+```sh
+gh auth login
+```
 
-4. In the GitHub draft, confirm all eight assets are present, add release
-   notes, and publish it as the latest release.
-5. Run `python3 tools/test_ota_crypto.py`, then download the published assets
-   once and compare them with the files you built:
+In GitHub, enable **Settings → General → Releases → Release immutability**
+before publishing the first immutable release. It applies only to future
+releases.
 
-   ```sh
-   mkdir -p /tmp/power-meter-v0.1.0
-   gh release download v0.1.0 --dir /tmp/power-meter-v0.1.0
-   diff <(cd dist/v0.1.0 && sha256sum *) \
-        <(cd /tmp/power-meter-v0.1.0 && sha256sum *)
-   ```
+After publishing, use **Check now** on the first device and observe download,
+reboot, confirmation, and network recovery before allowing the second device
+to update.
 
-6. Use **Check now** on the first device and observe download, reboot,
-   confirmation, and network recovery before allowing the second device to
-   update.
-
-Drafts and prereleases are not consumed by the stable updater.
+`tools/build_github_release.py` remains available as a lower-level,
+build-and-sign-only command for recovery or inspection. It expects the matching
+tag to already point at `HEAD`; normal releases should use
+`tools/publish_github_release.py`.
 
 ## Failure and recovery
 

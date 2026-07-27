@@ -46,6 +46,10 @@ def main():
         "--private-key", type=Path,
         default=PROJECT_DIR / "secrets" / "ota_signing_private.pem",
     )
+    parser.add_argument(
+        "--output", type=Path,
+        help="output directory (default: dist/v<version>)",
+    )
     args = parser.parse_args()
     if not STABLE_SEMVER.fullmatch(args.version):
         sys.exit("Version must be stable MAJOR.MINOR.PATCH without a leading v.")
@@ -59,7 +63,7 @@ def main():
     except subprocess.CalledProcessError:
         source_epoch = str(int(datetime.datetime.now(datetime.timezone.utc).timestamp()))
 
-    output = PROJECT_DIR / "dist" / tag
+    output = args.output or PROJECT_DIR / "dist" / tag
     if output.exists() and any(output.iterdir()):
         sys.exit("Release output already exists and is not empty: {}".format(output))
     output.mkdir(parents=True, exist_ok=True)
