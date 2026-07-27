@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { projectLiveNow } from './liveTime.js';
 
   export let points = [];
   export let sessionId = null;
@@ -29,6 +30,7 @@
   let rafId = null;
   let referenceDataTime = null;
   let referenceWallTime = null;
+  let referenceMonotonicTime = null;
   let referenceSessionId = null;
   let sortedPoints = [];
   let chartWidth = 0;
@@ -56,6 +58,7 @@
     referenceSessionId = sessionId;
     referenceDataTime = null;
     referenceWallTime = null;
+    referenceMonotonicTime = null;
   }
 
   function sortPoints(list) {
@@ -101,23 +104,30 @@
   // normal wall-clock extrapolation catches up to it.
   function virtualNow() {
     const last = newestReceivedPoint();
+    const wallNow = Date.now();
+    const monotonicNow = performance.now();
     if (last && Number.isFinite(last.timestamp)) {
       if (referenceDataTime == null) {
-        referenceDataTime = last.timestamp;
-        referenceWallTime = Date.now();
+        referenceDataTime = projectLiveNow(last, { wallNow, monotonicNow });
+        referenceWallTime = wallNow;
+        referenceMonotonicTime = monotonicNow;
       } else if (last.timestamp !== referenceDataTime) {
-        const predicted = referenceDataTime + (Date.now() - referenceWallTime);
-        const drift = last.timestamp - predicted;
+        const predicted = referenceDataTime + (monotonicNow - referenceMonotonicTime);
+        const projected = projectLiveNow(last, { wallNow, monotonicNow });
+        const drift = projected - predicted;
         if (drift >= MAX_FORWARD_CLOCK_DRIFT_MS) {
           // A forward clock correction should become visible promptly. A
           // negative drift is commonly delayed replay and intentionally
           // does not move the window backward.
-          referenceDataTime = last.timestamp;
-          referenceWallTime = Date.now();
+          referenceDataTime = projected;
+          referenceWallTime = wallNow;
+          referenceMonotonicTime = monotonicNow;
         }
       }
     }
-    return referenceDataTime != null ? referenceDataTime + (Date.now() - referenceWallTime) : Date.now();
+    return referenceDataTime != null
+      ? referenceDataTime + (monotonicNow - referenceMonotonicTime)
+      : wallNow;
   }
 
   function wallClockOffset() {

@@ -6,6 +6,7 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite --host 0.0.0.0",
+    "test": "node --test",
     "check": "python3 ../tools/build_web_assets.py && python3 ../tools/build_web_assets.py --verify"
   },
   "devDependencies": {

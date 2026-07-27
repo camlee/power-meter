@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { projectLiveNow } from './liveTime.js';
 
   export let points = [];
   export let field = 'voltage';
@@ -13,12 +14,14 @@
 
   const WINDOW_MS = 30_000;
   const GAP_MS = 3_000;
+  const REDRAW_INTERVAL_MS = 500;
   const PADDING = { left: 48, right: 8, top: 10, bottom: 24 };
   let canvas;
   let width = 0;
   let height = 180;
   let resizeObserver;
   let raf;
+  let redrawTimer;
 
   $: if (canvas && points && previewPoints) scheduleDraw();
   $: latestOldValue = points.at(-1)?.[field];
@@ -42,6 +45,16 @@
     raf = requestAnimationFrame(draw);
   }
 
+  function syncRedrawTimer(isActive, target) {
+    clearInterval(redrawTimer);
+    redrawTimer = isActive && target
+      ? setInterval(scheduleDraw, REDRAW_INTERVAL_MS)
+      : null;
+    scheduleDraw();
+  }
+
+  $: syncRedrawTimer(active, canvas);
+
   function draw() {
     if (!canvas || !width) return;
     const ratio = devicePixelRatio || 1;
@@ -60,8 +73,9 @@
     ctx.font = '11px system-ui, sans-serif';
     const sorted = points.filter((point) => Number.isFinite(point?.timestamp))
       .slice().sort((a, b) => a.timestamp - b.timestamp);
-    const newest = sorted.at(-1)?.timestamp ?? Date.now();
-    const end = active && sorted.length ? newest + Math.min(1000, Date.now() - (sorted.at(-1)?.receivedAt || Date.now())) : newest;
+    const newestPoint = sorted.at(-1);
+    const newest = newestPoint?.timestamp ?? Date.now();
+    const end = active && newestPoint ? projectLiveNow(newestPoint) : newest;
     const start = end - WINDOW_MS;
     const visible = sorted.filter((point) => point.timestamp >= start && point.timestamp <= end);
     const preview = previewPoints.filter((point) => Number.isFinite(point?.timestamp) &&
@@ -149,6 +163,7 @@
       resizeObserver.disconnect();
       removeEventListener('viewe-theme-change', scheduleDraw);
       cancelAnimationFrame(raf);
+      clearInterval(redrawTimer);
     };
   });
 </script>

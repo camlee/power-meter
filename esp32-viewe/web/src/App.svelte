@@ -150,7 +150,8 @@
       ? selectedChannel.input_voltage_v
       : selectedChannel.input_current_v;
   $: sensorPoints = Object.fromEntries(['in', 'out', 'aux'].map((id) => [id, points.map((point) => ({
-    timestamp: point.timestamp, receivedAt: point.receivedAt, ...(point.sensors?.[id] || {}),
+    timestamp: point.timestamp, receivedAt: point.receivedAt,
+    receivedMonotonicAt: point.receivedMonotonicAt, ...(point.sensors?.[id] || {}),
   }))]));
   $: selectedSensorPoints = sensorPoints[selectedSensor] || [];
   // Pass dependencies explicitly: legacy Svelte reactive statements cannot
@@ -923,6 +924,8 @@
     lastSequence = frame.sequence;
 
     const timestamp = Number.isFinite(frame.unixMs) ? frame.unixMs : frame.uptimeMs;
+    const receivedAt = Date.now();
+    const receivedMonotonicAt = performance.now();
     const eligible = (index) => !!(frame.eligibleMask & (1 << index));
     const observed = (index) => !!(frame.observedMask & (1 << index));
     const liveSensor = (index, reading) => {
@@ -937,7 +940,7 @@
       {
         in: eligible(0) ? frame.in.power : Number.NaN,
         out: eligible(1) ? frame.out.power : Number.NaN,
-        timestamp, receivedAt: Date.now(),
+        timestamp, receivedAt, receivedMonotonicAt,
         sensors: {
           in: liveSensor(0, frame.in),
           out: liveSensor(1, frame.out),
@@ -1697,16 +1700,17 @@
                       title={calibrationEditor.measurement === 'voltage' ? 'Voltage' : 'Current'}
                       unit={calibrationEditor.measurement === 'voltage' ? 'V' : 'A'}
                       colorVariable={calibrationEditor.measurement === 'voltage' ? '--panel' : '--warning'}
-                      active={!livePaused} previewPoints={calibrationPreviewPoints} showPreviewLegend={true} />
+                      active={!livePaused && selectedSensor === channel.id}
+                      previewPoints={calibrationPreviewPoints} showPreviewLegend={true} />
                   {:else}
                     <SensorChart points={sensorPoints[channel.id] || []} field="voltage" title="Voltage" unit="V"
-                      colorVariable="--panel" active={!livePaused} />
+                      colorVariable="--panel" active={!livePaused && selectedSensor === channel.id} />
                     <SensorChart points={sensorPoints[channel.id] || []} field="current" title="Current" unit="A"
-                      colorVariable="--warning" active={!livePaused} />
+                      colorVariable="--warning" active={!livePaused && selectedSensor === channel.id} />
                     <SensorChart points={sensorPoints[channel.id] || []} field="power" title="Power" unit="W"
-                      colorVariable="--charge" active={!livePaused} />
+                      colorVariable="--charge" active={!livePaused && selectedSensor === channel.id} />
                     <SensorChart points={sensorPoints[channel.id] || []} field="duty" title="Duty" unit="%"
-                      colorVariable="--surplus" active={!livePaused}
+                      colorVariable="--surplus" active={!livePaused && selectedSensor === channel.id}
                       emptyMessage={dutyEmptyMessage(channel)} />
                   {/if}
                 </div>
