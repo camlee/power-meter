@@ -1105,6 +1105,13 @@ const char* getCurrentSsid() {
     return targetSsid;
 }
 
+const char* getCurrentApSsid() {
+    static char ssid[33];
+    const String current = apRunning ? WiFi.softAPSSID() : String();
+    strlcpy(ssid, current.c_str(), sizeof(ssid));
+    return ssid;
+}
+
 uint32_t getReconnectSecondsRemaining() {
     if (connectionPhase != ConnectionPhase::RetryWaiting ||
         nextReconnectAt == 0) return 0;

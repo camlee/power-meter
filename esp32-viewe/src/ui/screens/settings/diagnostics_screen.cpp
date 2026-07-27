@@ -5,9 +5,13 @@
 #include <cstring>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include "build_time.h"
 #include "data/history_query_service.h"
 #include "lvgl_v8_port.h"
+#include "network/live_websocket_service.h"
 #include "network/ota_service.h"
+#include "network/web_assets.generated.h"
+#include "time/time_service.h"
 #include "../../theme/ui_theme.h"
 
 namespace diagnostics_screen {
@@ -21,6 +25,8 @@ lv_obj_t* otaHealthLabel = nullptr;
 lv_obj_t* otaSlotLabel = nullptr;
 lv_obj_t* otaStateLabel = nullptr;
 lv_obj_t* historyQueryLabel = nullptr;
+lv_obj_t* timeSourceLabel = nullptr;
+lv_obj_t* wsConnectionsLabel = nullptr;
 lv_timer_t* updateTimer = nullptr;
 uint8_t rowIndex = 0;
 
@@ -114,6 +120,14 @@ void updateCb(lv_timer_t* timer) {
              ota_service::rollbackDetected() ? "; rollback detected" : "");
     lv_label_set_text(otaStateLabel, buffer);
 
+    time_service::Anchor anchor{};
+    lv_label_set_text(timeSourceLabel, time_service::getCurrentAnchor(anchor)
+        ? time_service::sourceName(anchor.source) : "unanchored");
+    snprintf(buffer, sizeof(buffer), "%u / %u",
+             static_cast<unsigned>(live_websocket_service::clientCount()),
+             static_cast<unsigned>(live_websocket_service::clientLimit()));
+    lv_label_set_text(wsConnectionsLabel, buffer);
+
     history_query_service::Timing queryTiming{};
     history_query_service::getTiming(queryTiming);
     if (!queryTiming.lastDurationMs) {
@@ -156,7 +170,10 @@ lv_obj_t* create(lv_obj_t* parent) {
     internalMemoryLabel = addRow(list, "Internal heap", "--");
     psramMemoryLabel = addRow(list, "PSRAM heap", "--");
     lvglStackLabel = addRow(list, "LVGL stack", "--");
+    timeSourceLabel = addRow(list, "Time source", "--");
+    addRow(list, "Web build", web_assets::kBuildId);
     storageLabel = addRow(list, "Data storage", "--");
+    wsConnectionsLabel = addRow(list, "WS connections", "--");
     otaHealthLabel = addRow(list, "OTA", "--");
     otaSlotLabel = addRow(list, "OTA slots", "--");
     otaStateLabel = addRow(list, "OTA image", "--");

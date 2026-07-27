@@ -130,14 +130,13 @@ The SPA computes that port from the host name, so the browser user never enters
 it. A later migration of OTA routes to the native server can unite both on port
 80 without changing the browser protocol path or frame layout.
 
-The live WebSocket, sensor read model, browser time anchor, and remote-display
-endpoints are unauthenticated for use on a trusted local network. The Wi-Fi
-settings endpoints follow the same local-management model and the Wi-Fi read
-model includes the saved AP password so it can reproduce the on-device editor.
-OTA and its
-maintenance diagnostics retain their bearer-token policy. Do not expose the
-meter beyond the trusted LAN without adding authentication to these
-browser-facing endpoints.
+The live WebSocket, sensor read model, browser time anchor, remote-display,
+settings, diagnostics, and signed-OTA endpoints are unauthenticated for use on
+a trusted local network. The Wi-Fi read model includes the saved AP password so
+it can reproduce the on-device editor. OTA authenticity comes from the
+embedded public signing key; local clients cannot select an arbitrary URL or
+install unsigned/equal/older firmware. Do not expose the meter beyond the
+trusted LAN without adding authentication to these browser-facing endpoints.
 
 The Wi-Fi settings page uses the same `network_manager` command and persistence
 methods as the LVGL Wi-Fi screen. Station scans and connections are asynchronous;
@@ -153,6 +152,11 @@ can disconnect the browser, which must then join the new SSID.
 touch/status displays and individually supported sensor modes.
 The SPA hides remote-display, LVGL appearance, and unsupported source controls
 at runtime, allowing the same embedded assets to serve both hardware targets.
+
+The Info page polls `GET /api/v1/updates` while visible. Check, install, and
+automatic-update preference changes use `/api/v1/updates/check`,
+`/api/v1/updates/install`, and `/api/v1/updates/settings`. These commands only
+drive the fixed GitHub release source and shared signed-image installer.
 
 `/api/v1/sensors` is the diagnostic and calibration read model used by the
 Sensors and Setup pages. Each channel reports `configured`, `observed`, its

@@ -16,8 +16,8 @@ bool running = false;
 
 bool begin() {
     if (running) return true;
-    const char* headers[] = {"X-OTA-Token", "If-None-Match"};
-    server.collectHeaders(headers, 2);
+    const char* headers[] = {"If-None-Match"};
+    server.collectHeaders(headers, 1);
     ota_service::registerRoutes(server);
     web_api::registerRoutes(server);
     display_web_api::registerRoutes(server);

@@ -12,6 +12,7 @@
 #include "device/i2c_bus.h"
 #include "device/status_display.h"
 #include "network/live_websocket_service.h"
+#include "network/internet_update_service.h"
 #include "network/network_manager.h"
 #include "network/ota_service.h"
 #include "sensors/sensors.h"
@@ -95,6 +96,7 @@ void begin() {
     // The server binds before an interface is available and becomes reachable
     // as soon as station or AP networking comes up.
     ota_service::begin();
+    internet_update_service::begin();
     const bool liveReady = live_websocket_service::begin();
 
     constexpr uint32_t kInternalCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -122,6 +124,7 @@ void update() {
         lastNetworkUpdateMs = now;
         network_manager::update();
     }
+    internet_update_service::update();
     ota_service::update();
     live_websocket_service::update();
     i2c_bus::update();

@@ -171,6 +171,39 @@ export async function getDebug() {
   return response.json();
 }
 
+export async function getUpdates() {
+  const response = await fetch('/api/v1/updates', { cache: 'no-store' });
+  if (!response.ok) throw await responseError(response, 'updates');
+  return response.json();
+}
+
+export async function checkForUpdates() {
+  const response = await fetch('/api/v1/updates/check', {
+    method: 'POST', cache: 'no-store',
+  });
+  if (!response.ok) throw await responseError(response, 'check for updates');
+  return response.json();
+}
+
+export async function installUpdate() {
+  const response = await fetch('/api/v1/updates/install', {
+    method: 'POST', cache: 'no-store',
+  });
+  if (!response.ok) throw await responseError(response, 'install update');
+  return response.json();
+}
+
+export async function saveUpdateSettings(automatic) {
+  const response = await fetch('/api/v1/updates/settings', {
+    method: 'PUT',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ automatic }),
+  });
+  if (!response.ok) throw await responseError(response, 'save update settings');
+  return response.json();
+}
+
 export async function anchorTime() {
   const response = await fetch('/api/v1/time/anchor', {
     method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },

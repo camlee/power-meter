@@ -33,9 +33,10 @@ pio test -e native
 
 ## Updating firmware
 
-Firmware versions are generated as
-`0.0.N` and increment once per build. A single build can therefore update many
-meters with the exact same signed firmware.
+Development builds derive a short SemVer-compatible identity from the nearest
+`v*` tag using `git describe`, such as `0.1.0-3+g1a2b3c4`. Stable releases take
+one `MAJOR.MINOR.PATCH` version from their Git tag so both hardware artifacts
+share the exact release identity.
 
 ### USB / hardwired update
 
@@ -74,17 +75,16 @@ Do this before the first USB flash that should enable OTA updates:
 
 ```sh
 cp .env.example .env
-openssl rand -hex 32
-# Paste that value as VIEWE_OTA_TOKEN=... in .env.
 python3 tools/create_ota_keys.py
 ```
 
 Keep `.env` and `secrets/ota_signing_private.pem` on this trusted build
-machine. Do not commit either file. The first USB flash embeds the shared token
-and public signing key in the meter.
+machine. Do not commit either file. The first USB flash embeds the public
+signing key in the meter.
 
-Also re-flash over USB for recovery, or whenever changing the OTA token,
-signing key, bootloader, partition table, or LittleFS contents.
+Also re-flash over USB for recovery, or whenever changing the signing key,
+bootloader, partition table, or LittleFS contents. See
+[`docs/OTA.md`](docs/OTA.md) for local and GitHub release workflows.
 
 ### Linux mDNS support
 
@@ -220,8 +220,7 @@ present, becomes the meter's persisted fixed offset. The embedded web app sends
 History-file diagnostics are exposed without scanning measurement rows:
 
 ```sh
-curl -H "Authorization: Bearer $VIEWE_OTA_TOKEN" \
-  'http://device1.local/api/v1/history/files?offset=0&limit=25'
+curl 'http://device1.local/api/v1/history/files?offset=0&limit=25'
 ```
 
 The endpoint is paginated and caps a page at 50 files.

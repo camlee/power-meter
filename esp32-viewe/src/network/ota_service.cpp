@@ -5,17 +5,19 @@
 #include <Preferences.h>
 #include <Update.h>
 #include <WebServer.h>
-#include <esp_heap_caps.h>
 #include <esp_ota_ops.h>
 #include <esp_partition.h>
 #include <esp_system.h>
 #include <mbedtls/base64.h>
 #include <mbedtls/pk.h>
 #include <mbedtls/sha256.h>
+#include <atomic>
+#include <time.h>
 
 #include "ota_public_key.h"
 #include "network/http_utils.h"
 #include "network/live_websocket_service.h"
+#include "network/semver.h"
 #include "network/web_server.h"
 
 #ifndef OTA_SIGNING_PUBLIC_KEY_PEM
@@ -39,10 +41,13 @@ String expectedSha256;
 String expectedVersion;
 uint32_t expectedImageSize = 0;
 uint32_t receivedImageSize = 0;
+ManifestInfo activeManifest{};
 mbedtls_sha256_context shaContext;
 bool shaStarted = false;
 bool liveServicePausedForUpload = false;
-constexpr uint32_t kValidationWindowMs = 10000;
+std::atomic<bool> writerBusy{false};
+constexpr uint32_t kValidationWindowMs = 30000;
+constexpr int64_t kEarliestCredibleUnixSeconds = 1577836800LL; // 2020-01-01
 bool applicationReady = false;
 bool healthyLoopSeen = false;
 bool pendingVerify = false;
@@ -52,6 +57,14 @@ uint32_t validationStartedAt = 0;
 const esp_partition_t* runningPartition = nullptr;
 const esp_partition_t* bootPartition = nullptr;
 esp_ota_img_states_t runningState = ESP_OTA_IMG_UNDEFINED;
+String rollbackVersionValue;
+int64_t lastUpdateUnixSecondsValue = 0;
+bool updateDateMayBackfill = false;
+
+int64_t credibleUnixTime() {
+    const int64_t now = static_cast<int64_t>(time(nullptr));
+    return now >= kEarliestCredibleUnixSeconds ? now : 0;
+}
 
 const char* imageStateName(esp_ota_img_states_t state) {
     switch (state) {
@@ -86,6 +99,7 @@ void persistPendingAttempt(const char* targetPartition, const String& targetVers
     if (!prefs.begin("ota_diag", false)) return;
     prefs.putString("target_slot", targetPartition);
     prefs.putString("target_ver", targetVersion);
+    prefs.putLong64("attempt_at", credibleUnixTime());
     prefs.putString("result", "pending");
     prefs.end();
 }
@@ -94,12 +108,15 @@ void recordBootOutcome() {
     Preferences prefs;
     if (!prefs.begin("ota_diag", false)) return;
     const String target = prefs.getString("target_slot", "");
+    const String targetVersion = prefs.getString("target_ver", "");
     const String result = prefs.getString("result", "");
     if (result == "pending" && !target.isEmpty() && target != partitionLabel(runningPartition)) {
         didRollback = true;
+        rollbackVersionValue = targetVersion;
         prefs.putString("result", "rolled_back");
     } else if (result == "rolled_back") {
         didRollback = true;
+        rollbackVersionValue = targetVersion;
     } else if (result == "confirmed") {
         didRollback = false;
     }
@@ -109,9 +126,42 @@ void recordBootOutcome() {
 void recordConfirmation() {
     Preferences prefs;
     if (!prefs.begin("ota_diag", false)) return;
+    const int64_t attemptedAt = prefs.getLong64("attempt_at", 0);
+    const int64_t confirmedAt = credibleUnixTime();
+    lastUpdateUnixSecondsValue = confirmedAt ? confirmedAt : attemptedAt;
+    updateDateMayBackfill = lastUpdateUnixSecondsValue == 0;
     prefs.putString("result", "confirmed");
     prefs.putString("confirmed_slot", partitionLabel(runningPartition));
     prefs.putString("confirmed_ver", OTA_FIRMWARE_VERSION);
+    prefs.putLong64("confirmed_at", lastUpdateUnixSecondsValue);
+    prefs.end();
+}
+
+void loadCurrentUpdateDate() {
+    Preferences prefs;
+    if (!prefs.begin("ota_diag", true)) return;
+    const String confirmedVersion = prefs.getString("confirmed_ver", "");
+    if (confirmedVersion == OTA_FIRMWARE_VERSION) {
+        lastUpdateUnixSecondsValue = prefs.getLong64("confirmed_at", 0);
+        updateDateMayBackfill =
+            lastUpdateUnixSecondsValue == 0 &&
+            prefs.getString("result", "") == "confirmed";
+    }
+    prefs.end();
+}
+
+void backfillCurrentUpdateDate() {
+    if (!updateDateMayBackfill || lastUpdateUnixSecondsValue != 0) return;
+    const int64_t now = credibleUnixTime();
+    if (!now) return;
+    Preferences prefs;
+    if (!prefs.begin("ota_diag", false)) return;
+    if (prefs.getString("result", "") == "confirmed" &&
+        prefs.getString("confirmed_ver", "") == OTA_FIRMWARE_VERSION) {
+        prefs.putLong64("confirmed_at", now);
+        lastUpdateUnixSecondsValue = now;
+        updateDateMayBackfill = false;
+    }
     prefs.end();
 }
 
@@ -129,16 +179,10 @@ void resumeLiveServiceAfterUploadFailure() {
     }
 }
 
-void setSignatureVerificationError(const char* stage, int rc) {
-    uploadError = String("manifest signature verification failed at ") + stage +
-        " (rc=" + rc + ", largest_internal=" +
-        heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) + ")";
-    Serial.println(uploadError);
-}
-
-bool verifyManifestSignature(const String& manifest, const String& signatureBase64) {
+bool verifyManifestSignature(const String& manifest, const String& signatureBase64,
+                             String& error) {
     if (strlen(OTA_SIGNING_PUBLIC_KEY_PEM) == 0) {
-        uploadError = "signing public key is not configured";
+        error = "signing public key is not configured";
         return false;
     }
     size_t signatureLength = 0;
@@ -146,20 +190,20 @@ bool verifyManifestSignature(const String& manifest, const String& signatureBase
                                    reinterpret_cast<const unsigned char*>(signatureBase64.c_str()),
                                    signatureBase64.length());
     if (rc != MBEDTLS_ERR_BASE64_BUFFER_TOO_SMALL || signatureLength == 0 || signatureLength > 80) {
-        uploadError = "invalid base64 signature";
+        error = "invalid base64 signature";
         return false;
     }
     uint8_t signature[80];
     if (mbedtls_base64_decode(signature, sizeof(signature), &signatureLength,
                               reinterpret_cast<const unsigned char*>(signatureBase64.c_str()),
                               signatureBase64.length()) != 0) {
-        uploadError = "invalid base64 signature";
+        error = "invalid base64 signature";
         return false;
     }
     uint8_t digest[32];
     if (mbedtls_sha256(reinterpret_cast<const unsigned char*>(manifest.c_str()),
                        manifest.length(), digest, 0) != 0) {
-        uploadError = "manifest hash failed";
+        error = "manifest hash failed";
         return false;
     }
     mbedtls_pk_context key;
@@ -179,59 +223,18 @@ bool verifyManifestSignature(const String& manifest, const String& signatureBase
     }
     mbedtls_pk_free(&key);
     if (rc != 0) {
-        setSignatureVerificationError(failureStage, rc);
+        error = String("manifest signature verification failed at ") + failureStage +
+            " (rc=" + rc + ")";
+        Serial.println(error);
         return false;
     }
     return true;
 }
 
 bool prepareUpload() {
-    if (!http_utils::authorised(*server)) { uploadError = "unauthorised"; return false; }
     const String manifest = server->arg("manifest");
     const String signature = server->arg("signature");
-    String board, hash, version;
-    uint32_t format = 0, imageSize = 0;
-    if (manifest.isEmpty() || signature.isEmpty() ||
-        !http_utils::jsonString(manifest, "board", board) ||
-        !http_utils::jsonString(manifest, "sha256", hash) ||
-        !http_utils::jsonString(manifest, "version", version) ||
-        !http_utils::jsonUnsigned(manifest, "format", format) ||
-        !http_utils::jsonUnsigned(manifest, "image_size", imageSize)) {
-        uploadError = "invalid manifest";
-        return false;
-    }
-    const String canonical = String("{\"board\":\"") + board + "\",\"format\":" + format +
-        ",\"image_size\":" + imageSize + ",\"sha256\":\"" + hash +
-        "\",\"version\":\"" + version + "\"}";
-    if (format != 1 || manifest != canonical) { uploadError = "manifest is not canonical format 1"; return false; }
-    if (board != OTA_BOARD_ID) { uploadError = "firmware board does not match"; return false; }
-    if (imageSize == 0) { uploadError = "invalid manifest image_size"; return false; }
-    if (!http_utils::validSha256(hash)) { uploadError = "invalid manifest sha256"; return false; }
-    pauseLiveServiceForUpload();
-    if (!verifyManifestSignature(manifest, signature)) {
-        resumeLiveServiceAfterUploadFailure();
-        return false;
-    }
-    expectedSha256 = hash;
-    expectedVersion = version;
-    expectedImageSize = imageSize;
-    receivedImageSize = 0;
-    mbedtls_sha256_init(&shaContext);
-    if (mbedtls_sha256_starts(&shaContext, 0) != 0) {
-        uploadError = "image hash setup failed";
-        mbedtls_sha256_free(&shaContext);
-        resumeLiveServiceAfterUploadFailure();
-        return false;
-    }
-    shaStarted = true;
-    if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH)) {
-        uploadError = String("not enough OTA space: ") + Update.errorString();
-        mbedtls_sha256_free(&shaContext);
-        shaStarted = false;
-        resumeLiveServiceAfterUploadFailure();
-        return false;
-    }
-    return true;
+    return beginSignedInstall(manifest, signature, activeManifest, uploadError);
 }
 
 String hexDigest(const uint8_t* digest, size_t length) {
@@ -257,63 +260,36 @@ void handleUpload() {
         shaStarted = false;
         uploadAccepted = prepareUpload();
     } else if (upload.status == UPLOAD_FILE_WRITE && uploadAccepted) {
-        if (upload.currentSize > expectedImageSize - receivedImageSize ||
-            mbedtls_sha256_update(&shaContext, upload.buf, upload.currentSize) != 0 ||
-            Update.write(upload.buf, upload.currentSize) != upload.currentSize) {
-            uploadError = String("flash write failed: ") + Update.errorString();
+        if (!writeSignedInstall(upload.buf, upload.currentSize, uploadError)) {
             uploadAccepted = false;
-            Update.abort();
-            if (shaStarted) { mbedtls_sha256_free(&shaContext); shaStarted = false; }
-        } else {
-            receivedImageSize += upload.currentSize;
         }
     } else if (upload.status == UPLOAD_FILE_END && uploadAccepted) {
-        uint8_t digest[32];
-        if (!shaStarted || receivedImageSize != expectedImageSize ||
-            mbedtls_sha256_finish(&shaContext, digest) != 0 ||
-            !hexDigest(digest, sizeof(digest)).equalsIgnoreCase(expectedSha256)) {
-            uploadError = "image sha256 does not match manifest";
-            Update.abort();
-            uploadAccepted = false;
-        } else if (!Update.end(true)) {
-            uploadError = String("OTA finalisation failed: ") + Update.errorString();
-            uploadAccepted = false;
-        }
-        if (shaStarted) { mbedtls_sha256_free(&shaContext); shaStarted = false; }
+        uploadAccepted = finishSignedInstall(uploadError);
     } else if (upload.status == UPLOAD_FILE_ABORTED) {
-        Update.abort();
-        if (shaStarted) { mbedtls_sha256_free(&shaContext); shaStarted = false; }
+        abortSignedInstall("upload aborted");
         uploadAccepted = false;
         uploadError = "upload aborted";
-        resumeLiveServiceAfterUploadFailure();
     }
 }
 
 void completeUpload() {
     if (!uploadAccepted) {
-        resumeLiveServiceAfterUploadFailure();
-        server->send(uploadError == "unauthorised" ? 401 : 400, "application/json",
+        server->send(400, "application/json",
                      String("{\"ok\":false,\"error\":\"") + uploadError + "\"}");
         return;
     }
-    const esp_partition_t* target = esp_ota_get_next_update_partition(nullptr);
-    if (!target) {
-        resumeLiveServiceAfterUploadFailure();
+    if (!rebootToInstalledImage()) {
         server->send(500, "application/json", "{\"ok\":false,\"error\":\"OTA target partition unavailable\"}");
         return;
     }
-    persistPendingAttempt(target->label, expectedVersion);
     server->send(200, "application/json",
-        String("{\"ok\":true,\"rebooting\":true,\"target_partition\":\"") + target->label + "\"}");
+        String("{\"ok\":true,\"rebooting\":true,\"target_partition\":\"") +
+        esp_ota_get_boot_partition()->label + "\"}");
     delay(250);
     ESP.restart();
 }
 
 void info() {
-    if (!http_utils::authorised(*server)) {
-        server->send(401, "application/json", "{\"error\":\"unauthorised\"}");
-        return;
-    }
     char id[20];
     snprintf(id, sizeof(id), "%012llx", ESP.getEfuseMac());
     const uint32_t remaining = validationRemainingMs();
@@ -331,6 +307,189 @@ void info() {
 
 } // namespace
 
+bool verifySignedManifest(const String& manifest, const String& signatureBase64,
+                          ManifestInfo& info, String& error) {
+    error = "";
+    info = {};
+    String board, hash, version;
+    uint32_t format = 0, imageSize = 0;
+    if (manifest.isEmpty() || signatureBase64.isEmpty() ||
+        !http_utils::jsonString(manifest, "board", board) ||
+        !http_utils::jsonString(manifest, "sha256", hash) ||
+        !http_utils::jsonString(manifest, "version", version) ||
+        !http_utils::jsonUnsigned(manifest, "format", format) ||
+        !http_utils::jsonUnsigned(manifest, "image_size", imageSize)) {
+        error = "invalid manifest";
+        return false;
+    }
+
+    String canonical;
+    String channel, releaseTag, firmwareAsset;
+    if (format == 1) {
+        canonical = String("{\"board\":\"") + board + "\",\"format\":" + format +
+            ",\"image_size\":" + imageSize + ",\"sha256\":\"" + hash +
+            "\",\"version\":\"" + version + "\"}";
+    } else if (format == 2 &&
+               http_utils::jsonString(manifest, "channel", channel) &&
+               http_utils::jsonString(manifest, "firmware_asset", firmwareAsset) &&
+               http_utils::jsonString(manifest, "release_tag", releaseTag)) {
+        canonical = String("{\"board\":\"") + board + "\",\"channel\":\"" + channel +
+            "\",\"firmware_asset\":\"" + firmwareAsset + "\",\"format\":" + format +
+            ",\"image_size\":" + imageSize + ",\"release_tag\":\"" + releaseTag +
+            "\",\"sha256\":\"" + hash + "\",\"version\":\"" + version + "\"}";
+        const String expectedAsset = String("firmware-") + board + ".bin";
+        if (channel != "stable" || !semver::isStable(version.c_str()) ||
+            releaseTag != String("v") + version || firmwareAsset != expectedAsset) {
+            error = "invalid Internet release identity";
+            return false;
+        }
+    } else {
+        error = "unsupported manifest format";
+        return false;
+    }
+
+    if (manifest != canonical) {
+        error = "manifest is not canonical";
+        return false;
+    }
+    if (board != OTA_BOARD_ID) {
+        error = "firmware board does not match";
+        return false;
+    }
+    if (imageSize == 0 || imageSize > ESP.getFreeSketchSpace()) {
+        error = "invalid manifest image_size";
+        return false;
+    }
+    if (!http_utils::validSha256(hash)) {
+        error = "invalid manifest sha256";
+        return false;
+    }
+    if (!verifyManifestSignature(manifest, signatureBase64, error)) return false;
+
+    info.format = format;
+    info.imageSize = imageSize;
+    strlcpy(info.board, board.c_str(), sizeof(info.board));
+    strlcpy(info.version, version.c_str(), sizeof(info.version));
+    strlcpy(info.sha256, hash.c_str(), sizeof(info.sha256));
+    strlcpy(info.channel, channel.c_str(), sizeof(info.channel));
+    strlcpy(info.releaseTag, releaseTag.c_str(), sizeof(info.releaseTag));
+    strlcpy(info.firmwareAsset, firmwareAsset.c_str(), sizeof(info.firmwareAsset));
+    return true;
+}
+
+bool beginSignedInstall(const String& manifest, const String& signatureBase64,
+                        ManifestInfo& info, String& error) {
+    bool expected = false;
+    if (!writerBusy.compare_exchange_strong(expected, true)) {
+        error = "another OTA operation is already active";
+        return false;
+    }
+    if (pendingVerify) {
+        error = "running OTA image is still being validated";
+        writerBusy.store(false);
+        return false;
+    }
+    if (!verifySignedManifest(manifest, signatureBase64, info, error)) {
+        writerBusy.store(false);
+        return false;
+    }
+    bool validVersion = false;
+    const int versionComparison =
+        semver::compare(info.version, OTA_FIRMWARE_VERSION, validVersion);
+    if (!validVersion || versionComparison <= 0) {
+        error = !validVersion ? "OTA versions must use Semantic Versioning"
+                              : "OTA version must be newer than the running version";
+        writerBusy.store(false);
+        return false;
+    }
+    activeManifest = info;
+    expectedSha256 = info.sha256;
+    expectedVersion = info.version;
+    expectedImageSize = info.imageSize;
+    receivedImageSize = 0;
+    pauseLiveServiceForUpload();
+    mbedtls_sha256_init(&shaContext);
+    if (mbedtls_sha256_starts(&shaContext, 0) != 0) {
+        error = "image hash setup failed";
+        mbedtls_sha256_free(&shaContext);
+        writerBusy.store(false);
+        resumeLiveServiceAfterUploadFailure();
+        return false;
+    }
+    shaStarted = true;
+    if (!Update.begin(expectedImageSize, U_FLASH)) {
+        error = String("not enough OTA space: ") + Update.errorString();
+        mbedtls_sha256_free(&shaContext);
+        shaStarted = false;
+        writerBusy.store(false);
+        resumeLiveServiceAfterUploadFailure();
+        return false;
+    }
+    return true;
+}
+
+bool writeSignedInstall(const uint8_t* data, size_t size, String& error) {
+    if (!writerBusy.load() || !shaStarted || !data ||
+        size > expectedImageSize - receivedImageSize) {
+        error = "invalid OTA image length";
+        abortSignedInstall(error.c_str());
+        return false;
+    }
+    if (mbedtls_sha256_update(&shaContext, data, size) != 0 ||
+        Update.write(const_cast<uint8_t*>(data), size) != size) {
+        error = String("flash write failed: ") + Update.errorString();
+        abortSignedInstall(error.c_str());
+        return false;
+    }
+    receivedImageSize += size;
+    return true;
+}
+
+bool finishSignedInstall(String& error) {
+    uint8_t digest[32];
+    if (!writerBusy.load() || !shaStarted ||
+        receivedImageSize != expectedImageSize ||
+        mbedtls_sha256_finish(&shaContext, digest) != 0 ||
+        !hexDigest(digest, sizeof(digest)).equalsIgnoreCase(expectedSha256)) {
+        error = "image sha256 or size does not match manifest";
+        abortSignedInstall(error.c_str());
+        return false;
+    }
+    mbedtls_sha256_free(&shaContext);
+    shaStarted = false;
+    if (!Update.end(true)) {
+        error = String("OTA finalisation failed: ") + Update.errorString();
+        writerBusy.store(false);
+        resumeLiveServiceAfterUploadFailure();
+        return false;
+    }
+    return true;
+}
+
+void abortSignedInstall(const char* reason) {
+    if (writerBusy.load()) Update.abort();
+    if (shaStarted) {
+        mbedtls_sha256_free(&shaContext);
+        shaStarted = false;
+    }
+    writerBusy.store(false);
+    if (reason && *reason) Serial.printf("OTA aborted: %s\n", reason);
+    resumeLiveServiceAfterUploadFailure();
+}
+
+bool installInProgress() { return writerBusy.load(); }
+uint32_t installBytesReceived() { return receivedImageSize; }
+uint32_t installExpectedBytes() { return expectedImageSize; }
+const char* installTargetVersion() { return expectedVersion.c_str(); }
+
+bool rebootToInstalledImage() {
+    if (!writerBusy.load() || shaStarted) return false;
+    const esp_partition_t* target = esp_ota_get_boot_partition();
+    if (!target || target == esp_ota_get_running_partition()) return false;
+    persistPendingAttempt(target->label, expectedVersion);
+    return true;
+}
+
 void registerRoutes(WebServer& value) {
     server = &value;
     server->on("/api/v1/info", HTTP_GET, info);
@@ -346,11 +505,13 @@ void begin() {
         imageConfirmed = !pendingVerify;
     }
     recordBootOutcome();
+    loadCurrentUpdateDate();
     running = web_server::begin();
 }
 
 void update() {
     if (running) web_server::update();
+    if (imageConfirmed) backfillCurrentUpdateDate();
     if (!pendingVerify || !applicationReady || !healthyLoopSeen) return;
     if (millis() - validationStartedAt < kValidationWindowMs) return;
     if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
@@ -383,7 +544,9 @@ const char* runningPartitionLabel() { return partitionLabel(runningPartition); }
 const char* bootPartitionLabel() { return partitionLabel(bootPartition); }
 const char* runningImageState() { return imageStateName(runningState); }
 bool rollbackDetected() { return didRollback; }
+const char* rollbackVersion() { return rollbackVersionValue.c_str(); }
 bool rollbackSupported() { return esp_ota_check_rollback_is_possible(); }
+int64_t lastUpdateUnixSeconds() { return lastUpdateUnixSecondsValue; }
 
 uint32_t validationRemainingMs() {
     if (!pendingVerify || !applicationReady) return 0;

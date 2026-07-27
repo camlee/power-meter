@@ -22,9 +22,11 @@ def read_env(path):
 
 project_dir = env.subst("$PROJECT_DIR")
 env_values = read_env(os.path.join(project_dir, ".env"))
-token = os.environ.get("VIEWE_OTA_TOKEN") or env_values.get("VIEWE_OTA_TOKEN", "")
-default_ap_ssid = os.environ.get("POWER_METER_AP_SSID") or env_values.get("POWER_METER_AP_SSID", "")
-default_ap_password = os.environ.get("POWER_METER_AP_PASSWORD") or env_values.get("POWER_METER_AP_PASSWORD", "")
+public_release = os.environ.get("VIEWE_PUBLIC_RELEASE") == "1"
+default_ap_ssid = "" if public_release else (
+    os.environ.get("POWER_METER_AP_SSID") or env_values.get("POWER_METER_AP_SSID", ""))
+default_ap_password = "" if public_release else (
+    os.environ.get("POWER_METER_AP_PASSWORD") or env_values.get("POWER_METER_AP_PASSWORD", ""))
 
 try:
     build_header = open(os.path.join(env.subst("$PROJECT_INCLUDE_DIR"), "build_time.h"), encoding="utf-8").read()
@@ -33,6 +35,7 @@ try:
 except OSError:
     firmware_version = "dev"
 board_id = env.GetProjectOption("custom_ota_board")
+release_repo = env.GetProjectOption("custom_ota_release_repo")
 public_key_path = os.path.join(project_dir, "keys", "ota_signing_public.pem")
 try:
     with open(public_key_path, encoding="ascii") as source:
@@ -41,17 +44,17 @@ except FileNotFoundError:
     public_key = ""
 
 header = os.path.join(env.subst("$PROJECT_INCLUDE_DIR"), "ota_public_key.h")
-escaped = token.replace("\\", "\\\\").replace('"', '\\"')
 escaped_public_key = public_key.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
 escaped_version = firmware_version.replace("\\", "\\\\").replace('"', '\\"')
 escaped_board = board_id.replace("\\", "\\\\").replace('"', '\\"')
+escaped_release_repo = release_repo.replace("\\", "\\\\").replace('"', '\\"')
 with open(header, "w", encoding="utf-8") as output:
     output.write("#pragma once\n")
-    output.write("// Generated from .env and keys/; do not commit.\n")
-    output.write('#define OTA_SHARED_TOKEN "{}"\n'.format(escaped))
+    output.write("// Generated from build configuration and keys/; do not commit.\n")
     output.write('#define OTA_SIGNING_PUBLIC_KEY_PEM "{}"\n'.format(escaped_public_key))
     output.write('#define OTA_FIRMWARE_VERSION "{}"\n'.format(escaped_version))
     output.write('#define OTA_BOARD_ID "{}"\n'.format(escaped_board))
+    output.write('#define OTA_RELEASE_REPOSITORY "{}"\n'.format(escaped_release_repo))
 
 local_header = os.path.join(env.subst("$PROJECT_INCLUDE_DIR"), "local_config.h")
 escaped_ap_ssid = default_ap_ssid.replace("\\", "\\\\").replace('"', '\\"')

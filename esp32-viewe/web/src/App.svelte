@@ -15,7 +15,10 @@
     getSensors,
     getSetup,
     getStatus,
+    getUpdates,
     getWifi,
+    checkForUpdates,
+    installUpdate,
     openLiveSocket,
     requestAdcCapture,
     saveWifiAp,
@@ -24,6 +27,7 @@
     saveCycleEndHour,
     saveSetup,
     saveSensorCalibration,
+    saveUpdateSettings,
   } from './lib/api.js';
 
   // ---------------------------------------------------------------------
@@ -35,6 +39,7 @@
   const SENSOR_POLL_MS = 1_000;
   const DEBUG_POLL_MS = 1_000;
   const WIFI_POLL_MS = 1_000;
+  const UPDATE_POLL_MS = 1_000;
   const CYCLE_REFRESH_MS = 5 * 60_000;
   const cycleHours = Array.from({ length: 24 }, (_, hour) => ({ hour, label: hourLabel(hour) }));
 
@@ -203,6 +208,11 @@
   let debugStatus = null;
   let debugError = '';
   let debugPollTimer;
+
+  let updateStatus = null;
+  let updateError = '';
+  let updateActionBusy = false;
+  let updatePollTimer;
 
   // This preference controls only the browser. "auto" follows the browser/
   // OS color preference; "device" follows the display's effective theme.
@@ -625,6 +635,7 @@
     clearTimeout(historyRefreshTimer);
     clearTimeout(cycleRefreshTimer);
     clearInterval(wifiPollTimer);
+    clearInterval(updatePollTimer);
     if (next !== 'raw') {
       clearTimeout(adcCapturePollTimer);
       adcCapturePollGeneration += 1;
@@ -661,6 +672,11 @@
     if (next === 'debug') {
       refreshDebug();
       debugPollTimer = setInterval(refreshDebug, DEBUG_POLL_MS);
+    }
+
+    if (next === 'info') {
+      refreshUpdates();
+      updatePollTimer = setInterval(refreshUpdates, UPDATE_POLL_MS);
     }
 
     if (next === 'sensors' || next === 'setup') {
@@ -878,6 +894,80 @@
     } catch (err) {
       debugError = describeError(err, 'load debug details');
     }
+  }
+
+  async function refreshUpdates() {
+    try {
+      updateStatus = await getUpdates();
+      updateError = '';
+    } catch (err) {
+      updateError = describeError(err, 'load update status');
+    }
+  }
+
+  async function checkUpdatesNow() {
+    updateActionBusy = true;
+    updateError = '';
+    try {
+      await checkForUpdates();
+      await refreshUpdates();
+    } catch (err) {
+      updateError = describeError(err, 'check for updates');
+    } finally {
+      updateActionBusy = false;
+    }
+  }
+
+  async function installAvailableUpdate() {
+    updateActionBusy = true;
+    updateError = '';
+    try {
+      await installUpdate();
+      await refreshUpdates();
+    } catch (err) {
+      updateError = describeError(err, 'install the update');
+      updateActionBusy = false;
+    }
+  }
+
+  async function changeAutomaticUpdates(event) {
+    const automatic = event.currentTarget.checked;
+    updateActionBusy = true;
+    updateError = '';
+    try {
+      await saveUpdateSettings(automatic);
+      await refreshUpdates();
+    } catch (err) {
+      updateError = describeError(err, 'save automatic update settings');
+    } finally {
+      updateActionBusy = false;
+    }
+  }
+
+  function updateStateLabel(value) {
+    const labels = {
+      idle: 'Ready', waiting_for_network: 'Waiting for Internet',
+      waiting_for_time: 'Waiting for network time', checking: 'Checking…',
+      up_to_date: 'Up to date', available: 'Update available',
+      downloading: 'Downloading…', verifying: 'Verifying…',
+      rebooting: 'Restarting…', failed: 'Check failed',
+      blocked_after_rollback: 'Update blocked after rollback',
+    };
+    return labels[value] || 'Ready';
+  }
+
+  function formatCheckedAt(value) {
+    return Number.isFinite(value) && value > 0
+      ? new Date(value).toLocaleString()
+      : 'Never';
+  }
+
+  function formatUpdateDate(value) {
+    return Number.isFinite(value) && value > 0
+      ? new Date(value).toLocaleDateString(undefined, {
+          year: 'numeric', month: 'short', day: 'numeric',
+        })
+      : '—';
   }
 
   function debugHistoryLabel(query) {
@@ -1248,6 +1338,7 @@
       clearInterval(sensorPollTimer);
       clearInterval(debugPollTimer);
       clearInterval(wifiPollTimer);
+      clearInterval(updatePollTimer);
       return;
     }
 
@@ -1273,6 +1364,10 @@
       refreshWifi();
       wifiPollTimer = setInterval(refreshWifi, WIFI_POLL_MS);
     }
+    if (route === 'info') {
+      refreshUpdates();
+      updatePollTimer = setInterval(refreshUpdates, UPDATE_POLL_MS);
+    }
   }
 
   onMount(() => {
@@ -1296,6 +1391,7 @@
       clearInterval(sensorPollTimer);
       clearInterval(debugPollTimer);
       clearInterval(wifiPollTimer);
+      clearInterval(updatePollTimer);
       clearTimeout(reconnectTimer);
       clearTimeout(remoteRefreshTimer);
       clearTimeout(historyRefreshTimer);
@@ -1551,22 +1647,59 @@
       {/if}
     </section>
   {:else if route === 'info'}
-    <section class="table-view">
-      <h2>Device info</h2>
-      <dl class="striped-details">
-        <dt>Uptime</dt><dd>{formatUptime(status?.uptime_ms)}</dd>
-        <dt>Date</dt><dd>{status?.date || '—'}</dd>
-        <dt>Time</dt><dd>{status?.time || '—'}</dd>
-        <dt>Time source</dt><dd>{status?.time_source || 'unanchored'}</dd>
-        <dt>Build</dt><dd>{status?.build_version ? `v${status.build_version}` : '—'}</dd>
-        <dt>Build Date</dt><dd>{status?.build_date || '—'}</dd>
-        <dt>Build Time</dt><dd>{status?.build_time || '—'}</dd>
-        <dt>Web build</dt><dd>{status?.web_build || '—'}</dd>
-        <dt>Data storage</dt><dd>{Number.isFinite(status?.data_storage_percent) ? `${status.data_storage_percent}%` : '—'}</dd>
-        <dt>WS connections</dt><dd>{status?.ws_connections ?? '—'} / {status?.ws_connection_limit ?? '—'}</dd>
-        <dt>Station IP</dt><dd>{status?.network?.station_ip || '—'}</dd>
-        <dt>AP IP</dt><dd>{status?.network?.ap_ip || '—'}</dd>
-      </dl>
+    <section class="table-view info-view">
+      <div>
+        <h2>Device info</h2>
+        <dl class="striped-details">
+          <dt>Uptime</dt><dd>{formatUptime(status?.uptime_ms)}</dd>
+          <dt>Date</dt><dd>{status?.date || '—'}</dd>
+          <dt>Time</dt><dd>{status?.time || '—'}</dd>
+          <dt>IP Address ({status?.network?.station_ssid || 'Station'})</dt><dd>{status?.network?.station_ip || '—'}</dd>
+          <dt>IP Address ({status?.network?.ap_ssid || 'Access Point'})</dt><dd>{status?.network?.ap_ip || '—'}</dd>
+        </dl>
+      </div>
+      <article class="update-card">
+        <div class="update-heading">
+          <div>
+            <h2>Software update</h2>
+            <span class="state">{updateStateLabel(updateStatus?.state)}</span>
+          </div>
+          <label class="switch-row">
+            <input type="checkbox" checked={updateStatus?.automatic !== false}
+              disabled={updateActionBusy}
+              on:change={changeAutomaticUpdates} />
+            Install updates automatically
+          </label>
+        </div>
+        {#if updateError}<p class="error" role="alert">{updateError}</p>{/if}
+        {#if updateStatus?.error}<p class="error" role="alert">{updateStatus.error}</p>{/if}
+        <dl class="update-details">
+          <dt>Version</dt><dd>v{updateStatus?.current_version || status?.build_version || '—'}</dd>
+          <dt>Build Date</dt><dd>{status?.build_date || '—'}</dd>
+          <dt>Update Date</dt><dd>{formatUpdateDate(updateStatus?.update_date_unix_ms)}</dd>
+          <dt>Available</dt><dd>{updateStatus?.available_version ? `v${updateStatus.available_version}` : '—'}</dd>
+          <dt>Last checked</dt><dd>{formatCheckedAt(updateStatus?.last_check_unix_ms)}</dd>
+        </dl>
+        {#if updateStatus?.state === 'downloading'}
+          <progress max="100" value={updateStatus.progress_percent || 0}>
+            {updateStatus.progress_percent || 0}%
+          </progress>
+        {/if}
+        {#if updateStatus?.state === 'blocked_after_rollback'}
+          <p class="field-note">This version was rolled back and will not be retried automatically. Publish a newer release after correcting it.</p>
+        {/if}
+        <div class="update-actions">
+          <button class="secondary" type="button"
+            disabled={updateActionBusy || updateStatus?.busy}
+            on:click={checkUpdatesNow}>Check now</button>
+          {#if updateStatus?.state === 'available'}
+            <button class="primary" type="button"
+              disabled={updateActionBusy || updateStatus?.busy}
+              on:click={installAvailableUpdate}>Install v{updateStatus.available_version}</button>
+          {/if}
+        </div>
+        <p class="field-note">Installation pauses live streaming and restarts the meter after the signed image is verified.</p>
+      </article>
     </section>
   {:else if route === 'debug'}
     <section class="table-view">
@@ -1578,9 +1711,12 @@
         <dt>Chip</dt><dd>{debugStatus?.chip || '—'}</dd>
         <dt>CPU / flash</dt><dd>{debugStatus ? `${debugStatus.cpu_mhz} MHz / ${debugStatus.flash_mb} MB flash` : '—'}</dd>
         <dt>Last reset</dt><dd>{debugResetLabel(debugStatus?.last_reset)}</dd>
+        <dt>Time source</dt><dd>{debugStatus?.time_source || 'unanchored'}</dd>
+        <dt>Web build</dt><dd>{debugStatus?.web_build || '—'}</dd>
         <dt>Internal heap</dt><dd>{debugStatus ? `${debugStatus.internal_heap.used_percent}% used; max ${debugStatus.internal_heap.largest_free_kb}K` : '—'}</dd>
         <dt>PSRAM heap</dt><dd>{debugStatus ? `${debugStatus.psram_heap.used_percent}% used; max ${debugStatus.psram_heap.largest_free_kb}K` : '—'}</dd>
         <dt>Data storage</dt><dd>{debugStatus ? (debugStatus.storage.mounted ? `${debugStatus.storage.used_kb} KB / ${debugStatus.storage.total_kb} KB` : 'Unmounted') : '—'}</dd>
+        <dt>WS connections</dt><dd>{debugStatus?.ws_connections ?? '—'} / {debugStatus?.ws_connection_limit ?? '—'}</dd>
         <dt>OTA</dt><dd>{otaHealthLabel(debugStatus?.ota)}</dd>
         <dt>OTA slots</dt><dd>{debugStatus ? `${debugStatus.ota.running_slot} → ${debugStatus.ota.boot_slot}` : '—'}</dd>
         <dt>OTA image</dt><dd>{debugStatus ? `${debugStatus.ota.image_state}${debugStatus.ota.rollback_detected ? '; rollback detected' : ''}` : '—'}</dd>
@@ -2599,6 +2735,44 @@
 
   .striped-details dt:nth-of-type(even),
   .striped-details dd:nth-of-type(even) { background: var(--surface); }
+
+  .update-card {
+    margin-top: 0.75rem;
+    padding: 0.8rem;
+    border: 1px solid var(--border);
+    border-radius: 0.4rem;
+    background: var(--surface);
+  }
+
+  .info-view {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+  }
+
+  .info-view .update-card { margin-top: auto; }
+
+  .update-heading,
+  .update-actions {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+
+  .update-heading h2 { margin: 0; }
+
+  .update-details {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.3rem 0.8rem;
+    margin: 0.75rem 0;
+  }
+
+  .update-details dt { color: var(--muted); }
+  .update-details dd { margin: 0; }
+  .update-card progress { width: 100%; margin: 0.2rem 0 0.7rem; }
+  .update-actions { justify-content: flex-start; margin-top: 0.75rem; }
 
   h2 {
     margin: 1rem 0 0.55rem;

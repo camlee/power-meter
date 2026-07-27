@@ -1,24 +1,51 @@
 Import("env")
 import datetime
 import os
+import re
+import subprocess
+import sys
 
-# Keep a local, monotonically increasing build version. The counter is ignored
-# by Git so a normal build never dirties the checkout.
 project_dir = env.subst("$PROJECT_DIR")
-counter_path = os.path.join(project_dir, ".build_number")
-try:
-    with open(counter_path, "r") as counter_file:
-        build_number = int(counter_file.read().strip()) + 1
-except (OSError, ValueError):
-    build_number = 1
-with open(counter_path, "w") as counter_file:
-    counter_file.write(str(build_number) + "\n")
 
-build_version = "0.0.{}".format(build_number)
+build_version = os.environ.get("VIEWE_VERSION", "")
+if build_version and not re.fullmatch(
+        r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)"
+        r"(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+        r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?", build_version):
+    sys.exit("VIEWE_VERSION must be a valid Semantic Versioning 2.0 version")
+if not build_version:
+    try:
+        described = subprocess.check_output(
+            ["git", "describe", "--tags", "--match", "v[0-9]*",
+             "--abbrev=7", "--dirty"],
+            cwd=project_dir, text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        described = ""
+    match = re.fullmatch(
+        r"v((?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*))"
+        r"(?:-([0-9]+)-g([0-9a-f]+))?(-dirty)?", described)
+    if match:
+        base, distance, revision, dirty = match.groups()
+        if distance is None:
+            build_version = base + ("-dirty" if dirty else "")
+        else:
+            prerelease = distance + (".dirty" if dirty else "")
+            build_version = "{}-{}+g{}".format(base, prerelease, revision)
+    else:
+        try:
+            revision = subprocess.check_output(
+                ["git", "rev-parse", "--short=7", "HEAD"],
+                cwd=project_dir, text=True, stderr=subprocess.DEVNULL).strip()
+        except (OSError, subprocess.CalledProcessError):
+            revision = "unknown"
+        build_version = "0.0.0-dev+g{}".format(revision)
+
 # Match the Info screen's date followed by time presentation.
-now = datetime.datetime.now()
+source_epoch = os.environ.get("SOURCE_DATE_EPOCH")
+now = (datetime.datetime.fromtimestamp(int(source_epoch), datetime.timezone.utc)
+       if source_epoch else datetime.datetime.now(datetime.timezone.utc))
 build_date = now.strftime("%b %d %Y")
-build_time = now.strftime("%I:%M:%S %p")
+build_time = now.strftime("%I:%M:%S %p UTC")
 
 # Resolve the include directory
 include_dir = env.subst("$PROJECT_INCLUDE_DIR")

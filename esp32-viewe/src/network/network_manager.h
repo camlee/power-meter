@@ -56,6 +56,7 @@ ConnectionPhase getConnectionPhase();
 ConnectionFailure getConnectionFailure();
 RecoveryState getRecoveryState();
 const char* getCurrentSsid();
+const char* getCurrentApSsid();
 uint32_t getReconnectSecondsRemaining();
 int getRssi();
 bool isApEnabled();

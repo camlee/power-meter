@@ -6,32 +6,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "ota_public_key.h"
-
-#ifndef OTA_SHARED_TOKEN
-#define OTA_SHARED_TOKEN ""
-#endif
-
 namespace http_utils {
-namespace {
-
-bool constantTimeEqual(const String& supplied, const char* expected) {
-    const size_t expectedLength = strlen(expected);
-    if (supplied.length() != expectedLength) return false;
-    uint8_t different = 0;
-    for (size_t i = 0; i < expectedLength; ++i) different |= supplied[i] ^ expected[i];
-    return different == 0;
-}
-
-} // namespace
-
-bool authorised(WebServer& server) {
-    const char* token = OTA_SHARED_TOKEN;
-    const String header = server.header("Authorization");
-    constexpr char prefix[] = "Bearer ";
-    return token[0] != '\0' && header.startsWith(prefix) &&
-           constantTimeEqual(header.substring(sizeof(prefix) - 1), token);
-}
 
 bool jsonString(const String& json, const char* name, String& value) {
     const String key = String("\"") + name + "\"";

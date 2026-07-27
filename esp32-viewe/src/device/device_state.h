@@ -13,6 +13,7 @@ enum class Domain : uint8_t {
     Calibration,
     Time,
     History,
+    Update,
 };
 
 uint32_t revision();

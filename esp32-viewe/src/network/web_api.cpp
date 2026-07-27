@@ -22,6 +22,7 @@
 #include "network/display_web_api.h"
 #include "network/history_response_encoder.h"
 #include "network/http_utils.h"
+#include "network/internet_update_service.h"
 #include "network/network_manager.h"
 #include "network/live_websocket_service.h"
 #include "network/ota_service.h"
@@ -148,7 +149,7 @@ void webStatus() {
              "\"in\":{\"voltage\":%s,\"current\":%s,\"power\":%s},"
              "\"out\":{\"voltage\":%s,\"current\":%s,\"power\":%s},"
              "\"aux\":{\"power\":%s},\"net_battery_power\":%s,"
-             "\"network\":{\"state\":%u,\"station_ip\":\"%s\",\"ap_ip\":\"%s\"}}",
+             "\"network\":{\"state\":%u,\"station_ssid\":",
              web_assets::kBuildId, static_cast<unsigned long>(device_state::revision()),
              hardware_profile::kName, hardware_profile::kHasTouchUi ? "true" : "false",
              hardware_profile::kHasStatusDisplay ? "true" : "false",
@@ -162,11 +163,19 @@ void webStatus() {
              static_cast<unsigned>(live_websocket_service::clientCount()),
              static_cast<unsigned>(live_websocket_service::clientLimit()),
              inVoltage, inCurrent, inPower, outVoltage, outCurrent, outPower,
-             auxPower, netPower, static_cast<unsigned>(network_manager::getState()),
-             network_manager::getStaIpAddress(),
-             network_manager::isApEnabled() ? network_manager::getApIpAddress() : "Off");
+             auxPower, netPower, static_cast<unsigned>(network_manager::getState()));
+    String responseJson(response);
+    http_utils::appendJsonString(responseJson, network_manager::getCurrentSsid());
+    responseJson += ",\"station_ip\":";
+    http_utils::appendJsonString(responseJson, network_manager::getStaIpAddress());
+    responseJson += ",\"ap_ssid\":";
+    http_utils::appendJsonString(responseJson, network_manager::getCurrentApSsid());
+    responseJson += ",\"ap_ip\":";
+    http_utils::appendJsonString(responseJson,
+        network_manager::isApEnabled() ? network_manager::getApIpAddress() : "Off");
+    responseJson += "}}";
     server->sendHeader("Cache-Control", "no-store");
-    server->send(200, "application/json", response);
+    server->send(200, "application/json", responseJson);
 }
 
 const char* readingStateName(sensors::ReadingState state) {
@@ -863,9 +872,12 @@ void webDebug() {
     const uint32_t validationRemaining = ota_service::validationRemainingMs();
     history_query_service::Timing timing{};
     history_query_service::getTiming(timing);
+    time_service::Anchor timeAnchor{};
+    const char* timeSource = time_service::getCurrentAnchor(timeAnchor)
+        ? time_service::sourceName(timeAnchor.source) : "unanchored";
 
     String response;
-    response.reserve(1150);
+    response.reserve(1400);
     response = String("{\"api_version\":1,\"lvgl\":\"") + display_web_api::lvglVersion() +
         "\",\"sdk\":\"" + ESP.getSdkVersion() +
         "\",\"chip\":\"" + ESP.getChipModel() + " rev " + ESP.getChipRevision() +
@@ -893,9 +905,80 @@ void webDebug() {
         (ota_service::rollbackDetected() ? "true" : "false") + "},\"history_query\":{\"last_duration_ms\":" +
         timing.lastDurationMs + ",\"max_duration_ms\":" + timing.maxDurationMs +
         ",\"records_read\":" + timing.lastRecordsRead + ",\"files_read\":" + timing.lastFilesRead +
-        ",\"was_usage\":" + (timing.lastWasUsage ? "true" : "false") + "}}";
+        ",\"was_usage\":" + (timing.lastWasUsage ? "true" : "false") +
+        "},\"time_source\":\"" + timeSource + "\",\"web_build\":\"" +
+        web_assets::kBuildId + "\",\"data_storage_percent\":" +
+        (storageTotal ? (LittleFS.usedBytes() * 100U) / storageTotal : 0) +
+        ",\"ws_connections\":" + live_websocket_service::clientCount() +
+        ",\"ws_connection_limit\":" + live_websocket_service::clientLimit() + "}";
     server->sendHeader("Cache-Control", "no-store");
     server->send(200, "application/json", response);
+}
+
+void webUpdateStatus() {
+    internet_update_service::Status status{};
+    if (!internet_update_service::getStatus(status)) {
+        server->send(503, "application/json",
+                     "{\"error\":\"Update status is unavailable.\"}");
+        return;
+    }
+    String response;
+    response.reserve(640);
+    response = String("{\"api_version\":1,\"state\":\"") +
+        internet_update_service::stateName(status.state) +
+        "\",\"automatic\":" + (status.automatic ? "true" : "false") +
+        ",\"busy\":" + (status.busy ? "true" : "false") +
+        ",\"progress_percent\":" + status.progressPercent +
+        ",\"update_date_unix_ms\":" +
+        static_cast<long long>(status.updateDateUnixSeconds * 1000LL) +
+        ",\"last_check_unix_ms\":" +
+        static_cast<long long>(status.lastCheckUnixSeconds * 1000LL) +
+        ",\"next_check_unix_ms\":" +
+        static_cast<long long>(status.nextCheckUnixSeconds * 1000LL) +
+        ",\"current_version\":";
+    http_utils::appendJsonString(response, status.currentVersion);
+    response += ",\"available_version\":";
+    http_utils::appendJsonString(response, status.availableVersion);
+    response += ",\"blocked_version\":";
+    http_utils::appendJsonString(response, status.blockedVersion);
+    response += ",\"error\":";
+    http_utils::appendJsonString(response, status.error);
+    response += "}";
+    server->sendHeader("Cache-Control", "no-store");
+    server->send(200, "application/json", response);
+}
+
+void webUpdateCheck() {
+    if (!internet_update_service::requestCheck()) {
+        server->send(409, "application/json",
+                     "{\"ok\":false,\"error\":\"An update operation is already active or the new image is still being validated.\"}");
+        return;
+    }
+    server->send(202, "application/json", "{\"ok\":true,\"checking\":true}");
+}
+
+void webUpdateInstall() {
+    if (!internet_update_service::requestInstall()) {
+        server->send(409, "application/json",
+                     "{\"ok\":false,\"error\":\"No installable update is available or an update operation is active.\"}");
+        return;
+    }
+    server->send(202, "application/json", "{\"ok\":true,\"installing\":true}");
+}
+
+void webUpdateSettings() {
+    bool automatic = false;
+    if (!http_utils::jsonBool(server->arg("plain"), "automatic", automatic)) {
+        server->send(400, "application/json",
+                     "{\"ok\":false,\"error\":\"automatic must be a boolean.\"}");
+        return;
+    }
+    if (!internet_update_service::setAutomatic(automatic)) {
+        server->send(500, "application/json",
+                     "{\"ok\":false,\"error\":\"Could not save update settings.\"}");
+        return;
+    }
+    server->send(200, "application/json", "{\"ok\":true}");
 }
 
 void browserTimeAnchor() {
@@ -1248,10 +1331,6 @@ void webWifiAp() {
 }
 
 void historyFiles() {
-    if (!http_utils::authorised(*server)) {
-        server->send(401, "application/json", "{\"error\":\"unauthorised\"}");
-        return;
-    }
     size_t offset = 0;
     size_t limit = 25;
     if (server->hasArg("offset")) offset = static_cast<size_t>(server->arg("offset").toInt());
@@ -1333,6 +1412,10 @@ void registerRoutes(WebServer& value) {
     server->on("/api/v1/wifi/station", HTTP_POST, webWifiStation);
     server->on("/api/v1/wifi/ap", HTTP_POST, webWifiAp);
     server->on("/api/v1/debug", HTTP_GET, webDebug);
+    server->on("/api/v1/updates", HTTP_GET, webUpdateStatus);
+    server->on("/api/v1/updates/check", HTTP_POST, webUpdateCheck);
+    server->on("/api/v1/updates/install", HTTP_POST, webUpdateInstall);
+    server->on("/api/v1/updates/settings", HTTP_PUT, webUpdateSettings);
     server->on("/", HTTP_GET, serveWebAsset);
     server->onNotFound(serveWebAsset);
 }

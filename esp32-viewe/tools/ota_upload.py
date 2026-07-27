@@ -2,9 +2,7 @@
 """Upload a previously signed VIEWE OTA release to one device."""
 
 import argparse
-import base64
 import json
-import mimetypes
 import os
 from pathlib import Path
 import secrets
@@ -17,19 +15,6 @@ from mdns_resolver import normalize_hostname, resolve_ipv4
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-
-
-def load_env(path):
-    values = {}
-    if not path.is_file():
-        return values
-    for line in path.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, value = line.split("=", 1)
-        values[key.strip()] = value.strip().strip('"').strip("'")
-    return values
 
 
 def multipart(fields, files):
@@ -52,8 +37,8 @@ def multipart(fields, files):
     return bytes(body), "multipart/form-data; boundary={}".format(boundary)
 
 
-def request(url, token, data=None, content_type=None, timeout=15):
-    headers = {"Authorization": "Bearer " + token}
+def request(url, data=None, content_type=None, timeout=15):
+    headers = {}
     if content_type:
         headers["Content-Type"] = content_type
     return urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers), timeout=timeout)
@@ -65,8 +50,6 @@ def main():
     target.add_argument("--host", help="IP address or hostname, optionally including http://")
     target.add_argument("--device", help="mDNS device name, with or without .local")
     parser.add_argument("--release", type=Path, help="directory containing firmware.bin, manifest.json, and manifest.sig")
-    parser.add_argument("--env-file", type=Path, default=PROJECT_DIR / ".env")
-    parser.add_argument("--token", help="override VIEWE_OTA_TOKEN from .env")
     parser.add_argument("--timeout", type=float, default=30, help="upload request timeout in seconds")
     parser.add_argument("--wait", type=float, default=45, help="seconds to wait for device reboot and image confirmation; 0 disables")
     args = parser.parse_args()
@@ -83,10 +66,6 @@ def main():
     for path in (firmware, manifest, signature):
         if not path.is_file():
             sys.exit("Release file not found: {}".format(path))
-    token = args.token or os.environ.get("VIEWE_OTA_TOKEN") or load_env(args.env_file).get("VIEWE_OTA_TOKEN")
-    if not token:
-        sys.exit("VIEWE_OTA_TOKEN is required; set it in {} or pass --token.".format(args.env_file))
-
     host = args.host or args.device
     if args.device:
         host = normalize_hostname(host)
@@ -108,7 +87,7 @@ def main():
     url = base_url + "/api/v1/update"
     print("Uploading {} to {} …".format(firmware, url))
     try:
-        with request(url, token, body, content_type, args.timeout) as response:
+        with request(url, body, content_type, args.timeout) as response:
             reply = response.read().decode("utf-8", errors="replace")
             print("Device response (HTTP {}): {}".format(response.status, reply or "accepted"))
     except urllib.error.HTTPError as error:
@@ -124,7 +103,7 @@ def main():
     while time.monotonic() < deadline:
         time.sleep(1)
         try:
-            with request(base_url + "/api/v1/info", token, timeout=2) as response:
+            with request(base_url + "/api/v1/info", timeout=2) as response:
                 info = json.loads(response.read().decode("utf-8", errors="strict"))
                 if info.get("board") != expected["board"] or info.get("version") != expected["version"]:
                     print(".", end="", flush=True)

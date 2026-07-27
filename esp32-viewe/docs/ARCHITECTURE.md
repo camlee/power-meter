@@ -148,10 +148,12 @@ Current top-level screens are:
     and its gateway IP;
   - **Setup:** persisted device ID/hostname (`meter-...`), source selection,
     active channel-state summary, appearance, and reset controls;
-  - **Info:** build, current date/time, uptime, and current station/AP IPs;
+  - **Info:** version/build date, current date/time, uptime, network-named IP
+    addresses, and signed Internet update status/actions;
   - **Data:** dataset-filtered, filename-driven segment diagnostics and live RAM state;
-  - **Debug:** SDK/chip/reset details, disjoint internal/PSRAM heap usage and
-    largest free blocks, storage, and OTA diagnostics.
+  - **Debug:** SDK/chip/reset details, time source, web build, WebSocket
+    connections, disjoint internal/PSRAM heap usage and largest free blocks,
+    storage, and OTA diagnostics.
 
 The VIEWE display is a first-class offline interface. `meter-wroom` remains
 web-first but also drives a compact SSD1306 status surface showing network and

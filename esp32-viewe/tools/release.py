@@ -84,6 +84,10 @@ def main():
         default=PROJECT_DIR / "secrets" / "ota_signing_private.pem",
     )
     parser.add_argument("--output", type=Path, help="release directory (default: dist/<version>)")
+    parser.add_argument(
+        "--internet", action="store_true",
+        help="create fixed-name GitHub release assets and a signed descriptor",
+    )
     args = parser.parse_args()
 
     if not args.firmware.is_file():
@@ -95,25 +99,50 @@ def main():
 
     output = args.output or PROJECT_DIR / "dist" / args.version
     output.mkdir(parents=True, exist_ok=True)
-    firmware_name = "firmware.bin"
+    firmware_name = "firmware-{}.bin".format(args.board) if args.internet else "firmware.bin"
     firmware_output = output / firmware_name
     if args.firmware.resolve() != firmware_output.resolve():
         shutil.copyfile(args.firmware, firmware_output)
 
     image = firmware_output.read_bytes()
-    manifest = {
-        "board": args.board,
-        "format": 1,
-        "image_size": len(image),
-        "sha256": hashlib.sha256(image).hexdigest(),
-        "version": args.version,
-    }
+    if args.internet:
+        if not re.fullmatch(
+                r"(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)",
+                args.version):
+            sys.exit("Internet releases must use a stable MAJOR.MINOR.PATCH version.")
+        manifest = {
+            "board": args.board,
+            "channel": "stable",
+            "firmware_asset": firmware_name,
+            "format": 2,
+            "image_size": len(image),
+            "release_tag": "v" + args.version,
+            "sha256": hashlib.sha256(image).hexdigest(),
+            "version": args.version,
+        }
+    else:
+        manifest = {
+            "board": args.board,
+            "format": 1,
+            "image_size": len(image),
+            "sha256": hashlib.sha256(image).hexdigest(),
+            "version": args.version,
+        }
     payload = canonical_json(manifest)
     signature = sign(payload, args.private_key)
     if not signature or len(signature) > 80:
         sys.exit("OpenSSL produced an invalid ECDSA P-256 signature.")
-    (output / "manifest.json").write_bytes(payload)
-    (output / "manifest.sig").write_text(base64.b64encode(signature).decode("ascii") + "\n", encoding="ascii")
+    manifest_name = "manifest-{}.json".format(args.board) if args.internet else "manifest.json"
+    signature_name = "manifest-{}.sig".format(args.board) if args.internet else "manifest.sig"
+    encoded_signature = base64.b64encode(signature).decode("ascii")
+    (output / manifest_name).write_bytes(payload)
+    (output / signature_name).write_text(encoded_signature + "\n", encoding="ascii")
+    if args.internet:
+        descriptor = canonical_json({
+            "manifest_b64": base64.b64encode(payload).decode("ascii"),
+            "signature_b64": encoded_signature,
+        })
+        (output / "ota-{}.json".format(args.board)).write_bytes(descriptor)
 
     print("Created signed OTA release: {}".format(output))
     print("  firmware: {} bytes".format(len(image)))
