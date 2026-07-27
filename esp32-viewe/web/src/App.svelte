@@ -1699,6 +1699,11 @@
           {/if}
         </div>
         <p class="field-note">Installation pauses live streaming and restarts the meter after the signed image is verified.</p>
+        <footer class="update-contact" aria-label="Project and contact information">
+          <a href="https://github.com/camlee/power-meter" target="_blank" rel="noreferrer">GitHub repository</a>
+          <span aria-hidden="true">·</span>
+          <a href="mailto:cam.w.lee@gmail.com">cam.w.lee@gmail.com</a>
+        </footer>
       </article>
     </section>
   {:else if route === 'debug'}
@@ -2773,6 +2778,17 @@
   .update-details dd { margin: 0; }
   .update-card progress { width: 100%; margin: 0.2rem 0 0.7rem; }
   .update-actions { justify-content: flex-start; margin-top: 0.75rem; }
+  .update-contact {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.2rem 0.45rem;
+    margin-top: 0.75rem;
+    padding-top: 0.65rem;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+  .update-contact a { color: var(--accent); }
 
   h2 {
     margin: 1rem 0 0.55rem;

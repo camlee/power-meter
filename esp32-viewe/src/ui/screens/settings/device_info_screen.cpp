@@ -63,6 +63,23 @@ void formatUptime(char* buf, size_t len) {
               (unsigned long)(s / 3600), (unsigned long)((s % 3600) / 60), (unsigned long)(s % 60));
 }
 
+const char* updateStateText(internet_update_service::State state) {
+    switch (state) {
+        case internet_update_service::State::Idle: return "Ready";
+        case internet_update_service::State::WaitingForNetwork: return "Waiting for Internet";
+        case internet_update_service::State::WaitingForTime: return "Waiting for time";
+        case internet_update_service::State::Checking: return "Checking...";
+        case internet_update_service::State::UpToDate: return "Up to date";
+        case internet_update_service::State::Available: return "Update available";
+        case internet_update_service::State::Downloading: return "Downloading";
+        case internet_update_service::State::Verifying: return "Verifying...";
+        case internet_update_service::State::Rebooting: return "Restarting...";
+        case internet_update_service::State::Failed: return "Check failed";
+        case internet_update_service::State::BlockedAfterRollback: return "Update blocked";
+    }
+    return "Ready";
+}
+
 void updateCb(lv_timer_t* timer) {
     if (timer && timer->user_data && !lv_obj_is_visible(static_cast<lv_obj_t*>(timer->user_data))) return;
     char buf[64];
@@ -112,15 +129,13 @@ void updateCb(lv_timer_t* timer) {
         } else {
             lv_label_set_text(updateDateLabel, "-");
         }
-        const char* state = internet_update_service::stateName(update.state);
         if (update.state == internet_update_service::State::Downloading) {
-            snprintf(buf, sizeof(buf), "Downloading %s (%u%%)",
-                     update.availableVersion, update.progressPercent);
+            snprintf(buf, sizeof(buf), "Downloading %u%%", update.progressPercent);
             lv_label_set_text(updateStateLabel, buf);
             lv_bar_set_value(updateProgress, update.progressPercent, LV_ANIM_OFF);
             lv_obj_clear_flag(updateProgress, LV_OBJ_FLAG_HIDDEN);
         } else {
-            lv_label_set_text(updateStateLabel, state);
+            lv_label_set_text(updateStateLabel, updateStateText(update.state));
             lv_obj_add_flag(updateProgress, LV_OBJ_FLAG_HIDDEN);
         }
         if (update.error[0]) {
@@ -195,7 +210,18 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_width(updateCard, lv_pct(100));
     lv_obj_set_height(updateCard, LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(updateCard, LV_FLEX_FLOW_COLUMN);
-    lv_label_set_text(lv_label_create(updateCard), "Software update");
+    lv_obj_set_style_pad_row(updateCard, 4, 0);
+
+    lv_obj_t* updateHeader = lv_obj_create(updateCard);
+    lv_obj_remove_style_all(updateHeader);
+    lv_obj_set_size(updateHeader, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(updateHeader, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(updateHeader, LV_FLEX_ALIGN_SPACE_BETWEEN,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_label_set_text(lv_label_create(updateHeader), "Software update");
+    updateStateLabel = lv_label_create(updateHeader);
+    lv_label_set_text(updateStateLabel, "Ready");
+    lv_obj_set_style_text_color(updateStateLabel, ui_theme::mutedText(), 0);
 
     lv_obj_t* updateDetails = lv_obj_create(updateCard);
     lv_obj_remove_style_all(updateDetails);
@@ -208,8 +234,6 @@ lv_obj_t* create(lv_obj_t* parent) {
     addRow(updateDetails, "Build Date", BUILD_DATE);
     updateDateLabel = addRow(updateDetails, "Update Date", "-");
 
-    updateStateLabel = lv_label_create(updateCard);
-    lv_obj_set_width(updateStateLabel, lv_pct(100));
     updateDetailLabel = lv_label_create(updateCard);
     lv_obj_set_width(updateDetailLabel, lv_pct(100));
     lv_obj_set_style_text_color(updateDetailLabel, ui_theme::mutedText(), 0);
@@ -222,6 +246,8 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_remove_style_all(automaticRow);
     lv_obj_set_size(automaticRow, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(automaticRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(automaticRow, LV_FLEX_ALIGN_START,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_column(automaticRow, 8, 0);
     automaticSwitch = lv_switch_create(automaticRow);
     lv_obj_add_event_cb(automaticSwitch, automaticEvent, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -249,6 +275,24 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_label_set_text(installLabel, "Install");
     lv_obj_center(installLabel);
     lv_obj_add_flag(installButton, LV_OBJ_FLAG_HIDDEN);
+
+    lv_obj_t* projectInfo = lv_obj_create(updateCard);
+    lv_obj_remove_style_all(projectInfo);
+    lv_obj_set_size(projectInfo, lv_pct(100), LV_SIZE_CONTENT);
+    lv_obj_set_flex_flow(projectInfo, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(projectInfo, 2, 0);
+
+    lv_obj_t* repositoryLabel = lv_label_create(projectInfo);
+    lv_obj_set_width(repositoryLabel, lv_pct(100));
+    lv_obj_set_style_text_font(repositoryLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(repositoryLabel, ui_theme::accent(), 0);
+    lv_label_set_text(repositoryLabel, "GitHub: https://github.com/camlee/power-meter");
+
+    lv_obj_t* contactLabel = lv_label_create(projectInfo);
+    lv_obj_set_width(contactLabel, lv_pct(100));
+    lv_obj_set_style_text_font(contactLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(contactLabel, ui_theme::mutedText(), 0);
+    lv_label_set_text(contactLabel, "Contact: cam.w.lee@gmail.com");
 
     if(!updateTimer) {
         updateTimer = lv_timer_create(updateCb, 1000, scr);
