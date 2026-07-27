@@ -1,4 +1,5 @@
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 
 #include "application_runtime.h"
 #include "device/hardware_profile.h"
@@ -18,6 +19,14 @@ uint32_t lastThemeCheckMs = 0;
 #endif
 
 void setup() {
+#if POWER_METER_HAS_PSRAM
+    if (psramFound()) {
+        // Preserve scarce DMA-capable internal RAM for Wi-Fi, hardware crypto,
+        // and flash operations. The framework default keeps allocations up to
+        // 4 KiB internal, which is too aggressive for this UI-heavy target.
+        heap_caps_malloc_extmem_enable(512);
+    }
+#endif
     Serial.begin(115200);
     delay(3000);
 

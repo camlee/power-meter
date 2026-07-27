@@ -4,14 +4,20 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <esp_crt_bundle.h>
+#include <esp_heap_caps.h>
 #include <esp_http_client.h>
+#include <esp_log.h>
 #include <esp_system.h>
 #include <mbedtls/base64.h>
+#include <mbedtls/platform.h>
 #include <atomic>
+#include <cerrno>
+#include <cstring>
 #include <time.h>
 
 #include "device/device_state.h"
 #include "network/http_utils.h"
+#include "network/live_websocket_service.h"
 #include "network/network_manager.h"
 #include "network/ota_service.h"
 #include "network/semver.h"
@@ -31,11 +37,13 @@
 namespace internet_update_service {
 namespace {
 
+constexpr char kLogTag[] = "internet_ota";
 constexpr size_t kMaxDescriptorBytes = 2048;
 constexpr size_t kMaxManifestBytes = 768;
 constexpr uint32_t kInitialJitterMinMs = 60U * 1000U;
 constexpr uint32_t kInitialJitterRangeMs = 4U * 60U * 1000U;
 constexpr int64_t kEarliestTlsTime = 1577836800LL; // 2020-01-01
+constexpr uint32_t kWorkerStackBytes = 8U * 1024U;
 
 enum class Operation : uint8_t {
     None,
@@ -65,6 +73,10 @@ bool previousInternet = false;
 bool initialized = false;
 bool rollbackReconciled = false;
 bool confirmationReconciled = false;
+bool workerPausedLiveService = false;
+StaticTask_t workerTaskControl{};
+alignas(StackType_t) uint8_t workerTaskStack[kWorkerStackBytes]{};
+TaskHandle_t workerTaskHandle = nullptr;
 String highestConfirmedVersion;
 
 bool timeReached(uint32_t deadline, uint32_t now = millis()) {
@@ -73,6 +85,34 @@ bool timeReached(uint32_t deadline, uint32_t now = millis()) {
 
 bool validWallTime() {
     return static_cast<int64_t>(time(nullptr)) >= kEarliestTlsTime;
+}
+
+#if POWER_METER_HAS_PSRAM
+void* tlsCalloc(size_t count, size_t size) {
+    void* memory = heap_caps_calloc(
+        count, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (!memory) {
+        memory = heap_caps_calloc(
+            count, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    }
+    return memory;
+}
+
+void tlsFree(void* memory) {
+    heap_caps_free(memory);
+}
+#endif
+
+void logHeap(const char* stage) {
+    constexpr uint32_t internalCaps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    ESP_LOGI(
+        kLogTag,
+        "%s: internal free=%u largest=%u, PSRAM free=%u largest=%u",
+        stage,
+        static_cast<unsigned>(heap_caps_get_free_size(internalCaps)),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(internalCaps)),
+        static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_SPIRAM)),
+        static_cast<unsigned>(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)));
 }
 
 void mutateStatus(void (*callback)(Status&)) {
@@ -180,7 +220,11 @@ bool performGet(const char* url, HttpContext& context, String& error) {
     config.event_handler = httpEvent;
     config.user_data = &context;
     config.user_agent = "power-meter-ota/1";
-    config.buffer_size = 4096;
+    // Keep the HTTP parser's small allocations out of the already constrained
+    // internal heap. TLS record buffers are larger and automatically prefer
+    // PSRAM on the Viewe target.
+    config.buffer_size = 1024;
+    config.buffer_size_tx = 1024;
     config.crt_bundle_attach = esp_crt_bundle_attach;
     config.skip_cert_common_name_check = false;
 
@@ -192,13 +236,22 @@ bool performGet(const char* url, HttpContext& context, String& error) {
     esp_http_client_set_header(client, "Accept",
                                context.firmware ? "application/octet-stream" :
                                                   "application/json");
+    logHeap("before HTTPS");
     const esp_err_t result = esp_http_client_perform(client);
     const int status = esp_http_client_get_status_code(client);
+    const int socketError = esp_http_client_get_errno(client);
     esp_http_client_cleanup(client);
     if (result != ESP_OK) {
-        error = context.error.length()
-            ? context.error
-            : String("HTTPS request failed: ") + esp_err_to_name(result);
+        if (context.error.length()) {
+            error = context.error;
+        } else {
+            error = String("HTTPS request failed: ") + esp_err_to_name(result);
+            if (socketError) {
+                error += String(" (errno ") + socketError + ": " +
+                         strerror(socketError) + ")";
+            }
+        }
+        logHeap("after HTTPS failure");
         return false;
     }
     if (context.failed) {
@@ -251,8 +304,18 @@ bool fetchDescriptor(String& manifest, String& signature,
              "https://github.com/%s/releases/latest/download/ota-%s.json",
              OTA_RELEASE_REPOSITORY, OTA_BOARD_ID);
     HttpContext context{};
-    context.body.reserve(1024);
-    if (!performGet(url, context, error)) return false;
+    bool fetched = false;
+    for (uint8_t attempt = 0; attempt < 2 && !fetched; ++attempt) {
+        context = {};
+        context.body.reserve(1024);
+        fetched = performGet(url, context, error);
+        if (!fetched && attempt == 0) {
+            // Descriptor reads are small and idempotent. Absorb one transient
+            // DNS/header/redirect failure before entering the longer backoff.
+            delay(500);
+        }
+    }
+    if (!fetched) return false;
 
     String manifestBase64, signatureBase64;
     if (!http_utils::jsonString(context.body, "manifest_b64", manifestBase64) ||
@@ -369,18 +432,41 @@ void workerTask(void* argument) {
     } else {
         performCheck(operation == Operation::AutomaticCheck);
     }
-    workerActive.store(false);
-    vTaskDelete(nullptr);
+    ESP_LOGI(kLogTag, "worker minimum free stack=%u bytes",
+             static_cast<unsigned>(uxTaskGetStackHighWaterMark(nullptr)));
+    logHeap("worker finished");
+    if (workerPausedLiveService) {
+        workerPausedLiveService = false;
+        if (!live_websocket_service::begin()) {
+            ESP_LOGE(kLogTag, "could not restart live WebSocket service");
+        }
+    }
+    vTaskSuspend(nullptr);
 }
 
 bool startWorker(Operation operation) {
     bool expected = false;
     if (!workerActive.compare_exchange_strong(expected, true)) return false;
-    if (xTaskCreate(workerTask, "internet_ota", 12288,
-                    reinterpret_cast<void*>(static_cast<uintptr_t>(operation)),
-                    1, nullptr) != pdPASS) {
+    workerPausedLiveService = live_websocket_service::stop();
+    logHeap("starting worker");
+    workerTaskHandle = xTaskCreateStatic(
+        workerTask, "internet_ota", kWorkerStackBytes,
+        reinterpret_cast<void*>(static_cast<uintptr_t>(operation)),
+        1, reinterpret_cast<StackType_t*>(workerTaskStack),
+        &workerTaskControl);
+    if (!workerTaskHandle) {
         workerActive.store(false);
-        setState(State::Failed, "could not start update worker");
+        if (workerPausedLiveService) {
+            workerPausedLiveService = false;
+            live_websocket_service::begin();
+        }
+        constexpr uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+        char error[128];
+        snprintf(error, sizeof(error),
+                 "could not start update worker (free %u, largest %u)",
+                 static_cast<unsigned>(heap_caps_get_free_size(caps)),
+                 static_cast<unsigned>(heap_caps_get_largest_free_block(caps)));
+        setState(State::Failed, error);
         return false;
     }
     return true;
@@ -436,6 +522,14 @@ void reconcileBootOutcome() {
 
 void begin() {
     if (initialized) return;
+#if POWER_METER_HAS_PSRAM
+    if (psramFound()) {
+        const int allocatorResult =
+            mbedtls_platform_set_calloc_free(tlsCalloc, tlsFree);
+        ESP_LOGI(kLogTag, "TLS allocator: %s",
+                 allocatorResult == 0 ? "PSRAM preferred" : "unchanged");
+    }
+#endif
     statusMutex = xSemaphoreCreateMutex();
     strlcpy(statusValue.currentVersion, OTA_FIRMWARE_VERSION,
             sizeof(statusValue.currentVersion));
@@ -447,6 +541,12 @@ void begin() {
 
 void update() {
     if (!initialized) return;
+    TaskHandle_t finishedTask = workerTaskHandle;
+    if (finishedTask && eTaskGetState(finishedTask) == eSuspended) {
+        workerTaskHandle = nullptr;
+        vTaskDelete(finishedTask);
+        workerActive.store(false);
+    }
     reconcileBootOutcome();
 
     const bool internet =
