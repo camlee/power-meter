@@ -2,6 +2,8 @@
 
 #include "../../data/historical_storage.h"
 #include "../../data/history_query_service.h"
+#include "../../device/hardware_profile.h"
+#include "../../sensors/sensors.h"
 #include "../../time/time_service.h"
 #include "../components/linear_progress.h"
 #include "../components/stacked_bar_chart.h"
@@ -54,11 +56,14 @@ constexpr uint8_t kAllHistoryRange = 7;
 constexpr uint8_t kSinceBootRange = 8;
 
 lv_obj_t* chart = nullptr;
-float chartValues[5][kMaxPoints] = {};
-stacked_bar_chart::Series chartSeries[5] = {
-    {lv_color_hex(0x159947), chartValues[0], true}, {lv_color_hex(0x0000FF), chartValues[1], true},
-    {lv_color_hex(0x00BFFF), chartValues[2], true}, {lv_color_hex(0xFF4500), chartValues[3], false},
-    {lv_color_hex(0xFFA500), chartValues[4], false},
+float chartValues[6][kMaxPoints] = {};
+stacked_bar_chart::Series chartSeries[6] = {
+    {lv_color_hex(0x0000FF), chartValues[0], true},
+    {lv_color_hex(0xFF4500), chartValues[1], true},
+    {lv_color_hex(0x808080), chartValues[2], true},
+    {lv_color_hex(0xFFA500), chartValues[3], false},
+    {lv_color_hex(0x159947), chartValues[4], false},
+    {lv_color_hex(0x808080), chartValues[5], false},
 };
 lv_obj_t* rangeDropdown = nullptr;
 lv_obj_t* statusBadge = nullptr;
@@ -81,6 +86,15 @@ lv_color_t seriesColor(uint8_t index)
     static constexpr uint32_t light[] = {0x159947, 0x0000FF, 0x00BFFF, 0xFF4500, 0xFFA500};
     static constexpr uint32_t dark[] = {0x3CA76C, 0x5596E6, 0x4DB6D0, 0xE56C63, 0xD99A58};
     return lv_color_hex(ui_theme::isDark() ? dark[index] : light[index]);
+}
+
+lv_color_t errorColor() {
+    return lv_color_hex(ui_theme::isDark() ? 0x7F8B92 : 0x8A949A);
+}
+
+float channelAveragePower(const historical_storage::PowerBucket& bucket, uint8_t channel) {
+    if (channel >= historical_storage::kSensorCount || !bucket.channelCoverageMs[channel]) return NAN;
+    return bucket.energyWh[channel] * 3600000.0f / bucket.channelCoverageMs[channel];
 }
 
 uint16_t automaticTickMinutes(uint32_t axisMinutes) {
@@ -143,17 +157,31 @@ void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
 
     for (size_t point = 0; point < expectedPoints; ++point) {
         const auto& bucket = buckets[point];
-        const float charge = bucket.componentAveragePowerW[historical_storage::BATTERY_CHARGING];
-        const float use = bucket.componentAveragePowerW[historical_storage::BATTERY_USAGE];
-        const float panel = bucket.componentAveragePowerW[historical_storage::PANEL_IN];
-        const float load = bucket.componentAveragePowerW[historical_storage::PANEL_USAGE];
-        const float surplus = bucket.componentAveragePowerW[historical_storage::PANEL_SURPLUS];
-
-        chartValues[0][point] = charge;
-        chartValues[1][point] = panel;
-        chartValues[2][point] = surplus;
-        chartValues[3][point] = use;
-        chartValues[4][point] = load;
+        if (hardware_profile::kControllerIsPwm) {
+            chartValues[0][point] =
+                bucket.componentAveragePowerW[historical_storage::BATTERY_CHARGING];
+            chartValues[1][point] =
+                bucket.componentAveragePowerW[historical_storage::PANEL_IN];
+            chartValues[2][point] =
+                bucket.componentAveragePowerW[historical_storage::PANEL_SURPLUS];
+            chartValues[3][point] =
+                bucket.componentAveragePowerW[historical_storage::BATTERY_USAGE];
+            chartValues[4][point] =
+                bucket.componentAveragePowerW[historical_storage::PANEL_USAGE];
+        } else {
+            const float solar = channelAveragePower(bucket, sensors::SENSOR_IN);
+            const float load = channelAveragePower(bucket, sensors::SENSOR_OUT);
+            const float battery = channelAveragePower(bucket, sensors::SENSOR_AUX);
+            const float error = std::isfinite(solar) && std::isfinite(load) &&
+                                std::isfinite(battery)
+                ? solar - load - battery : NAN;
+            chartValues[0][point] = std::isfinite(solar) ? std::max(solar, 0.0f) : NAN;
+            chartValues[1][point] = std::isfinite(battery) ? std::max(-battery, 0.0f) : NAN;
+            chartValues[2][point] = std::isfinite(error) ? std::max(-error, 0.0f) : NAN;
+            chartValues[3][point] = std::isfinite(load) ? std::max(load, 0.0f) : NAN;
+            chartValues[4][point] = std::isfinite(battery) ? std::max(battery, 0.0f) : NAN;
+            chartValues[5][point] = std::isfinite(error) ? std::max(error, 0.0f) : NAN;
+        }
     }
     const bool relative =
         status.timelineBasis == historical_storage::TimelineBasis::CurrentSessionMonotonic;
@@ -165,7 +193,9 @@ void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
     else setStatus("");
     const uint16_t tickMinutes = range.tickMinutes
         ? range.tickMinutes : automaticTickMinutes(axisMinutes);
-    stacked_bar_chart::setData(chart, {chartSeries, 5, expectedPoints, axisMinutes,
+    stacked_bar_chart::setData(chart, {chartSeries,
+                                      static_cast<uint8_t>(hardware_profile::kControllerIsPwm ? 5 : 6),
+                                      expectedPoints, axisMinutes,
                                       tickMinutes, nullptr,
                                       relative ? stacked_bar_chart::AxisMode::Relative
                                                : stacked_bar_chart::AxisMode::WallClock,
@@ -313,12 +343,26 @@ lv_obj_t* create(lv_obj_t* parent)
     lv_obj_set_size(legend, lv_pct(100), LV_SIZE_CONTENT);
     lv_obj_set_flex_flow(legend, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(legend, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    for (uint8_t i = 0; i < 5; ++i) chartSeries[i].color = seriesColor(i);
-    addLegendItem(legend, seriesColor(0), "Charge");
-    addLegendItem(legend, seriesColor(3), "Battery");
-    addLegendItem(legend, seriesColor(1), "Panel");
-    addLegendItem(legend, seriesColor(4), "Load");
-    addLegendItem(legend, seriesColor(2), "Surplus");
+    if (hardware_profile::kControllerIsPwm) {
+        for (uint8_t i = 0; i < 5; ++i) chartSeries[i].color = seriesColor(i);
+        addLegendItem(legend, seriesColor(0), "Charge");
+        addLegendItem(legend, seriesColor(3), "Battery");
+        addLegendItem(legend, seriesColor(1), "Solar");
+        addLegendItem(legend, seriesColor(4), "Load");
+        addLegendItem(legend, seriesColor(2), "Surplus");
+    } else {
+        chartSeries[0] = {seriesColor(1), chartValues[0], true};
+        chartSeries[1] = {seriesColor(3), chartValues[1], true};
+        chartSeries[2] = {errorColor(), chartValues[2], true};
+        chartSeries[3] = {seriesColor(4), chartValues[3], false};
+        chartSeries[4] = {seriesColor(0), chartValues[4], false};
+        chartSeries[5] = {errorColor(), chartValues[5], false};
+        addLegendItem(legend, chartSeries[0].color, "Solar");
+        addLegendItem(legend, chartSeries[1].color, "Discharge");
+        addLegendItem(legend, chartSeries[3].color, "Load");
+        addLegendItem(legend, chartSeries[4].color, "Charge");
+        addLegendItem(legend, errorColor(), "Error");
+    }
 
     chart = stacked_bar_chart::create(screen);
     lv_obj_set_height(chart, 0);

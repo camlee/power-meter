@@ -1,6 +1,7 @@
 <script>
   import { onMount } from 'svelte';
   import LiveChart from './lib/LiveChart.svelte';
+  import HomeChart from './lib/HomeChart.svelte';
   import SensorChart from './lib/SensorChart.svelte';
   import AdcCaptureChart from './lib/AdcCaptureChart.svelte';
   import HistoryChart from './lib/HistoryChart.svelte';
@@ -11,6 +12,7 @@
     getDebug,
     getCycles,
     getHistory,
+    getHistoryFiles,
     getRemoteScreenshot,
     getSensors,
     getSetup,
@@ -92,18 +94,20 @@
   // `const` had run and throw a temporal-dead-zone ReferenceError.
   const ROUTE_PATHS = {
     overview: '/',
+    power: '/power',
     remote: '/remote',
     history: '/history',
     cycle: '/cycle',
     sensors: '/sensors',
     raw: '/sensors/raw',
     wifi: '/wifi',
+    data: '/data',
     setup: '/setup',
     info: '/info',
     debug: '/debug',
   };
 
-  const SETTINGS_ROUTES = ['wifi', 'setup', 'info', 'debug', 'remote'];
+  const SETTINGS_ROUTES = ['wifi', 'info', 'setup', 'data', 'debug', 'remote'];
 
   // ---------------------------------------------------------------------
   // State
@@ -118,6 +122,7 @@
   let statusFetchedAt = 0;
   $: hasTouchDisplay = status?.capabilities?.touch_display !== false;
   $: hasStatusDisplay = status?.capabilities?.status_display === true;
+  $: pwmUiEnabled = status?.capabilities?.pwm_ui === true;
   $: webThemeOptions = hasTouchDisplay
     ? ['light', 'dark', 'auto', 'device']
     : ['light', 'dark', 'auto'];
@@ -219,6 +224,12 @@
   let updateActionBusy = false;
   let updatePollTimer;
 
+  // History file catalog shown by the web Settings → Data parity view.
+  let dataCatalog = null;
+  let dataDataset = 'real';
+  let dataBusy = false;
+  let dataError = '';
+
   // This preference controls only the browser. "auto" follows the browser/
   // OS color preference; "device" follows the display's effective theme.
   let webTheme = loadWebTheme();
@@ -235,6 +246,11 @@
 
   // Live chart data.
   let points = [];
+  $: latestPoint = points.length ? points[points.length - 1] : null;
+  $: homeNet = latestPoint?.net;
+  $: homeState = Number.isFinite(homeNet)
+    ? (homeNet > 0 ? 'Charging' : homeNet < 0 ? 'Discharging' : 'Balanced')
+    : 'Error - missing sensors';
   let lastRevision = 0;
   let lastSessionId = null;
   let lastSequence = 0;
@@ -389,7 +405,7 @@
 
   function sensorLabel(id) {
     return sensorStatus?.channels?.find((channel) => channel.id === id)?.label ||
-      ({ in: 'In', out: 'Out', aux: 'Aux' }[id] || 'Sensor');
+      ({ in: 'Solar', out: 'Load', aux: 'Battery' }[id] || 'Sensor');
   }
 
   function selectSensor(id) {
@@ -640,7 +656,7 @@
   // ---------------------------------------------------------------------
 
   function routeFromPath() {
-    if (location.pathname === '/settings') return 'setup';
+    if (location.pathname === '/settings') return 'wifi';
     const match = Object.entries(ROUTE_PATHS).find(([, path]) => path === location.pathname);
     return match ? match[0] : 'overview';
   }
@@ -681,6 +697,7 @@
     }
 
     if (next === 'setup') refreshSetup();
+    if (next === 'data') refreshData();
 
     if (next === 'wifi') {
       refreshWifi();
@@ -915,6 +932,45 @@
     }
   }
 
+  async function refreshData(dataset = dataDataset) {
+    dataBusy = true;
+    dataError = '';
+    try {
+      dataCatalog = await getHistoryFiles(dataset, 0, 25);
+      dataDataset = dataset;
+    } catch (err) {
+      dataError = describeError(err, 'load data files');
+    } finally {
+      dataBusy = false;
+    }
+  }
+
+  function dataDuration(records) {
+    if (!Number.isFinite(records) || records <= 0) return 'No recorded time';
+    const days = Math.floor(records / 1440);
+    const hours = Math.floor(records % 1440 / 60);
+    const minutes = records % 60;
+    return [
+      days ? `${days}d` : '', hours ? `${hours}h` : '', minutes ? `${minutes}m` : '',
+    ].filter(Boolean).join(' ');
+  }
+
+  function dataFileRange(file) {
+    if (!file?.anchored || !Number.isFinite(file.start_unix_ms) || file.start_unix_ms <= 0) {
+      return `Session ${file?.session_id ?? '—'} · minute ${file?.first_minute ?? '—'}`;
+    }
+    return `${new Date(file.start_unix_ms).toLocaleString()} – ${new Date(file.end_unix_ms).toLocaleString()}`;
+  }
+
+  function homeBand(value) {
+    if (!Number.isFinite(value)) return 'missing';
+    if (value < -50) return 'red';
+    if (value < -5) return 'orange';
+    if (value < 5) return 'neutral';
+    if (value <= 50) return 'green';
+    return 'blue';
+  }
+
   async function refreshUpdates() {
     try {
       updateStatus = await getUpdates();
@@ -1044,11 +1100,26 @@
         duty: Number.isFinite(reading.duty) ? reading.duty * 100 : Number.NaN,
       };
     };
+    const solarPower = eligible(0) ? frame.in.power : Number.NaN;
+    const loadPower = eligible(1) ? frame.out.power : Number.NaN;
+    const batteryPower = eligible(2) ? frame.aux.power : Number.NaN;
+    const netPower = Number.isFinite(batteryPower)
+      ? batteryPower
+      : (Number.isFinite(solarPower) && Number.isFinite(loadPower)
+        ? solarPower - loadPower : Number.NaN);
+    const directBatteryVoltage = eligible(2) ? frame.aux.voltage : Number.NaN;
+    const fallbackBatteryVoltage = eligible(1) ? frame.out.voltage : Number.NaN;
     points = [
       ...points,
       {
-        in: eligible(0) ? frame.in.power : Number.NaN,
-        out: eligible(1) ? frame.out.power : Number.NaN,
+        solar: solarPower,
+        load: loadPower,
+        battery: batteryPower,
+        net: netPower,
+        batteryVoltage: Number.isFinite(directBatteryVoltage)
+          ? directBatteryVoltage : fallbackBatteryVoltage,
+        batteryVoltageFallback: !Number.isFinite(directBatteryVoltage) &&
+          Number.isFinite(fallbackBatteryVoltage),
         timestamp, receivedAt, receivedMonotonicAt,
         sensors: {
           in: liveSensor(0, frame.in),
@@ -1455,19 +1526,21 @@
   </header>
 
   <nav class="main-nav" aria-label="Main navigation">
+    <button class:active={route === 'overview'} on:click={() => navigate('overview')}>Home</button>
+    <button class:active={route === 'history'} on:click={() => navigate('history')}>Usage</button>
+    <button class:active={route === 'power'} on:click={() => navigate('power')}>Power</button>
     <button class:active={route === 'sensors' || route === 'raw'}
       on:click={() => navigate('sensors')}>Sensors</button>
-    <button class:active={route === 'overview'} on:click={() => navigate('overview')}>Power</button>
-    <button class:active={route === 'history'} on:click={() => navigate('history')}>Usage</button>
     <button class:active={route === 'cycle'} on:click={() => navigate('cycle')}>Cycle</button>
-    <button class:active={SETTINGS_ROUTES.includes(route)} on:click={() => navigate('setup')}>Settings</button>
+    <button class:active={SETTINGS_ROUTES.includes(route)} on:click={() => navigate('wifi')}>Settings</button>
   </nav>
 
   {#if SETTINGS_ROUTES.includes(route)}
     <nav class="settings-nav" aria-label="Settings navigation">
       <button class:active={route === 'wifi'} on:click={() => navigate('wifi')}>Wi-Fi</button>
-      <button class:active={route === 'setup'} on:click={() => navigate('setup')}>Setup</button>
       <button class:active={route === 'info'} on:click={() => navigate('info')}>Info</button>
+      <button class:active={route === 'setup'} on:click={() => navigate('setup')}>Setup</button>
+      <button class:active={route === 'data'} on:click={() => navigate('data')}>Data</button>
       <button class:active={route === 'debug'} on:click={() => navigate('debug')}>Debug</button>
       {#if hasTouchDisplay}
         <button class:active={route === 'remote'} on:click={() => navigate('remote')}>Remote</button>
@@ -1725,6 +1798,50 @@
         </footer>
       </article>
     </section>
+  {:else if route === 'data'}
+    <section class="table-view data-view">
+      <div class="data-heading">
+        <div>
+          <h2>Data</h2>
+          <p>Recorded history segments and live buffered data.</p>
+        </div>
+        <button class="refresh" type="button" disabled={dataBusy}
+          on:click={() => refreshData()} aria-label="Refresh data files">↻</button>
+      </div>
+      <div class="form-segments data-segments" role="group" aria-label="History dataset">
+        {#each ['real', 'demo'] as dataset}
+          <button type="button" class:active={dataDataset === dataset}
+            aria-pressed={dataDataset === dataset} disabled={dataBusy}
+            on:click={() => refreshData(dataset)}>{titleCase(dataset)}</button>
+        {/each}
+      </div>
+      {#if dataBusy}<span class="progress" role="status" aria-label="Loading data files"></span>{/if}
+      {#if dataError}<p class="error" role="alert">{dataError}</p>{/if}
+      {#if dataCatalog}
+        <div class="data-summary">
+          <strong>{dataDuration((dataCatalog.committed_records || 0) + (dataCatalog.buffered_records || 0))}</strong>
+          <span>{dataCatalog.file_count}/{dataCatalog.max_files} files ·
+            {((dataCatalog.committed_bytes + dataCatalog.buffered_bytes) / 1048576).toFixed(1)} MB</span>
+        </div>
+        <div class="data-files">
+          {#each dataCatalog.files || [] as file}
+            <article>
+              <header>
+                <strong>Session {file.session_id}{file.state === 'closed' ? ' ✓' : ''}</strong>
+                <span>{dataDuration((file.committed_records || 0) + (file.buffered_records || 0))}</span>
+              </header>
+              <p>{dataFileRange(file)}</p>
+              <small>{titleCase(file.state)} · {(file.bytes / 1024).toFixed(1)} KB{file.fixture ? ' · fixture' : ''}</small>
+            </article>
+          {:else}
+            <p class="empty">No data files yet.</p>
+          {/each}
+        </div>
+        {#if dataCatalog.total > (dataCatalog.files?.length || 0)}
+          <p class="note">{dataCatalog.total - dataCatalog.files.length} older files are available through the API.</p>
+        {/if}
+      {/if}
+    </section>
   {:else if route === 'debug'}
     <section class="table-view">
       <h2>Debug</h2>
@@ -1780,7 +1897,7 @@
         <AdcCaptureChart capture={adcCapture} />
         <div class="adc-window-table-wrap">
           <table class="adc-window-table">
-            <thead><tr><th>Window</th><th>State</th><th>Voltage</th><th>Current</th><th>Power</th><th>Duty</th></tr></thead>
+            <thead><tr><th>Window</th><th>State</th><th>Voltage</th><th>Current</th><th>Power</th>{#if pwmUiEnabled}<th>Duty</th>{/if}</tr></thead>
             <tbody>
               {#each adcCapture.windows as window, index}
                 <tr>
@@ -1792,7 +1909,7 @@
                   <td>{formatMeasurement(window.voltage, 'V')}</td>
                   <td>{formatMeasurement(window.current, 'A')}</td>
                   <td>{formatMeasurement(window.power, 'W')}</td>
-                  <td>{formatPercent(window.duty)}</td>
+                  {#if pwmUiEnabled}<td>{formatPercent(window.duty)}</td>{/if}
                 </tr>
               {/each}
             </tbody>
@@ -1848,7 +1965,9 @@
                       <dt>Voltage</dt><dd>{formatMeasurement(channel.voltage, 'V')}</dd>
                       <dt>Current</dt><dd>{formatMeasurement(channel.current, 'A')}</dd>
                       <dt>Power</dt><dd>{formatMeasurement(channel.power, 'W')}</dd>
-                      <dt>Duty</dt><dd>{channel.duty?.state === 'valid' ? formatPercent(channel.duty.value) : '—'}</dd>
+                      {#if pwmUiEnabled}
+                        <dt>Duty</dt><dd>{channel.duty?.state === 'valid' ? formatPercent(channel.duty.value) : '—'}</dd>
+                      {/if}
                     </dl>
                     {#if !channel.configured}<p class="sensor-note">This channel is not configured by the active source.</p>{/if}
                   </article>
@@ -1895,9 +2014,11 @@
                       colorVariable="--warning" active={!livePaused && selectedSensor === channel.id} />
                     <SensorChart points={sensorPoints[channel.id] || []} field="power" title="Power" unit="W"
                       colorVariable="--charge" active={!livePaused && selectedSensor === channel.id} />
-                    <SensorChart points={sensorPoints[channel.id] || []} field="duty" title="Duty" unit="%"
-                      colorVariable="--surplus" active={!livePaused && selectedSensor === channel.id}
-                      emptyMessage={dutyEmptyMessage(channel)} />
+                    {#if pwmUiEnabled}
+                      <SensorChart points={sensorPoints[channel.id] || []} field="duty" title="Duty" unit="%"
+                        colorVariable="--surplus" active={!livePaused && selectedSensor === channel.id}
+                        emptyMessage={dutyEmptyMessage(channel)} />
+                    {/if}
                   {/if}
                 </div>
 
@@ -1957,7 +2078,8 @@
           </select>
         </label>
       </div>
-      <p class="cycle-efficiency">Assuming 80% charge efficiency</p>
+      <p class="cycle-efficiency">{pwmUiEnabled
+        ? 'Assuming 80% charge efficiency' : 'Direct Battery measurement'}</p>
 
       {#if cycleError}<p class="error" role="alert">{cycleError}</p>{/if}
       {#if cycleBusy}<span class="progress" role="status" aria-label="Loading energy cycles"></span>{/if}
@@ -2014,11 +2136,19 @@
       {#if historyBusy}<span class="progress" role="status" aria-label="Loading history"></span>{/if}
 
       <p class="chart-legend">
-        <span class="charge"></span>Charge
-        <span class="panel-color"></span>Panel
-        <span class="surplus"></span>Surplus
-        <span class="battery"></span>Battery
-        <span class="load"></span>Load
+        {#if pwmUiEnabled}
+          <span class="charge"></span>Charge
+          <span class="panel-color"></span>Solar
+          <span class="surplus"></span>Surplus
+          <span class="battery"></span>Battery
+          <span class="load"></span>Load
+        {:else}
+          <span class="panel-color"></span>Solar
+          <span class="battery"></span>Discharge
+          <span class="load"></span>Load
+          <span class="charge"></span>Charge
+          <span class="error-color"></span>Error
+        {/if}
       </p>
 
       {#if history}
@@ -2028,6 +2158,7 @@
           startTimeMs={history.startTimeMs}
           endTimeMs={history.endTimeMs}
           tickMinutes={historyRange.tickMinutes}
+          {pwmUiEnabled}
         />
         {#if history.flags & 1}
           <p class="note">Some intervals have incomplete coverage.</p>
@@ -2036,13 +2167,30 @@
         <p class="empty">No history available.</p>
       {/if}
     </section>
-  {:else}
+  {:else if route === 'power'}
     <section class="live-view">
       <p class="chart-legend">
-        <span class="charge"></span>In
-        <span class="battery"></span>Out
+        <span class="panel-color"></span>Solar
+        <span class="load"></span>Load
+        <span class="battery"></span>Battery
+        <span class="charge"></span>Net
       </p>
       <LiveChart {points} sessionId={lastSessionId} active={!livePaused} />
+    </section>
+  {:else}
+    <section class="home-view">
+      <h2 class={homeBand(homeNet)}>{homeState}</h2>
+      <div class="home-power {homeBand(homeNet)}">
+        <strong>{Number.isFinite(homeNet) ? `${homeNet >= 0 ? '+' : ''}${Math.round(homeNet)}` : '—'}</strong>
+        <span>W</span>
+      </div>
+      <div class="home-chart">
+        <HomeChart {points} sessionId={lastSessionId} active={!livePaused} />
+      </div>
+      <p class="home-voltage">Battery
+        {Number.isFinite(latestPoint?.batteryVoltage) ? `${latestPoint.batteryVoltage.toFixed(1)} V` : '— V'}
+        {latestPoint?.batteryVoltageFallback ? ' (Load)' : ''}
+      </p>
     </section>
   {/if}
 </main>
@@ -2254,6 +2402,7 @@
   }
 
   .live-view,
+  .home-view,
   .history-view,
   .cycle-view,
   .remote-view,
@@ -2296,6 +2445,55 @@
   .chart-legend .surplus { background: var(--surplus); }
   .chart-legend .battery { background: var(--battery); }
   .chart-legend .load { background: var(--load); }
+  .chart-legend .error-color { background: var(--muted); }
+
+  .home-view {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    text-align: center;
+  }
+
+  .home-view h2 {
+    margin: 0;
+    font-size: clamp(1.8rem, 7vw, 3rem);
+    font-weight: 650;
+  }
+
+  .home-power {
+    min-height: 4.6rem;
+    display: flex;
+    align-items: baseline;
+    justify-content: center;
+    gap: 0.35rem;
+    line-height: 1;
+  }
+
+  .home-power strong {
+    font-size: clamp(3.2rem, 13vw, 6rem);
+    font-weight: 500;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .home-power span { color: var(--muted); font-size: clamp(1.2rem, 4vw, 2rem); }
+  .home-view .red, .home-power.red { color: var(--battery); }
+  .home-view .orange, .home-power.orange { color: var(--warning); }
+  .home-view .neutral, .home-power.neutral { color: var(--muted); }
+  .home-view .green, .home-power.green { color: var(--charge); }
+  .home-view .blue, .home-power.blue { color: var(--panel); }
+  .home-view .missing, .home-power.missing { color: var(--battery); }
+
+  .home-chart {
+    flex: 1;
+    min-height: 0;
+  }
+
+  .home-voltage {
+    padding-top: 0.2rem;
+    color: var(--text);
+    font-size: clamp(1.1rem, 4vw, 1.45rem);
+    font-weight: 600;
+  }
 
   .cycle-view {
     width: 100%;
@@ -2675,6 +2873,42 @@
   }
 
   .table-view { max-width: 42rem; }
+
+  .data-heading {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+  }
+
+  .data-heading h2 { margin: 0; }
+  .data-heading p { color: var(--muted); font-size: 0.82rem; }
+  .data-segments { margin-top: 0.75rem; }
+  .data-summary {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin: 0.8rem 0 0.5rem;
+  }
+  .data-summary span { color: var(--muted); font-size: 0.82rem; }
+  .data-files { display: grid; gap: 0.45rem; }
+  .data-files article {
+    padding: 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    background: var(--surface);
+  }
+  .data-files header {
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .data-files header span, .data-files p, .data-files small {
+    color: var(--muted);
+    font-size: 0.78rem;
+  }
+  .data-files p { margin-top: 0.18rem; }
 
   form { margin-top: 0.3rem; }
 

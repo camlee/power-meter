@@ -51,20 +51,36 @@ historical_storage::SampleFrame makeHistoryFrame(uint32_t now) {
                         sensors::isCalculationEligible(readings[sensors::SENSOR_IN]);
     const bool haveOut = present[sensors::SENSOR_OUT] &&
                          sensors::isCalculationEligible(readings[sensors::SENSOR_OUT]);
+    const bool haveBattery = present[sensors::SENSOR_AUX] &&
+                             sensors::isCalculationEligible(readings[sensors::SENSOR_AUX]);
     if (haveIn && haveOut) {
         const float in = readings[sensors::SENSOR_IN].power;
         const float out = readings[sensors::SENSOR_OUT].power;
         const float net = in - out;
         const float panelToLoad = std::min(std::max(in, 0.0f), std::max(out, 0.0f));
-        frame.componentPowerW[historical_storage::BATTERY_CHARGING] = std::max(net, 0.0f);
-        frame.componentPowerW[historical_storage::BATTERY_USAGE] = std::max(-net, 0.0f);
         frame.componentPowerW[historical_storage::PANEL_IN] = panelToLoad;
         frame.componentPowerW[historical_storage::PANEL_USAGE] = panelToLoad;
         frame.eligibleComponentMask |=
-            static_cast<uint8_t>((1U << historical_storage::BATTERY_CHARGING) |
-                                 (1U << historical_storage::BATTERY_USAGE) |
-                                 (1U << historical_storage::PANEL_IN) |
+            static_cast<uint8_t>((1U << historical_storage::PANEL_IN) |
                                  (1U << historical_storage::PANEL_USAGE));
+        if (hardware_profile::kControllerIsPwm || !haveBattery) {
+            frame.componentPowerW[historical_storage::BATTERY_CHARGING] = std::max(net, 0.0f);
+            frame.componentPowerW[historical_storage::BATTERY_USAGE] = std::max(-net, 0.0f);
+            frame.eligibleComponentMask |=
+                static_cast<uint8_t>((1U << historical_storage::BATTERY_CHARGING) |
+                                     (1U << historical_storage::BATTERY_USAGE));
+        }
+    }
+
+    if (!hardware_profile::kControllerIsPwm && haveBattery) {
+        const float battery = readings[sensors::SENSOR_AUX].power;
+        frame.componentPowerW[historical_storage::BATTERY_CHARGING] =
+            std::max(battery, 0.0f);
+        frame.componentPowerW[historical_storage::BATTERY_USAGE] =
+            std::max(-battery, 0.0f);
+        frame.eligibleComponentMask |=
+            static_cast<uint8_t>((1U << historical_storage::BATTERY_CHARGING) |
+                                 (1U << historical_storage::BATTERY_USAGE));
     }
 
     if (haveIn) {

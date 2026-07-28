@@ -4,8 +4,8 @@
 
 #include "screen_manager.h"
 #include "settings_screen.h"
+#include "../screens/home_screen.h"
 #include "../screens/power_screen.h"
-#include "../screens/cycle_screen.h"
 #include "../screens/sensors_screen.h"
 #include "../screens/usage_screen.h"
 
@@ -18,10 +18,10 @@ struct TopLevelScreenDef {
 };
 
 constexpr TopLevelScreenDef kTopLevelScreens[] = {
-    {"Sensors", sensors_screen::create},
-    {"Power", power_screen::create},
+    {LV_SYMBOL_HOME, home_screen::create},
     {"Usage", usage_screen::create},
-    {"Cycle", cycle_screen::create},
+    {"Power", power_screen::create},
+    {"Sensors", sensors_screen::create},
     {LV_SYMBOL_SETTINGS, settings_screen::create},
 };
 

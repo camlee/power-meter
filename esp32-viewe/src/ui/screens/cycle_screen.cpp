@@ -2,6 +2,7 @@
 
 #include "../../data/energy_cycle.h"
 #include "../../data/history_query_service.h"
+#include "../../device/hardware_profile.h"
 #include "../../time/time_service.h"
 #include "../components/linear_progress.h"
 #include "../theme/ui_theme.h"
@@ -262,7 +263,8 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_text_font(efficiency, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(efficiency, ui_theme::mutedText(), 0);
     lv_obj_set_style_text_align(efficiency, LV_TEXT_ALIGN_CENTER, 0);
-    lv_label_set_text(efficiency, "Assuming 80% charge efficiency");
+    lv_label_set_text(efficiency, hardware_profile::kControllerIsPwm
+        ? "Assuming 80% charge efficiency" : "Direct Battery measurement");
 
     lv_obj_t* summary = lv_obj_create(screen);
     lv_obj_remove_style_all(summary);

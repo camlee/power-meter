@@ -14,7 +14,9 @@ calibrated.
 
 ## Channel configuration and state
 
-`In`, `Out`, and `Aux` have independent presence/state. The completed runtime
+The stable `In`, `Out`, and `Aux` identifiers are displayed as **Solar**,
+**Load**, and **Battery** respectively. They have independent presence/state.
+The completed runtime
 contract accepts the channels a source supports or currently advertises. The
 remaining configuration follow-up will make effective configuration the
 intersection of two masks:
@@ -106,7 +108,9 @@ are derived from eligible history where meaningful or shown unavailable.
 ## Derived metrics
 
 - Channel power requires that channel's valid voltage and current.
-- Net battery power requires valid `In` and `Out`; `Aux` is excluded.
+- Legacy API net battery power requires valid `In` and `Out`.
+- User-facing system net power uses valid Battery/`Aux` power first, where
+  positive means charging, and falls back to `In - Out`.
 - Battery charging/usage components require the same valid inputs used by their
   formulas.
 - Panel duty/available power requires valid `In` power plus valid direct or

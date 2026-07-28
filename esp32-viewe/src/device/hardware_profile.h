@@ -24,6 +24,10 @@
 #define POWER_METER_SUPPORTS_UART 1
 #endif
 
+#ifndef POWER_METER_CONTROLLER_MODE_PWM
+#define POWER_METER_CONTROLLER_MODE_PWM 0
+#endif
+
 namespace hardware_profile {
 
 constexpr const char* kName = POWER_METER_HARDWARE_PROFILE;
@@ -33,5 +37,7 @@ constexpr bool kHasEsp32Adc = POWER_METER_HAS_ESP32_ADC != 0;
 constexpr bool kHasAds1115 = POWER_METER_HAS_ADS1115 != 0;
 constexpr bool kSupportsUart = POWER_METER_SUPPORTS_UART != 0;
 constexpr bool kSupportsDemo = true;
+constexpr bool kControllerIsPwm = POWER_METER_CONTROLLER_MODE_PWM != 0;
+constexpr const char* kControllerMode = kControllerIsPwm ? "pwm" : "mppt";
 
 } // namespace hardware_profile

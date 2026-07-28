@@ -49,6 +49,9 @@ void ScreenManager::build() {
         // Call the user's UI function, passing the new tab page as the parent
         screens[i].content = screens[i].createFunc(screens[i].tab);
     }
+    // LVGL may change the active tab while pages are being appended. Home is
+    // the intentional startup surface regardless of child-screen creation.
+    lv_tabview_set_act(tabview, 0, LV_ANIM_OFF);
     notifyActiveScreen();
 }
 

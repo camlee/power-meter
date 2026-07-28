@@ -27,9 +27,9 @@ struct SettingsTabDef {
 
 constexpr SettingsTabDef kSettingsTabs[] = {
     {"Wi-Fi", wifi_screen::create},
+    {"Info", device_info_screen::create},
     {"Setup", device_setup_screen::create},
     {"Data", history_screen::create},
-    {"Info", device_info_screen::create},
     {"Debug", diagnostics_screen::create},
 };
 
@@ -75,6 +75,7 @@ lv_obj_t* create(lv_obj_t* parent) {
         prepareTab(tab);
         tabs[i].content = tabDef.create(tab);
     }
+    lv_tabview_set_act(tabview, 0, LV_ANIM_OFF);
     lv_obj_add_event_cb(tabview, tabChangedCb, LV_EVENT_VALUE_CHANGED, tabs);
     lv_obj_add_event_cb(tabview, screenRefreshCb, LV_EVENT_REFRESH, tabs);
     notifyActiveTab(tabview, tabs);

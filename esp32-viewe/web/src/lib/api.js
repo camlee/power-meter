@@ -10,6 +10,13 @@ export async function getSensors() {
   return response.json();
 }
 
+export async function getHistoryFiles(dataset = 'real', offset = 0, limit = 25) {
+  const params = new URLSearchParams({ dataset, offset: String(offset), limit: String(limit) });
+  const response = await fetch(`/api/v1/history/files?${params}`, { cache: 'no-store' });
+  if (!response.ok) throw await responseError(response, 'history files');
+  return response.json();
+}
+
 export async function saveSensorCalibration(calibration) {
   const response = await fetch('/api/v1/sensors/calibration', {
     method: 'POST', cache: 'no-store', headers: { 'Content-Type': 'application/json' },

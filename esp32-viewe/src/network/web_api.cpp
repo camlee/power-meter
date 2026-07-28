@@ -135,11 +135,11 @@ void webStatus() {
     const size_t storageTotal = LittleFS.totalBytes();
     const unsigned storagePercent = storageTotal
         ? static_cast<unsigned>((LittleFS.usedBytes() * 100U) / storageTotal) : 0;
-    char response[1536];
+    char response[1664];
     snprintf(response, sizeof(response),
              "{\"api_version\":1,\"web_build\":\"%s\",\"state_revision\":%lu,"
              "\"hardware_profile\":\"%s\",\"capabilities\":{\"touch_display\":%s,"
-             "\"status_display\":%s,"
+             "\"status_display\":%s,\"controller_mode\":\"%s\",\"pwm_ui\":%s,"
              "\"sensor_modes\":{\"adc\":%s,\"ads1115\":%s,\"uart\":%s,\"demo\":true}},"
              "\"device_id\":\"%s\",\"hostname\":\"%s\",\"uptime_ms\":%lu,"
              "\"time_source\":\"%s\",\"date\":\"%s\",\"time\":\"%s\","
@@ -153,6 +153,8 @@ void webStatus() {
              web_assets::kBuildId, static_cast<unsigned long>(device_state::revision()),
              hardware_profile::kName, hardware_profile::kHasTouchUi ? "true" : "false",
              hardware_profile::kHasStatusDisplay ? "true" : "false",
+             hardware_profile::kControllerMode,
+             hardware_profile::kControllerIsPwm ? "true" : "false",
              hardware_profile::kHasEsp32Adc ? "true" : "false",
              hardware_profile::kHasAds1115 ? "true" : "false",
              hardware_profile::kSupportsUart ? "true" : "false",
@@ -614,11 +616,11 @@ void webSensors() {
         json += "null";
     }
     json += "},\"channels\":[";
-    appendSensorJson(json, "in", "In", sensors::SENSOR_IN, mode);
+    appendSensorJson(json, "in", "Solar", sensors::SENSOR_IN, mode);
     json += ',';
-    appendSensorJson(json, "out", "Out", sensors::SENSOR_OUT, mode);
+    appendSensorJson(json, "out", "Load", sensors::SENSOR_OUT, mode);
     json += ',';
-    appendSensorJson(json, "aux", "Aux", sensors::SENSOR_AUX, mode);
+    appendSensorJson(json, "aux", "Battery", sensors::SENSOR_AUX, mode);
     json += "]}";
     server->sendHeader("Cache-Control", "no-store");
     server->send(200, "application/json", json);
@@ -1333,8 +1335,18 @@ void webWifiAp() {
 void historyFiles() {
     size_t offset = 0;
     size_t limit = 25;
+    historical_storage::Dataset dataset = historical_storage::activeDataset();
     if (server->hasArg("offset")) offset = static_cast<size_t>(server->arg("offset").toInt());
     if (server->hasArg("limit")) limit = static_cast<size_t>(server->arg("limit").toInt());
+    if (server->hasArg("dataset")) {
+        const String requested = server->arg("dataset");
+        if (requested == "real") dataset = historical_storage::Dataset::Real;
+        else if (requested == "demo") dataset = historical_storage::Dataset::Demo;
+        else {
+            server->send(400, "application/json", "{\"error\":\"dataset must be real or demo\"}");
+            return;
+        }
+    }
     if (limit == 0 || limit > 50) limit = 25;
     auto* files = static_cast<historical_storage::HistoryFileInfo*>(
         heap_policy::callocPreferred(limit, sizeof(historical_storage::HistoryFileInfo)));
@@ -1344,17 +1356,19 @@ void historyFiles() {
     }
     size_t total = 0;
     historical_storage::StorageStats stats{};
-    const size_t count = historical_storage::listFiles(files, limit, offset, &total, &stats);
+    const size_t count = historical_storage::listFilesForDataset(
+        dataset, files, limit, offset, &total, &stats);
 
     String json;
     json.reserve(3072);
     char value[512];
     snprintf(value, sizeof(value),
-             "{\"version\":1,\"flush_interval_minutes\":%u,\"record_size_bytes\":%u,"
+             "{\"version\":1,\"dataset\":\"%s\",\"flush_interval_minutes\":%u,\"record_size_bytes\":%u,"
              "\"records_per_segment\":%u,\"max_files\":%u,\"file_count\":%u,"
              "\"committed_records\":%lu,\"buffered_records\":%u,"
              "\"committed_bytes\":%lu,\"buffered_bytes\":%lu,"
              "\"offset\":%u,\"limit\":%u,\"total\":%u,\"files\":[",
+             dataset == historical_storage::Dataset::Demo ? "demo" : "real",
              historical_storage::kFlushIntervalMinutes,
              static_cast<unsigned>(sizeof(historical_storage::MinuteEnergyRecord)),
              historical_storage::kRecordsPerSegment,

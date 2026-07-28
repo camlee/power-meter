@@ -29,9 +29,9 @@ There are three independent channels:
 
 | Logical channel | Meaning now | Role in system calculations |
 | --- | --- | --- |
-| `In` | Solar-panel input to the battery system | Production / charging input |
-| `Out` | Battery-system load output | Consumption / discharge output |
-| `Aux` | Reserved independent measurement | Excluded from net battery power |
+| `In` | **Solar** input to the battery system | Positive production |
+| `Out` | **Load** output from the battery system | Positive consumption |
+| `Aux` | **Battery** bidirectional measurement | Positive charge, negative discharge |
 
 The final local ADC target has a voltage and current input for each channel, for
 six inputs on provisional GPIO 5 through 10. Sources and devices may provide
@@ -122,12 +122,13 @@ Requirements for the production source:
   stale last-good value;
 - no blocking work while holding the shared sensor-history mutex.
 
-`In - Out` is net battery power only when both inputs are valid: positive
-charges the battery and negative discharges it. Derived metrics that lack their
-required channels are unavailable, not zero. Values are never clamped into the
-calculation range because that would fabricate power/energy. `Aux` remains
-independent. See `SENSOR_DATA_POLICY.md` for states, limits, coverage, and
-calibration implications.
+The stable identifiers remain `In`, `Out`, and `Aux` in storage and APIs.
+User-facing net power is positive while charging and uses the direct Battery
+measurement (`Aux`) when valid, falling back to `In - Out`. Derived metrics
+that lack their required channels are unavailable, not zero. Values are never
+clamped into the calculation range because that would fabricate power/energy.
+See `SENSOR_DATA_POLICY.md` for states, limits, coverage, and calibration
+implications.
 
 ### 2. UI
 
@@ -135,25 +136,30 @@ On `meter-viewe`, LVGL owns the display and touch UI. `ScreenManager` provides t
 top-level tab layout; screens should only consume public service APIs, never
 read hardware or files directly.
 
-Current top-level screens are:
+Current LVGL top-level screens are:
 
+- **Home:** direct-Battery-first charging summary, 30-second net trend, Battery
+  voltage, and the immediately applied/persisted manual brightness slider.
+- **Usage:** rolling and calendar Solar/Load/Battery history with an explicit
+  balance-error component.
+- **Power:** Solar, Load, Battery, and net live metrics.
 - **Sensors:** raw per-sensor voltage/current/power and short trend charts.
-- **Power:** derived battery and solar/PWM-related metrics.
-- **Usage:** rolling and calendar history with gaps/time uncertainty.
-- **Cycle:** daily solar-cycle energy balances using a persisted local cycle-end
-  hour, charging efficiency, a recent net summary, and explicit incomplete-data
-  handling shared with the browser view.
 - **Settings:** nested configuration and diagnostics pages:
   - **Wi-Fi:** station scan/connect, station IP/RSSI, plus local AP control
     and its gateway IP;
-  - **Setup:** persisted device ID/hostname (`meter-...`), source selection,
-    active channel-state summary, appearance, and reset controls;
   - **Info:** version/build date, current date/time, uptime, network-named IP
     addresses, and signed Internet update status/actions;
+  - **Setup:** persisted device ID/hostname (`meter-...`), source selection,
+    active channel-state summary, appearance, staged auto day/night brightness,
+    and reset controls;
   - **Data:** dataset-filtered, filename-driven segment diagnostics and live RAM state;
   - **Debug:** SDK/chip/reset details, time source, web build, WebSocket
     connections, disjoint internal/PSRAM heap usage and largest free blocks,
     storage, and OTA diagnostics.
+
+Cycle remains available in the browser and latent in LVGL. PWM duty and
+surplus presentation is controlled by the controller profile. See
+`LATENT_UI_FEATURES.md`.
 
 The VIEWE display is a first-class offline interface. `meter-wroom` remains
 web-first but also drives a compact SSD1306 status surface showing network and

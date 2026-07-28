@@ -179,8 +179,8 @@ Expose Windows USB devices to Linux using [usbipd](https://github.com/dorssel/us
 - `src/application_runtime.cpp`: common sensing, storage, network, web, and OTA lifecycle
 - `src/device/hardware_profile.h`: compile-time hardware capabilities
 - `src/ui/navigation/`: top-level and Settings tab registration
-- `src/ui/screens/`: top-level Sensors, Power, and Usage screens
-- `src/ui/screens/settings/`: Wi-Fi, Setup, Info, and Debug Settings sub-pages
+- `src/ui/screens/`: top-level Home, Usage, Power, and Sensors screens
+- `src/ui/screens/settings/`: Wi-Fi, Info, Setup, Data, and Debug Settings sub-pages
 - `src/ui/components/`, `input/`, and `theme/`: shared UI building blocks
 - `src/sensors/`: sensor acquisition plus Demo, ESP32 ADC, ADS1115, and UART sources
 - `src/sensors/sensor_config.h`: source selection and provisional pin mapping
@@ -251,7 +251,8 @@ The endpoint is paginated and caps a page at 50 files.
 
 Simulation is enabled by default so UI and storage work without sensor
 hardware. `src/sensors/sensor_config.h` contains the provisional sequential
-mapping: In voltage/current = GPIO 5/6, Out = 7/8, and Aux = 9/10. Set
+mapping: Solar (`In`) voltage/current = GPIO 5/6, Load (`Out`) = 7/8, and
+Battery (`Aux`) = 9/10. Set
 `POWER_METER_USE_SIMULATED_SENSORS` to `0` when the physical hardware is ready
 for validation.
 

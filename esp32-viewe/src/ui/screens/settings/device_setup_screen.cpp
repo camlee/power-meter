@@ -29,8 +29,6 @@ lv_obj_t* hostnameLabel = nullptr;
 lv_obj_t* lightModeButton = nullptr;
 lv_obj_t* darkModeButton = nullptr;
 lv_obj_t* autoModeButton = nullptr;
-lv_obj_t* brightnessSlider = nullptr;
-lv_obj_t* brightnessValueLabel = nullptr;
 lv_obj_t* autoBrightnessCheckbox = nullptr;
 lv_obj_t* resetSetupCheckbox = nullptr;
 lv_obj_t* resetWifiCheckbox = nullptr;
@@ -43,10 +41,10 @@ lv_coord_t setupScrollY = 0;
 bool hostnameEditing = false;
 sensor_mode::Mode pendingSensorMode = sensor_mode::Mode::Demo;
 ui_theme::Mode pendingAppearance = ui_theme::Mode::Auto;
+bool pendingAutoBrightness = false;
 
 void selectSegment(lv_obj_t* selected, lv_obj_t* first, lv_obj_t* second, lv_obj_t* third = nullptr, lv_obj_t* fourth = nullptr);
 void updateActionState();
-void syncBrightnessControls();
 
 const char* sensorModeLabel(sensor_mode::Mode mode) {
     switch (mode) {
@@ -75,7 +73,7 @@ const char* readingSymbol(sensors::SensorId id) {
 void updateActiveSensorStatus() {
     if (!activeSensorStatusLabel) return;
     char text[96];
-    snprintf(text, sizeof(text), "%s  In %s  Out %s  Aux %s",
+    snprintf(text, sizeof(text), "%s  Solar %s  Load %s  Bat %s",
              sensorModeLabel(sensor_mode::get()), readingSymbol(sensors::SENSOR_IN),
              readingSymbol(sensors::SENSOR_OUT), readingSymbol(sensors::SENSOR_AUX));
     lv_label_set_text(activeSensorStatusLabel, text);
@@ -87,7 +85,6 @@ void updateActiveSensorStatus() {
 void screenRefreshCb(lv_event_t* event) {
     if (lv_event_get_code(event) == LV_EVENT_REFRESH) {
         updateActiveSensorStatus();
-        syncBrightnessControls();
     }
 }
 
@@ -163,6 +160,7 @@ void keyboardEventCb(lv_event_t* event) {
 bool hasChanges() {
     return std::strcmp(lv_textarea_get_text(deviceIdInput), device_identity::getDeviceId()) != 0 ||
            pendingSensorMode != sensor_mode::get() || pendingAppearance != ui_theme::mode() ||
+           pendingAutoBrightness != display_brightness::autoDayNight() ||
            checkboxChecked(resetSetupCheckbox) || checkboxChecked(resetWifiCheckbox) ||
            checkboxChecked(resetCalibrationCheckbox) || checkboxChecked(resetUsageCheckbox);
 }
@@ -193,11 +191,14 @@ void saveChangesCb(lv_event_t*) {
     const bool hostnameChanged = std::strcmp(requestedId, device_identity::getDeviceId()) != 0;
     const bool sensorModeChanged = pendingSensorMode != sensor_mode::get();
     const bool appearanceChanged = pendingAppearance != ui_theme::mode();
+    const bool autoBrightnessChanged =
+        pendingAutoBrightness != display_brightness::autoDayNight();
     const bool resetSetup = checkboxChecked(resetSetupCheckbox);
     const bool resetWifi = checkboxChecked(resetWifiCheckbox);
     const bool resetCalibration = checkboxChecked(resetCalibrationCheckbox);
     const bool resetUsage = checkboxChecked(resetUsageCheckbox);
-    if (!hostnameChanged && !sensorModeChanged && !appearanceChanged && !resetSetup && !resetWifi &&
+    if (!hostnameChanged && !sensorModeChanged && !appearanceChanged &&
+        !autoBrightnessChanged && !resetSetup && !resetWifi &&
         !resetCalibration && !resetUsage) return;
 
     if (resetSetup) {
@@ -233,6 +234,12 @@ void saveChangesCb(lv_event_t*) {
         return;
     }
 
+    if (!resetSetup && autoBrightnessChanged &&
+        !display_brightness::setAutoDayNight(pendingAutoBrightness)) {
+        lv_label_set_text(statusLabel, "Could not save automatic brightness.");
+        return;
+    }
+
     // Hostname/mDNS, sensor mode, calibration, and the LVGL theme are all
     // initialized at boot. Save the page as one transaction, then restart.
     restartWithFeedback("Applying changes...");
@@ -258,51 +265,14 @@ void appearanceChangedCb(lv_event_t* event) {
     updateActionState();
 }
 
-void updateBrightnessLabel(int percent) {
-    if (!brightnessValueLabel) return;
-    char text[8];
-    snprintf(text, sizeof(text), "%d%%", percent);
-    lv_label_set_text(brightnessValueLabel, text);
-}
-
-void syncBrightnessControls() {
-    if (brightnessSlider) {
-        lv_slider_set_value(brightnessSlider, display_brightness::get(), LV_ANIM_OFF);
-    }
-    updateBrightnessLabel(display_brightness::get());
-    if (autoBrightnessCheckbox) {
-        if (display_brightness::autoDayNight()) {
-            lv_obj_add_state(autoBrightnessCheckbox, LV_STATE_CHECKED);
-        } else {
-            lv_obj_clear_state(autoBrightnessCheckbox, LV_STATE_CHECKED);
-        }
-    }
-}
-
-void brightnessChangedCb(lv_event_t* event) {
-    const lv_event_code_t code = lv_event_get_code(event);
-    if (code == LV_EVENT_VALUE_CHANGED) {
-        const int percent = lv_slider_get_value(brightnessSlider);
-        if (display_brightness::set(percent)) {
-            updateBrightnessLabel(display_brightness::get());
-        }
-        return;
-    }
-    if (code == LV_EVENT_RELEASED && !display_brightness::save()) {
-        lv_label_set_text(statusLabel, "Could not save display brightness.");
-    }
-}
-
 void autoBrightnessChangedCb(lv_event_t*) {
-    const bool enabled = checkboxChecked(autoBrightnessCheckbox);
-    if (!display_brightness::setAutoDayNight(enabled)) {
-        lv_label_set_text(statusLabel, "Could not save automatic brightness.");
-    }
-    syncBrightnessControls();
+    pendingAutoBrightness = checkboxChecked(autoBrightnessCheckbox);
+    lv_label_set_text(statusLabel, "");
+    updateActionState();
 }
 
 void brightnessTimerCb(lv_timer_t*) {
-    if (display_brightness::update()) syncBrightnessControls();
+    display_brightness::update();
 }
 
 void resetOptionChangedCb(lv_event_t*) { updateActionState(); }
@@ -311,6 +281,7 @@ void resetChangesCb(lv_event_t*) {
     lv_textarea_set_text(deviceIdInput, device_identity::getDeviceId());
     pendingSensorMode = sensor_mode::get();
     pendingAppearance = ui_theme::mode();
+    pendingAutoBrightness = display_brightness::autoDayNight();
     lv_obj_t* activeSensor = pendingSensorMode == sensor_mode::Mode::Adc ? adcModeButton :
                              pendingSensorMode == sensor_mode::Mode::Ads1115 ? ads1115ModeButton :
                              pendingSensorMode == sensor_mode::Mode::Uart ? uartModeButton : demoModeButton;
@@ -318,6 +289,8 @@ void resetChangesCb(lv_event_t*) {
     updateActiveSensorStatus();
     lv_obj_t* selected = pendingAppearance == ui_theme::Mode::Light ? lightModeButton : pendingAppearance == ui_theme::Mode::Dark ? darkModeButton : autoModeButton;
     selectSegment(selected, lightModeButton, darkModeButton, autoModeButton);
+    if (pendingAutoBrightness) lv_obj_add_state(autoBrightnessCheckbox, LV_STATE_CHECKED);
+    else lv_obj_clear_state(autoBrightnessCheckbox, LV_STATE_CHECKED);
     lv_obj_clear_state(resetSetupCheckbox, LV_STATE_CHECKED);
     lv_obj_clear_state(resetWifiCheckbox, LV_STATE_CHECKED);
     lv_obj_clear_state(resetCalibrationCheckbox, LV_STATE_CHECKED);
@@ -410,44 +383,14 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_event_cb(autoModeButton, appearanceChangedCb, LV_EVENT_CLICKED, nullptr);
     pendingSensorMode = sensor_mode::get();
     pendingAppearance = ui_theme::mode();
+    pendingAutoBrightness = display_brightness::autoDayNight();
     lv_obj_t* activeAppearance = pendingAppearance == ui_theme::Mode::Light ? lightModeButton : pendingAppearance == ui_theme::Mode::Dark ? darkModeButton : autoModeButton;
     selectSegment(activeAppearance, lightModeButton, darkModeButton, autoModeButton);
-
-    lv_obj_t* brightnessRow = lv_obj_create(screen);
-    lv_obj_remove_style_all(brightnessRow);
-    lv_obj_set_size(brightnessRow, lv_pct(100), 34);
-    lv_obj_set_flex_flow(brightnessRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(brightnessRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER);
-    lv_obj_set_style_pad_left(brightnessRow, 4, 0);
-    lv_obj_set_style_pad_right(brightnessRow, 2, 0);
-    lv_obj_set_style_pad_column(brightnessRow, 14, 0);
-
-    lv_obj_t* brightnessLabel = lv_label_create(brightnessRow);
-    lv_label_set_text(brightnessLabel, "BRIGHTNESS");
-    ui_theme::styleSectionLabel(brightnessLabel);
-
-    brightnessSlider = lv_slider_create(brightnessRow);
-    lv_obj_set_height(brightnessSlider, 10);
-    lv_obj_set_flex_grow(brightnessSlider, 1);
-    lv_obj_set_ext_click_area(brightnessSlider, 12);
-    lv_slider_set_range(brightnessSlider, display_brightness::kMinimumPercent,
-                        display_brightness::kMaximumPercent);
-    lv_slider_set_value(brightnessSlider, display_brightness::get(), LV_ANIM_OFF);
-    lv_obj_set_style_bg_color(brightnessSlider, ui_theme::surfaceAlt(), LV_PART_MAIN);
-    lv_obj_set_style_bg_color(brightnessSlider, ui_theme::accent(), LV_PART_INDICATOR);
-    lv_obj_set_style_bg_color(brightnessSlider, ui_theme::accent(), LV_PART_KNOB);
-    lv_obj_add_event_cb(brightnessSlider, brightnessChangedCb, LV_EVENT_ALL, nullptr);
-
-    brightnessValueLabel = lv_label_create(brightnessRow);
-    lv_obj_set_width(brightnessValueLabel, 38);
-    lv_obj_set_style_text_align(brightnessValueLabel, LV_TEXT_ALIGN_RIGHT, 0);
-    updateBrightnessLabel(display_brightness::get());
 
     autoBrightnessCheckbox = lv_checkbox_create(screen);
     lv_obj_set_height(autoBrightnessCheckbox, 24);
     lv_checkbox_set_text(autoBrightnessCheckbox, "Auto day/night brightness");
-    if (display_brightness::autoDayNight()) {
+    if (pendingAutoBrightness) {
         lv_obj_add_state(autoBrightnessCheckbox, LV_STATE_CHECKED);
     }
     lv_obj_add_event_cb(autoBrightnessCheckbox, autoBrightnessChangedCb,

@@ -5,15 +5,16 @@
 The embedded web-application milestone is complete. The normal firmware image
 contains a Svelte 5 single-page application with live power, per-channel sensor
 observations, browser time contribution, rolling/calendar history, daily
-energy-cycle balance, device information and diagnostics, device setup,
+energy-cycle balance, a Real/Demo data-file catalog, device information and
+diagnostics, device setup,
 independent Web appearance, and capability-gated remote-display control. It is a useful product surface, not a requirement to
 duplicate every LVGL page.
 
 The browser and on-device Cycle views are complete for the current product
 scope and consume the same recent-cycle summary model.
 
-Calibration, storage browsing/export, and further appearance refinements
-remain incremental backlog to build as needed.
+Storage export and further appearance refinements remain incremental backlog
+to build as needed.
 
 The old MicroPython project is a behavioral reference only. Its Parcel,
 Material UI, Chart.js, CSV parsing, and text/CSV websocket protocol are not
@@ -237,11 +238,12 @@ returns a job ID and polling returns the bounded recent window through the
 current cycle. The persisted
 `end_hour` is shared by LVGL and Web, is validated from 0 through 23, and can
 be changed without restarting. Each summary contains charged, used, and net Wh,
-coverage, quality, current/incomplete flags, and UTC interval bounds. Charge is
-solar input adjusted by the configured model efficiency. The Web Cycle table
-lists the most recent cycle first. Coverage that is too sparse is exposed as
-unavailable; usable partial coverage remains visible with an incomplete-data
-warning.
+coverage, quality, current/incomplete flags, and UTC interval bounds. In the
+default MPPT profile, charge and use come from the direct Battery channel
+(positive Battery power is charge); PWM mode retains the solar/load
+efficiency model. The Web Cycle table lists the most recent cycle first.
+Coverage that is too sparse is exposed as unavailable; usable partial coverage
+remains visible with an incomplete-data warning.
 
 Cycle calendar boundaries intentionally use the device's current persisted
 fixed UTC offset. They remain fixed 24-hour intervals and do not attempt to
@@ -275,8 +277,10 @@ channel and component coverage:
 | 48 | `u32 × 3` | Per-channel valid coverage milliseconds |
 | 60 | `u32 × 5` | Per-component valid coverage milliseconds |
 
-History always follows the active sensor source and exposes no Real/Demo
-request parameter. Storage-format V1 and browser-protocol VPH3 are separate
+Usage history always follows the active sensor source and exposes no Real/Demo
+request parameter. The Settings Data catalog independently accepts
+`GET /api/v1/history/files?dataset=real|demo`; this filter never changes the
+active source. Storage-format V1 and browser-protocol VPH3 are separate
 contracts.
 
 ## Keeping web and LVGL state synchronized

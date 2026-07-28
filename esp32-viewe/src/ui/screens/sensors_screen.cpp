@@ -2,6 +2,7 @@
 #include "../../sensors/sensors.h"
 #include "../../sensors/sensor_calibration.h"
 #include "../../sensors/sensor_mode.h"
+#include "../../device/hardware_profile.h"
 #include "../../memory/heap_policy.h"
 #include "../theme/ui_theme.h"
 #include "../navigation/tabview_utils.h"
@@ -955,7 +956,7 @@ void openCurrentCalibrationCb(lv_event_t* event) {
 }
 
 const char* sensorName(uint8_t sensor) {
-    static constexpr const char* names[sensors::SENSOR_COUNT] = {"In", "Out", "Aux"};
+    static constexpr const char* names[sensors::SENSOR_COUNT] = {"Solar", "Load", "Battery"};
     return sensor < sensors::SENSOR_COUNT ? names[sensor] : "Sensor";
 }
 
@@ -1201,8 +1202,13 @@ void showRawCaptureResult(SensorTab& tab, const sensors::AdcCaptureResult& resul
                                ? reading.dutyCycle * 100.0f : NAN, 0);
     }
     char summary[112];
-    snprintf(summary, sizeof(summary), "Power %s / %s / %s W   Duty %s / %s / %s %%",
-             power[0], power[1], power[2], duty[0], duty[1], duty[2]);
+    if (hardware_profile::kControllerIsPwm) {
+        snprintf(summary, sizeof(summary), "Power %s / %s / %s W   Duty %s / %s / %s %%",
+                 power[0], power[1], power[2], duty[0], duty[1], duty[2]);
+    } else {
+        snprintf(summary, sizeof(summary), "Power %s / %s / %s W",
+                 power[0], power[1], power[2]);
+    }
     lv_label_set_text(capture.summaryLabel, summary);
 }
 
@@ -1389,7 +1395,9 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
 
     createKpiItem(t.kpiRow, "W", 64, &t.pValueLabel);
     lv_label_set_text(t.pValueLabel, "--");
-    t.dutyRow = createKpiItem(t.kpiRow, "%", 48, &t.dutyValueLabel);
+    if (hardware_profile::kControllerIsPwm) {
+        t.dutyRow = createKpiItem(t.kpiRow, "%", 48, &t.dutyValueLabel);
+    }
 
     t.statusLabel = lv_label_create(t.kpiRow);
     lv_obj_set_width(t.statusLabel, 0);
@@ -1422,7 +1430,9 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     // Reveal only after the update loop has confirmed this channel is
     // configured for the active ADC source.
     lv_obj_add_flag(t.captureButton, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_add_flag(t.dutyRow, LV_OBJ_FLAG_HIDDEN); // hidden until it's seen below threshold
+    if (t.dutyRow) {
+        lv_obj_add_flag(t.dutyRow, LV_OBJ_FLAG_HIDDEN); // hidden until it's seen below threshold
+    }
 
     t.calibrationHeader = lv_obj_create(tab);
     lv_obj_remove_style_all(t.calibrationHeader);
@@ -1739,17 +1749,20 @@ void updateCb(lv_timer_t* timer) {
             tab.kpiPrimed = true;
         }
 
-        // --- Duty: stays hidden until first seen below threshold, then always shown ---
-        float duty = sensors::getDutyCycle(static_cast<sensors::SensorId>(i));
-        if (std::isfinite(duty) && !tab.dutyEverLow && duty < kDutyShowThreshold) {
-            tab.dutyEverLow = true;
-            lv_obj_clear_flag(tab.dutyRow, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (tab.dutyEverLow) {
-            char buf[8];
-            if (std::isfinite(duty)) snprintf(buf, sizeof(buf), "%.0f", duty * 100.0f);
-            else snprintf(buf, sizeof(buf), "--");
-            lv_label_set_text(tab.dutyValueLabel, buf);
+        // PWM builds reveal duty only after it has been observed below the
+        // configured threshold. MPPT builds retain acquisition but omit it.
+        if (hardware_profile::kControllerIsPwm) {
+            float duty = sensors::getDutyCycle(static_cast<sensors::SensorId>(i));
+            if (std::isfinite(duty) && !tab.dutyEverLow && duty < kDutyShowThreshold) {
+                tab.dutyEverLow = true;
+                lv_obj_clear_flag(tab.dutyRow, LV_OBJ_FLAG_HIDDEN);
+            }
+            if (tab.dutyEverLow) {
+                char buf[8];
+                if (std::isfinite(duty)) snprintf(buf, sizeof(buf), "%.0f", duty * 100.0f);
+                else snprintf(buf, sizeof(buf), "--");
+                lv_label_set_text(tab.dutyValueLabel, buf);
+            }
         }
 
         if (tab.calibration.visible) updateCalibrationEditor(tab, i, readings, n, true);
@@ -1773,7 +1786,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* outerTabview = lv_obj_get_parent(lv_obj_get_parent(parent));
     if (outerTabview) lv_obj_add_event_cb(outerTabview, exitAllCalibrationCb, LV_EVENT_VALUE_CHANGED, nullptr);
 
-    const char* names[sensors::SENSOR_COUNT] = {"In", "Out", "Aux"};
+    const char* names[sensors::SENSOR_COUNT] = {"Solar", "Load", "Battery"};
     for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
         lv_obj_t* tabBtn = lv_tabview_add_tab(tabview, names[i]);
         createSensorTab(tabBtn, i);

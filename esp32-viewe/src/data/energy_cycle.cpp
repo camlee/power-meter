@@ -1,6 +1,7 @@
 #include "energy_cycle.h"
 
 #include "historical_storage.h"
+#include "../device/hardware_profile.h"
 #include "../device/device_state.h"
 #include "../time/time_service.h"
 
@@ -99,9 +100,15 @@ size_t query(Summary* out, size_t maxSummaries) {
         summary.expectedMs = measuredEnd > summary.startUnixMs
             ? static_cast<uint32_t>(measuredEnd - summary.startUnixMs) : 0;
 
-        summary.validCoverageMs = std::min(
-            buckets[i].coveredMs,
-            std::min(buckets[i].channelCoverageMs[0], buckets[i].channelCoverageMs[1]));
+        summary.validCoverageMs = hardware_profile::kControllerIsPwm
+            ? std::min(buckets[i].coveredMs,
+                       std::min(buckets[i].channelCoverageMs[0],
+                                buckets[i].channelCoverageMs[1]))
+            : std::min(buckets[i].coveredMs,
+                       std::min(buckets[i].componentCoverageMs[
+                                    historical_storage::BATTERY_CHARGING],
+                                buckets[i].componentCoverageMs[
+                                    historical_storage::BATTERY_USAGE]));
         const uint64_t coverageScaled = static_cast<uint64_t>(summary.validCoverageMs) * 100;
         const uint64_t expectedScaled = static_cast<uint64_t>(summary.expectedMs);
         const bool enoughCoverage = summary.expectedMs != 0 &&
@@ -109,8 +116,12 @@ size_t query(Summary* out, size_t maxSummaries) {
         summary.chargeAvailable = enoughCoverage;
         summary.useAvailable = enoughCoverage;
         summary.netAvailable = enoughCoverage;
-        summary.chargeWh = buckets[i].energyWh[0] * kChargeEfficiency;
-        summary.useWh = buckets[i].energyWh[1];
+        summary.chargeWh = hardware_profile::kControllerIsPwm
+            ? buckets[i].energyWh[0] * kChargeEfficiency
+            : buckets[i].componentEnergyWh[historical_storage::BATTERY_CHARGING];
+        summary.useWh = hardware_profile::kControllerIsPwm
+            ? buckets[i].energyWh[1]
+            : buckets[i].componentEnergyWh[historical_storage::BATTERY_USAGE];
         summary.netWh = summary.chargeWh - summary.useWh;
         summary.qualityFlags = buckets[i].qualityFlags;
         summary.incomplete = enoughCoverage &&

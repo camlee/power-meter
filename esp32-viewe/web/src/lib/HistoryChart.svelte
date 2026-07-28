@@ -6,6 +6,7 @@
   export let startTimeMs = 0;
   export let endTimeMs = 0;
   export let tickMinutes = 0;
+  export let pwmUiEnabled = false;
 
   // ---------------------------------------------------------------------
   // Constants
@@ -39,6 +40,7 @@
       surplus: css.getPropertyValue('--surplus').trim(),
       battery: css.getPropertyValue('--battery').trim(),
       load: css.getPropertyValue('--load').trim(),
+      error: css.getPropertyValue('--muted').trim(),
     };
   }
 
@@ -87,8 +89,26 @@
   // Axis computation
   // ---------------------------------------------------------------------
 
-  // Positive stack = charging + panelIn + panelSurplus (above zero).
-  // Negative stack = batteryUsage + panelUsage (below zero, drawn downward).
+  function directStacks(bucket) {
+    const solar = Number.isFinite(bucket.in) ? Math.max(bucket.in, 0) : Number.NaN;
+    const load = Number.isFinite(bucket.out) ? Math.max(bucket.out, 0) : Number.NaN;
+    const battery = bucket.aux;
+    const error = Number.isFinite(solar) && Number.isFinite(load) && Number.isFinite(battery)
+      ? solar - load - battery : Number.NaN;
+    return {
+      positive: [
+        solar,
+        Number.isFinite(battery) ? Math.max(-battery, 0) : Number.NaN,
+        Number.isFinite(error) ? Math.max(-error, 0) : Number.NaN,
+      ],
+      negative: [
+        load,
+        Number.isFinite(battery) ? Math.max(battery, 0) : Number.NaN,
+        Number.isFinite(error) ? Math.max(error, 0) : Number.NaN,
+      ],
+    };
+  }
+
   function computeYAxis(coveredBuckets) {
     let low = 0;
     let high = 0;
@@ -96,8 +116,14 @@
       (total, value) => total + (Number.isFinite(value) ? value : 0), 0,
     );
     coveredBuckets.forEach((bucket) => {
-      high = Math.max(high, sumFinite(bucket.charging, bucket.panelIn, bucket.panelSurplus));
-      low = Math.min(low, -sumFinite(bucket.batteryUsage, bucket.panelUsage));
+      if (pwmUiEnabled) {
+        high = Math.max(high, sumFinite(bucket.charging, bucket.panelIn, bucket.panelSurplus));
+        low = Math.min(low, -sumFinite(bucket.batteryUsage, bucket.panelUsage));
+      } else {
+        const stacks = directStacks(bucket);
+        high = Math.max(high, sumFinite(...stacks.positive));
+        low = Math.min(low, -sumFinite(...stacks.negative));
+      }
     });
 
     const step = niceStep(Math.max(high - low, 1) / 6);
@@ -151,16 +177,30 @@
   function drawBars(ctx, plot, coveredBuckets, bucketWidth, barWidth, valueToY, colors) {
     coveredBuckets.forEach(({ bucket, index }) => {
       const x = plot.left + index * bucketWidth + (bucketWidth - barWidth) / 2;
-      drawStack(
-        ctx, x, barWidth,
-        [[bucket.charging, colors.charge], [bucket.panelIn, colors.panel], [bucket.panelSurplus, colors.surplus]],
-        1, valueToY,
-      );
-      drawStack(
-        ctx, x, barWidth,
-        [[bucket.batteryUsage, colors.battery], [bucket.panelUsage, colors.load]],
-        -1, valueToY,
-      );
+      if (pwmUiEnabled) {
+        drawStack(
+          ctx, x, barWidth,
+          [[bucket.charging, colors.charge], [bucket.panelIn, colors.panel], [bucket.panelSurplus, colors.surplus]],
+          1, valueToY,
+        );
+        drawStack(
+          ctx, x, barWidth,
+          [[bucket.batteryUsage, colors.battery], [bucket.panelUsage, colors.load]],
+          -1, valueToY,
+        );
+      } else {
+        const stacks = directStacks(bucket);
+        drawStack(ctx, x, barWidth, [
+          [stacks.positive[0], colors.panel],
+          [stacks.positive[1], colors.battery],
+          [stacks.positive[2], colors.error],
+        ], 1, valueToY);
+        drawStack(ctx, x, barWidth, [
+          [stacks.negative[0], colors.load],
+          [stacks.negative[1], colors.charge],
+          [stacks.negative[2], colors.error],
+        ], -1, valueToY);
+      }
     });
   }
 
@@ -254,7 +294,8 @@
     // as zero-height bars (which would misleadingly read as "0 W").
     const coveredBuckets = buckets
       .map((bucket, index) => ({ bucket, index }))
-      .filter(({ bucket }) => bucket.componentCoverageMs?.some((coverage) => coverage));
+      .filter(({ bucket }) => (pwmUiEnabled ? bucket.componentCoverageMs : bucket.channelCoverageMs)
+        ?.some((coverage) => coverage));
 
     const axis = computeYAxis(coveredBuckets.map(({ bucket }) => bucket));
     const valueToY = drawYAxis(ctx, plot, axis, colors);
@@ -273,7 +314,7 @@
   // Lifecycle
   // ---------------------------------------------------------------------
 
-  $: buckets, timelineBasis, startTimeMs, endTimeMs, tickMinutes, draw();
+  $: buckets, timelineBasis, startTimeMs, endTimeMs, tickMinutes, pwmUiEnabled, draw();
 
   onMount(() => {
     const observer = new ResizeObserver(draw);

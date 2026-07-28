@@ -700,4 +700,16 @@ bool getNetBatteryPower(float& outWatts) {
     return true;
 }
 
+bool getSystemNetPower(float& outWatts, NetPowerSource* source) {
+    Reading battery;
+    if (getLatest(SENSOR_AUX, battery) && isCalculationEligible(battery)) {
+        outWatts = battery.power;
+        if (source) *source = NetPowerSource::Battery;
+        return true;
+    }
+    if (!getNetBatteryPower(outWatts)) return false;
+    if (source) *source = NetPowerSource::SolarLoadFallback;
+    return true;
+}
+
 } // namespace sensors

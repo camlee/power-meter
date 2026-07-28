@@ -167,4 +167,14 @@ bool getAvailablePower(SensorId id, float& outWatts);
 // Returns false if either sensor has no reading yet.
 bool getNetBatteryPower(float& outWatts);
 
+// Preferred user-facing system net power. Positive means charging and
+// negative means discharging. The direct Battery/Aux channel is authoritative;
+// its hardware convention is positive while charging. If Battery is
+// unavailable, Solar/In minus Load/Out is used.
+enum class NetPowerSource : uint8_t {
+    Battery,
+    SolarLoadFallback,
+};
+bool getSystemNetPower(float& outWatts, NetPowerSource* source = nullptr);
+
 } // namespace sensors
