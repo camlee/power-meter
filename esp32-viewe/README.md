@@ -101,7 +101,8 @@ bootloader, partition table, or LittleFS contents. See
 
 ### Linux mDNS support
 
-The meter advertises its hostname through its built-in mDNS service, so
+The meter advertises its hostname and both `_http._tcp` and
+`_viewe-ota._tcp` services through its built-in mDNS service, so
 `tools/ota.py`, `tools/ota_upload.py`, and `tools/discover_device.py` include a
 bounded, dependency-free Python mDNS fallback. Check one or more names directly
 with:
@@ -120,6 +121,14 @@ sudo apt install avahi-daemon libnss-mdns
 
 Neither mDNS method can cross a multicast-isolated network. In that case, use
 `--host <IP-address>` with the address shown on the display or serial console.
+The numeric Station IP shown on the meter is also the reliable browser fallback
+for phones whose OS/browser, VPN, or Wi-Fi network does not resolve `.local`
+names. Both forms open the same web application:
+
+```text
+http://meter1.local/
+http://192.168.1.217/
+```
 
 ### OTA update: one meter
 

@@ -66,9 +66,11 @@ The VIEWE board mirrors these through both Arduino `Serial` and ESP-IDF logging,
 so they appear on its USB JTAG serial console even though USB CDC is disabled
 in the current board configuration.
 
-The firmware also advertises `_viewe-ota._tcp.local` over mDNS. Run the local,
-dependency-free helper from the project root to find it without probing an
-entire subnet:
+The firmware advertises both generic `_http._tcp.local` and
+`_viewe-ota._tcp.local` services over mDNS. It restarts and re-announces the
+records after station/AP address changes and retries transient responder
+startup failures. Run the local, dependency-free helper from the project root
+to find it without probing an entire subnet:
 
 ```sh
 python3 tools/discover_device.py
@@ -80,6 +82,13 @@ IP or the LAN blocks multicast. The helper uses `avahi-browse` when present and
 then its dependency-free direct mDNS resolver for the configured
 `meter1.local` fallback; change `--hostname` for a renamed meter. Resolve known
 names directly with `python3 tools/mdns_resolver.py meter1 sensor1`.
+
+Some phones, VPN configurations, and Wi-Fi networks do not reliably resolve
+`.local` names. The firmware cannot make multicast cross client-isolated guest
+networks, so the deterministic phone fallback is `http://<station-ip>/` using
+the Station IP shown in Device Info / Wi-Fi on the meter. When connected
+directly to the meter's access point, use its displayed AP IP (normally
+`http://192.168.4.1/`).
 
 ## Serving and browser cache policy
 

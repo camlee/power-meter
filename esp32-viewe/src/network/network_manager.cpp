@@ -28,6 +28,9 @@ char targetSsid[33] = {0};
 char lastPassword[64] = {0};
 bool apRunning = false; // Add this discrete AP state flag
 bool mdnsRunning = false;
+uint32_t mdnsStationIp = 0;
+uint32_t mdnsApIp = 0;
+uint32_t nextMdnsStartAt = 0;
 uint32_t nextReconnectAt = 0;
 uint32_t reconnectDelayMs = 5000;
 bool retryEnabled = false;
@@ -175,6 +178,7 @@ constexpr uint32_t kRadioSettleMs = 250;
 constexpr uint32_t kScanStartTimeoutMs = 2500;
 constexpr uint32_t kScanStartRetryMs = 200;
 constexpr uint32_t kScanMaxMsPerChannel = 200;
+constexpr uint32_t kMdnsRetryMs = 5000;
 
 // --- Persistence Helpers ---
 
@@ -272,17 +276,68 @@ void stopMdns() {
         MDNS.end();
         mdnsRunning = false;
     }
+    mdnsStationIp = 0;
+    mdnsApIp = 0;
+    nextMdnsStartAt = 0;
 }
 
 void ensureMdns() {
-    if (mdnsRunning || (!apRunning && WiFi.status() != WL_CONNECTED)) return;
-    if (!MDNS.begin(device_identity::getHostname())) return;
+    const uint32_t stationIp = WiFi.status() == WL_CONNECTED
+                                   ? static_cast<uint32_t>(WiFi.localIP())
+                                   : 0;
+    const uint32_t accessPointIp = apRunning
+                                       ? static_cast<uint32_t>(WiFi.softAPIP())
+                                       : 0;
+
+    // ESPmDNS normally follows netif events, but explicitly rebuilding the
+    // responder when an address/interface changes makes AP-to-station
+    // provisioning and DHCP renewals deterministic. It also sends fresh
+    // unsolicited announcements to clients that may have cached the old
+    // address.
+    if (mdnsRunning &&
+        (mdnsStationIp != stationIp || mdnsApIp != accessPointIp)) {
+        stopMdns();
+    }
+    if (mdnsRunning || (stationIp == 0 && accessPointIp == 0)) return;
+
+    const uint32_t now = millis();
+    if (nextMdnsStartAt != 0 &&
+        static_cast<int32_t>(now - nextMdnsStartAt) < 0) return;
+
+    if (!MDNS.begin(device_identity::getHostname())) {
+        // MDNS.begin() can initialize the IDF responder before a later setup
+        // step fails, so always clean it up before the bounded retry.
+        MDNS.end();
+        nextMdnsStartAt = now + kMdnsRetryMs;
+        Serial.printf("network: mDNS start failed; retrying in %lu ms\n",
+                      static_cast<unsigned long>(kMdnsRetryMs));
+        return;
+    }
+
+    MDNS.setInstanceName(device_identity::getDeviceId());
+    const bool httpAdded = MDNS.addService("http", "tcp", 80);
     // ESPmDNS adds the leading underscores in the DNS-SD record, yielding
     // _viewe-ota._tcp.local.
-    MDNS.addService("viewe-ota", "tcp", 80);
+    const bool otaAdded = MDNS.addService("viewe-ota", "tcp", 80);
+    if (!httpAdded || !otaAdded) {
+        MDNS.end();
+        nextMdnsStartAt = now + kMdnsRetryMs;
+        Serial.printf("network: mDNS service registration failed; retrying in %lu ms\n",
+                      static_cast<unsigned long>(kMdnsRetryMs));
+        return;
+    }
+
+    // _http._tcp is understood by generic DNS-SD/Android NSD clients. Keep
+    // the existing custom service for the signed OTA tooling.
+    MDNS.addServiceTxt("http", "tcp", "path", "/");
+    MDNS.addServiceTxt("http", "tcp", "id", device_identity::getDeviceId());
+    MDNS.addServiceTxt("http", "tcp", "hardware_id", device_identity::getHardwareId());
     MDNS.addServiceTxt("viewe-ota", "tcp", "id", device_identity::getDeviceId());
     MDNS.addServiceTxt("viewe-ota", "tcp", "hardware_id", device_identity::getHardwareId());
     mdnsRunning = true;
+    mdnsStationIp = stationIp;
+    mdnsApIp = accessPointIp;
+    nextMdnsStartAt = 0;
 }
 
 bool timeReached(uint32_t deadline, uint32_t now = millis()) {
@@ -972,11 +1027,13 @@ void update() {
             break;
         }
         case NetworkState::Disconnected:
-            ensureMdns();
             break;
         default:
             break;
     }
+    // Retry a transient responder startup failure in every network state, and
+    // detect address/interface changes even if the Wi-Fi event was coalesced.
+    ensureMdns();
     reportWebAddressesIfChanged();
 }
 
@@ -1055,7 +1112,10 @@ void stopAp() {
     WiFi.mode(WIFI_STA); // Revert to STA-only to save power/cycles
     apRunning = false;
     saveApEnabled(false);
-    if (WiFi.status() != WL_CONNECTED) stopMdns();
+    // Remove the AP address from cached records and immediately re-advertise
+    // the station address when it is still connected.
+    stopMdns();
+    ensureMdns();
     device_state::changed(device_state::Domain::Network);
 }
 

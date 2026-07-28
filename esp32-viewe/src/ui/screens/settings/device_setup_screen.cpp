@@ -24,6 +24,7 @@ lv_obj_t* uartModeButton = nullptr;
 lv_obj_t* demoModeButton = nullptr;
 lv_obj_t* activeSensorStatusLabel = nullptr;
 lv_obj_t* screenObject = nullptr;
+lv_obj_t* hostnameLabel = nullptr;
 lv_obj_t* lightModeButton = nullptr;
 lv_obj_t* darkModeButton = nullptr;
 lv_obj_t* autoModeButton = nullptr;
@@ -34,6 +35,8 @@ lv_obj_t* resetUsageCheckbox = nullptr;
 lv_obj_t* saveButton = nullptr;
 lv_obj_t* saveButtonLabel = nullptr;
 lv_obj_t* resetButton = nullptr;
+lv_coord_t setupScrollY = 0;
+bool hostnameEditing = false;
 sensor_mode::Mode pendingSensorMode = sensor_mode::Mode::Demo;
 ui_theme::Mode pendingAppearance = ui_theme::Mode::Auto;
 
@@ -109,13 +112,37 @@ void restartWithFeedback(const char* message) {
     lv_timer_set_repeat_count(timer, 1);
 }
 
-void hideKeyboard() {
-    if (keyboard) lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
+void setHostnameEditing(bool editing) {
+    if (!screenObject || !hostnameLabel || !deviceIdInput || !keyboard ||
+        hostnameEditing == editing) return;
+
+    hostnameEditing = editing;
+    if (editing) setupScrollY = lv_obj_get_scroll_y(screenObject);
+
+    const uint32_t childCount = lv_obj_get_child_cnt(screenObject);
+    for (uint32_t i = 0; i < childCount; ++i) {
+        lv_obj_t* child = lv_obj_get_child(screenObject, i);
+        if (child == hostnameLabel || child == deviceIdInput || child == keyboard) continue;
+        if (editing) lv_obj_add_flag(child, LV_OBJ_FLAG_HIDDEN);
+        else lv_obj_clear_flag(child, LV_OBJ_FLAG_HIDDEN);
+    }
+
+    if (editing) {
+        lv_obj_clear_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_update_layout(screenObject);
+        lv_obj_scroll_to_y(screenObject, 0, LV_ANIM_OFF);
+    } else {
+        lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_update_layout(screenObject);
+        lv_obj_scroll_to_y(screenObject, setupScrollY, LV_ANIM_OFF);
+    }
 }
+
+void hideKeyboard() { setHostnameEditing(false); }
 
 void inputFocusCb(lv_event_t* event) {
     lv_keyboard_set_textarea(keyboard, static_cast<lv_obj_t*>(lv_event_get_target(event)));
-    lv_obj_clear_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
+    setHostnameEditing(true);
 }
 
 void inputDefocusCb(lv_event_t*) { hideKeyboard(); }
@@ -327,9 +354,9 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* activeAppearance = pendingAppearance == ui_theme::Mode::Light ? lightModeButton : pendingAppearance == ui_theme::Mode::Dark ? darkModeButton : autoModeButton;
     selectSegment(activeAppearance, lightModeButton, darkModeButton, autoModeButton);
 
-    lv_obj_t* nameLabel = lv_label_create(screen);
-    lv_label_set_text(nameLabel, "HOSTNAME");
-    ui_theme::styleSectionLabel(nameLabel);
+    hostnameLabel = lv_label_create(screen);
+    lv_label_set_text(hostnameLabel, "HOSTNAME");
+    ui_theme::styleSectionLabel(hostnameLabel);
 
     deviceIdInput = lv_textarea_create(screen);
     lv_obj_set_width(deviceIdInput, lv_pct(100));
@@ -394,6 +421,8 @@ lv_obj_t* create(lv_obj_t* parent) {
     updateActionState();
 
     keyboard = lv_keyboard_create(screen);
+    lv_obj_set_size(keyboard, lv_pct(100), 0);
+    lv_obj_set_flex_grow(keyboard, 1);
     lv_obj_add_flag(keyboard, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_event_cb(keyboard, keyboardEventCb, LV_EVENT_ALL, nullptr);
     lv_obj_add_event_cb(screen, screenRefreshCb, LV_EVENT_REFRESH, nullptr);
