@@ -211,14 +211,14 @@ void update(lv_timer_t*) {
     float voltage = NAN;
     const bool directBattery = eligibleVoltage(sensors::SENSOR_AUX, voltage);
     if (!directBattery) eligibleVoltage(sensors::SENSOR_OUT, voltage);
-    char footer[32];
+    char text[24];
     if (std::isfinite(voltage)) {
-        snprintf(footer, sizeof(footer), "Battery %.1f V%s",
+        snprintf(text, sizeof(text), "%.1f V%s",
                  static_cast<double>(voltage), directBattery ? "" : " (Load)");
     } else {
-        snprintf(footer, sizeof(footer), "Battery -- V");
+        snprintf(text, sizeof(text), "-- V");
     }
-    lv_label_set_text(batteryVoltage, footer);
+    lv_label_set_text(batteryVoltage, text);
     lv_obj_invalidate(plot);
 }
 
@@ -231,15 +231,24 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
     lv_obj_set_style_pad_row(screen, 2, 0);
 
-    stateLabel = lv_label_create(screen);
-    lv_obj_set_width(stateLabel, lv_pct(100));
-    lv_obj_set_style_text_align(stateLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_t* summaryRow = lv_obj_create(screen);
+    lv_obj_remove_style_all(summaryRow);
+    lv_obj_set_size(summaryRow, lv_pct(100), 57);
+    lv_obj_set_flex_flow(summaryRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(summaryRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(summaryRow, 6, 0);
+
+    stateLabel = lv_label_create(summaryRow);
+    lv_obj_set_flex_grow(stateLabel, 1);
+    lv_label_set_long_mode(stateLabel, LV_LABEL_LONG_DOT);
+    lv_obj_set_style_text_align(stateLabel, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_font(stateLabel, &lv_font_montserrat_28, 0);
     lv_label_set_text(stateLabel, "Error - missing sensors");
 
-    lv_obj_t* powerRow = lv_obj_create(screen);
+    lv_obj_t* powerRow = lv_obj_create(summaryRow);
     lv_obj_remove_style_all(powerRow);
-    lv_obj_set_size(powerRow, lv_pct(100), 57);
+    lv_obj_set_size(powerRow, LV_SIZE_CONTENT, 57);
     lv_obj_set_flex_flow(powerRow, LV_FLEX_FLOW_ROW);
     lv_obj_set_flex_align(powerRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
     lv_obj_set_style_pad_column(powerRow, 4, 0);
@@ -252,17 +261,28 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_text_color(unit, ui_theme::mutedText(), 0);
     lv_label_set_text(unit, "W");
 
+    lv_obj_t* batteryRow = lv_obj_create(screen);
+    lv_obj_remove_style_all(batteryRow);
+    lv_obj_set_size(batteryRow, lv_pct(100), 24);
+    lv_obj_set_flex_flow(batteryRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(batteryRow, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_column(batteryRow, 8, 0);
+
+    lv_obj_t* batteryLabel = lv_label_create(batteryRow);
+    lv_obj_set_style_text_font(batteryLabel, &lv_font_montserrat_16, 0);
+    lv_obj_set_style_text_color(batteryLabel, ui_theme::mutedText(), 0);
+    lv_label_set_text(batteryLabel, "Battery");
+
+    batteryVoltage = lv_label_create(batteryRow);
+    lv_obj_set_style_text_font(batteryVoltage, &lv_font_montserrat_20, 0);
+    lv_label_set_text(batteryVoltage, "-- V");
+
     plot = lv_obj_create(screen);
     lv_obj_remove_style_all(plot);
     lv_obj_set_width(plot, lv_pct(100));
     lv_obj_set_flex_grow(plot, 1);
     lv_obj_add_event_cb(plot, drawPlot, LV_EVENT_DRAW_MAIN, nullptr);
-
-    batteryVoltage = lv_label_create(screen);
-    lv_obj_set_width(batteryVoltage, lv_pct(100));
-    lv_obj_set_style_text_align(batteryVoltage, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_text_font(batteryVoltage, &lv_font_montserrat_20, 0);
-    lv_label_set_text(batteryVoltage, "Battery -- V");
 
     lv_obj_t* brightnessRow = lv_obj_create(screen);
     lv_obj_remove_style_all(brightnessRow);
@@ -275,7 +295,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_pad_column(brightnessRow, 10, 0);
 
     lv_obj_t* brightnessLabel = lv_label_create(brightnessRow);
-    lv_label_set_text(brightnessLabel, LV_SYMBOL_EYE_OPEN);
+    lv_label_set_text(brightnessLabel, "Brightness");
     lv_obj_set_style_text_color(brightnessLabel, ui_theme::mutedText(), 0);
 
     brightnessSlider = lv_slider_create(brightnessRow);
