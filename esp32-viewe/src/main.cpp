@@ -10,6 +10,7 @@
 #include "board_setup.h"
 #include "lvgl_v8_port.h"
 #include "network/ota_service.h"
+#include "ui/display_brightness.h"
 #include "ui/navigation/app_navigation.h"
 #include "ui/theme/ui_theme.h"
 
@@ -33,7 +34,10 @@ void setup() {
     application_runtime::begin();
 
 #if POWER_METER_HAS_TOUCH_UI
-    initDisplayAndLvgl();
+    auto* board = initDisplayAndLvgl();
+    if (!display_brightness::init(board->getBacklight())) {
+        Serial.println("display_brightness: Could not apply saved brightness");
+    }
     lvgl_port_lock(-1);
     ui_navigation::build();
     lvgl_port_unlock();

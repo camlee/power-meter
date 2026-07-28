@@ -1,6 +1,7 @@
 #include "wifi_screen.h"
 #include "network/network_manager.h"
 #include "../../theme/ui_theme.h"
+#include "../../navigation/tabview_utils.h"
 #include <Arduino.h>
 
 namespace wifi_screen {
@@ -677,6 +678,7 @@ lv_obj_t* create(lv_obj_t* parent) {
 
     // ---- Station / AP sub-tabs ----
     modeTabview = lv_tabview_create(scr, LV_DIR_TOP, 36);
+    tabview_utils::disableSwipe(modeTabview);
     lv_obj_set_size(modeTabview, lv_pct(100), 0);
     lv_obj_set_flex_grow(modeTabview, 1);
     lv_obj_set_style_bg_color(modeTabview, ui_theme::background(), 0);

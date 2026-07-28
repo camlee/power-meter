@@ -10,6 +10,7 @@
 #include "network/network_manager.h"
 #include "sensors/sensor_mode.h"
 #include "sensors/sensors.h"
+#include "../../display_brightness.h"
 #include "../../theme/ui_theme.h"
 
 namespace device_setup_screen {
@@ -28,6 +29,9 @@ lv_obj_t* hostnameLabel = nullptr;
 lv_obj_t* lightModeButton = nullptr;
 lv_obj_t* darkModeButton = nullptr;
 lv_obj_t* autoModeButton = nullptr;
+lv_obj_t* brightnessSlider = nullptr;
+lv_obj_t* brightnessValueLabel = nullptr;
+lv_obj_t* autoBrightnessCheckbox = nullptr;
 lv_obj_t* resetSetupCheckbox = nullptr;
 lv_obj_t* resetWifiCheckbox = nullptr;
 lv_obj_t* resetCalibrationCheckbox = nullptr;
@@ -42,6 +46,7 @@ ui_theme::Mode pendingAppearance = ui_theme::Mode::Auto;
 
 void selectSegment(lv_obj_t* selected, lv_obj_t* first, lv_obj_t* second, lv_obj_t* third = nullptr, lv_obj_t* fourth = nullptr);
 void updateActionState();
+void syncBrightnessControls();
 
 const char* sensorModeLabel(sensor_mode::Mode mode) {
     switch (mode) {
@@ -80,7 +85,10 @@ void updateActiveSensorStatus() {
 }
 
 void screenRefreshCb(lv_event_t* event) {
-    if (lv_event_get_code(event) == LV_EVENT_REFRESH) updateActiveSensorStatus();
+    if (lv_event_get_code(event) == LV_EVENT_REFRESH) {
+        updateActiveSensorStatus();
+        syncBrightnessControls();
+    }
 }
 
 void sensorStatusTimerCb(lv_timer_t*) {
@@ -250,6 +258,53 @@ void appearanceChangedCb(lv_event_t* event) {
     updateActionState();
 }
 
+void updateBrightnessLabel(int percent) {
+    if (!brightnessValueLabel) return;
+    char text[8];
+    snprintf(text, sizeof(text), "%d%%", percent);
+    lv_label_set_text(brightnessValueLabel, text);
+}
+
+void syncBrightnessControls() {
+    if (brightnessSlider) {
+        lv_slider_set_value(brightnessSlider, display_brightness::get(), LV_ANIM_OFF);
+    }
+    updateBrightnessLabel(display_brightness::get());
+    if (autoBrightnessCheckbox) {
+        if (display_brightness::autoDayNight()) {
+            lv_obj_add_state(autoBrightnessCheckbox, LV_STATE_CHECKED);
+        } else {
+            lv_obj_clear_state(autoBrightnessCheckbox, LV_STATE_CHECKED);
+        }
+    }
+}
+
+void brightnessChangedCb(lv_event_t* event) {
+    const lv_event_code_t code = lv_event_get_code(event);
+    if (code == LV_EVENT_VALUE_CHANGED) {
+        const int percent = lv_slider_get_value(brightnessSlider);
+        if (display_brightness::set(percent)) {
+            updateBrightnessLabel(display_brightness::get());
+        }
+        return;
+    }
+    if (code == LV_EVENT_RELEASED && !display_brightness::save()) {
+        lv_label_set_text(statusLabel, "Could not save display brightness.");
+    }
+}
+
+void autoBrightnessChangedCb(lv_event_t*) {
+    const bool enabled = checkboxChecked(autoBrightnessCheckbox);
+    if (!display_brightness::setAutoDayNight(enabled)) {
+        lv_label_set_text(statusLabel, "Could not save automatic brightness.");
+    }
+    syncBrightnessControls();
+}
+
+void brightnessTimerCb(lv_timer_t*) {
+    if (display_brightness::update()) syncBrightnessControls();
+}
+
 void resetOptionChangedCb(lv_event_t*) { updateActionState(); }
 
 void resetChangesCb(lv_event_t*) {
@@ -304,7 +359,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     screenObject = screen;
     ui_theme::styleScreen(screen, 4);
     lv_obj_set_flex_flow(screen, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(screen, 5, 0);
+    lv_obj_set_style_pad_row(screen, 4, 0);
 
     lv_obj_t* modeLabel = lv_label_create(screen);
     lv_label_set_text(modeLabel, "SENSOR MODE");
@@ -345,7 +400,11 @@ lv_obj_t* create(lv_obj_t* parent) {
     lightModeButton = lv_btn_create(appearanceRow); darkModeButton = lv_btn_create(appearanceRow); autoModeButton = lv_btn_create(appearanceRow);
     lv_obj_set_flex_grow(lightModeButton, 1); lv_obj_set_flex_grow(darkModeButton, 1); lv_obj_set_flex_grow(autoModeButton, 1);
     styleGroupedSegment(lightModeButton); styleGroupedSegment(darkModeButton); styleGroupedSegment(autoModeButton);
-    lv_label_set_text(lv_label_create(lightModeButton), "Light"); lv_label_set_text(lv_label_create(darkModeButton), "Dark"); lv_label_set_text(lv_label_create(autoModeButton), "Auto");
+    lv_label_set_text(lv_label_create(lightModeButton), "Light");
+    lv_label_set_text(lv_label_create(darkModeButton), "Dark");
+    lv_obj_t* autoModeLabel = lv_label_create(autoModeButton);
+    lv_label_set_text(autoModeLabel, "Auto");
+    lv_obj_set_style_text_font(autoModeLabel, &lv_font_montserrat_12, 0);
     lv_obj_add_event_cb(lightModeButton, appearanceChangedCb, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(darkModeButton, appearanceChangedCb, LV_EVENT_CLICKED, nullptr);
     lv_obj_add_event_cb(autoModeButton, appearanceChangedCb, LV_EVENT_CLICKED, nullptr);
@@ -353,6 +412,46 @@ lv_obj_t* create(lv_obj_t* parent) {
     pendingAppearance = ui_theme::mode();
     lv_obj_t* activeAppearance = pendingAppearance == ui_theme::Mode::Light ? lightModeButton : pendingAppearance == ui_theme::Mode::Dark ? darkModeButton : autoModeButton;
     selectSegment(activeAppearance, lightModeButton, darkModeButton, autoModeButton);
+
+    lv_obj_t* brightnessRow = lv_obj_create(screen);
+    lv_obj_remove_style_all(brightnessRow);
+    lv_obj_set_size(brightnessRow, lv_pct(100), 34);
+    lv_obj_set_flex_flow(brightnessRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(brightnessRow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_left(brightnessRow, 4, 0);
+    lv_obj_set_style_pad_right(brightnessRow, 2, 0);
+    lv_obj_set_style_pad_column(brightnessRow, 14, 0);
+
+    lv_obj_t* brightnessLabel = lv_label_create(brightnessRow);
+    lv_label_set_text(brightnessLabel, "BRIGHTNESS");
+    ui_theme::styleSectionLabel(brightnessLabel);
+
+    brightnessSlider = lv_slider_create(brightnessRow);
+    lv_obj_set_height(brightnessSlider, 10);
+    lv_obj_set_flex_grow(brightnessSlider, 1);
+    lv_obj_set_ext_click_area(brightnessSlider, 12);
+    lv_slider_set_range(brightnessSlider, display_brightness::kMinimumPercent,
+                        display_brightness::kMaximumPercent);
+    lv_slider_set_value(brightnessSlider, display_brightness::get(), LV_ANIM_OFF);
+    lv_obj_set_style_bg_color(brightnessSlider, ui_theme::surfaceAlt(), LV_PART_MAIN);
+    lv_obj_set_style_bg_color(brightnessSlider, ui_theme::accent(), LV_PART_INDICATOR);
+    lv_obj_set_style_bg_color(brightnessSlider, ui_theme::accent(), LV_PART_KNOB);
+    lv_obj_add_event_cb(brightnessSlider, brightnessChangedCb, LV_EVENT_ALL, nullptr);
+
+    brightnessValueLabel = lv_label_create(brightnessRow);
+    lv_obj_set_width(brightnessValueLabel, 38);
+    lv_obj_set_style_text_align(brightnessValueLabel, LV_TEXT_ALIGN_RIGHT, 0);
+    updateBrightnessLabel(display_brightness::get());
+
+    autoBrightnessCheckbox = lv_checkbox_create(screen);
+    lv_obj_set_height(autoBrightnessCheckbox, 24);
+    lv_checkbox_set_text(autoBrightnessCheckbox, "Auto day/night brightness");
+    if (display_brightness::autoDayNight()) {
+        lv_obj_add_state(autoBrightnessCheckbox, LV_STATE_CHECKED);
+    }
+    lv_obj_add_event_cb(autoBrightnessCheckbox, autoBrightnessChangedCb,
+                        LV_EVENT_VALUE_CHANGED, nullptr);
 
     hostnameLabel = lv_label_create(screen);
     lv_label_set_text(hostnameLabel, "HOSTNAME");
@@ -374,18 +473,40 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* resetLabel = lv_label_create(screen);
     lv_label_set_text(resetLabel, "RESET");
     ui_theme::styleSectionLabel(resetLabel);
-    resetSetupCheckbox = lv_checkbox_create(screen);
+
+    lv_obj_t* resetGrid = lv_obj_create(screen);
+    lv_obj_remove_style_all(resetGrid);
+    lv_obj_set_size(resetGrid, lv_pct(100), 48);
+    lv_obj_set_flex_flow(resetGrid, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_style_pad_row(resetGrid, 0, 0);
+
+    lv_obj_t* resetTopRow = lv_obj_create(resetGrid);
+    lv_obj_remove_style_all(resetTopRow);
+    lv_obj_set_size(resetTopRow, lv_pct(100), 24);
+    lv_obj_set_flex_flow(resetTopRow, LV_FLEX_FLOW_ROW);
+
+    resetSetupCheckbox = lv_checkbox_create(resetTopRow);
+    lv_obj_set_width(resetSetupCheckbox, lv_pct(30));
     lv_checkbox_set_text(resetSetupCheckbox, "Setup");
     lv_obj_add_event_cb(resetSetupCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
-    resetWifiCheckbox = lv_checkbox_create(screen);
-    lv_checkbox_set_text(resetWifiCheckbox, "Wi-Fi");
-    lv_obj_add_event_cb(resetWifiCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
-    resetCalibrationCheckbox = lv_checkbox_create(screen);
-    lv_checkbox_set_text(resetCalibrationCheckbox, "Sensor Calibration");
-    lv_obj_add_event_cb(resetCalibrationCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
-    resetUsageCheckbox = lv_checkbox_create(screen);
+    resetUsageCheckbox = lv_checkbox_create(resetTopRow);
+    lv_obj_set_width(resetUsageCheckbox, lv_pct(70));
     lv_checkbox_set_text(resetUsageCheckbox, "Usage Data");
     lv_obj_add_event_cb(resetUsageCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
+
+    lv_obj_t* resetBottomRow = lv_obj_create(resetGrid);
+    lv_obj_remove_style_all(resetBottomRow);
+    lv_obj_set_size(resetBottomRow, lv_pct(100), 24);
+    lv_obj_set_flex_flow(resetBottomRow, LV_FLEX_FLOW_ROW);
+
+    resetWifiCheckbox = lv_checkbox_create(resetBottomRow);
+    lv_obj_set_width(resetWifiCheckbox, lv_pct(30));
+    lv_checkbox_set_text(resetWifiCheckbox, "Wi-Fi");
+    lv_obj_add_event_cb(resetWifiCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
+    resetCalibrationCheckbox = lv_checkbox_create(resetBottomRow);
+    lv_obj_set_width(resetCalibrationCheckbox, lv_pct(70));
+    lv_checkbox_set_text(resetCalibrationCheckbox, "Sensor Calibration");
+    lv_obj_add_event_cb(resetCalibrationCheckbox, resetOptionChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
 
     lv_obj_t* actionSpacer = lv_obj_create(screen);
     lv_obj_remove_style_all(actionSpacer);
@@ -416,7 +537,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_event_cb(saveButton, saveChangesCb, LV_EVENT_CLICKED, nullptr);
     ui_theme::stylePrimaryButton(saveButton);
     saveButtonLabel = lv_label_create(saveButton);
-    lv_label_set_text(saveButtonLabel, "Save");
+    lv_label_set_text(saveButtonLabel, "Save & Reboot");
     updateActiveSensorStatus();
     updateActionState();
 
@@ -427,6 +548,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_event_cb(keyboard, keyboardEventCb, LV_EVENT_ALL, nullptr);
     lv_obj_add_event_cb(screen, screenRefreshCb, LV_EVENT_REFRESH, nullptr);
     lv_timer_create(sensorStatusTimerCb, 1000, nullptr);
+    lv_timer_create(brightnessTimerCb, 1000, nullptr);
 
     return screen;
 }

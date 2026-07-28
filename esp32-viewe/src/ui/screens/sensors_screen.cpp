@@ -4,6 +4,7 @@
 #include "../../sensors/sensor_mode.h"
 #include "../../memory/heap_policy.h"
 #include "../theme/ui_theme.h"
+#include "../navigation/tabview_utils.h"
 #include <esp_heap_caps.h>
 #include <cstdio>
 #include <cmath>
@@ -1760,6 +1761,7 @@ void updateCb(lv_timer_t* timer) {
 
 lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* tabview = lv_tabview_create(parent, LV_DIR_TOP, 40);
+    tabview_utils::disableSwipe(tabview);
     lv_obj_set_style_pad_all(tabview, 0, 0);
     lv_obj_set_style_border_width(tabview, 0, 0);
     lv_obj_set_style_radius(tabview, 0, 0);

@@ -1,4 +1,5 @@
 #include "settings_screen.h"
+#include "tabview_utils.h"
 #include "screen_manager.h"
 
 #include "../screens/settings/device_info_screen.h"
@@ -59,6 +60,7 @@ void screenRefreshCb(lv_event_t* event) {
 
 lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_t* tabview = lv_tabview_create(parent, LV_DIR_TOP, 40);
+    tabview_utils::disableSwipe(tabview);
     static SettingsTabRuntime tabs[sizeof(kSettingsTabs) / sizeof(kSettingsTabs[0])];
     lv_obj_set_style_bg_color(tabview, ui_theme::background(), 0);
     lv_obj_set_style_bg_opa(tabview, LV_OPA_COVER, 0);

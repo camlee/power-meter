@@ -11,6 +11,7 @@
 #include "time/time_service.h"
 #include "../../components/linear_progress.h"
 #include "../../theme/ui_theme.h"
+#include "../../navigation/tabview_utils.h"
 
 namespace history_screen {
 namespace {
@@ -230,6 +231,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     // The tab pages are intentionally empty: the shared catalog below is
     // refreshed for whichever dataset tab is active.
     datasetTabview = lv_tabview_create(screen, LV_DIR_TOP, 36);
+    tabview_utils::disableSwipe(datasetTabview);
     lv_obj_set_size(datasetTabview, lv_pct(100), 36);
     lv_obj_set_style_bg_color(datasetTabview, ui_theme::background(), 0);
     lv_obj_set_style_bg_opa(datasetTabview, LV_OPA_COVER, 0);

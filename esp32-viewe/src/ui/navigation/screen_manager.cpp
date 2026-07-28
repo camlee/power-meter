@@ -1,4 +1,5 @@
 #include "screen_manager.h"
+#include "tabview_utils.h"
 #include "../theme/ui_theme.h"
 
 void ScreenManager::init() {
@@ -16,6 +17,7 @@ void ScreenManager::init() {
     // Create Tabview
     // Parameters: parent, tab direction (e.g., top, bottom, left, right), header size
     tabview = lv_tabview_create(root_scr, LV_DIR_TOP, 40);
+    tabview_utils::disableSwipe(tabview);
     lv_obj_set_style_bg_color(tabview, ui_theme::background(), 0);
     lv_obj_set_style_bg_opa(tabview, LV_OPA_COVER, 0);
     // lv_obj_set_style_bg_color(tabview, lv_color_black(), 0);
