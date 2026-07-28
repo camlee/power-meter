@@ -11,6 +11,8 @@
   export let showPreviewLegend = false;
   export let active = true;
   export let emptyMessage = 'Waiting for readings…';
+  export let yMin = null;
+  export let yMax = null;
 
   const WINDOW_MS = 30_000;
   const GAP_MS = 3_000;
@@ -96,26 +98,41 @@
       return;
     }
     let low = Math.min(...values), high = Math.max(...values);
-    const minimumSpan = field === 'voltage' ? 1 : 0.5;
-    if (high - low < minimumSpan) {
-      const middle = (high + low) / 2;
-      low = middle - minimumSpan / 2;
-      high = middle + minimumSpan / 2;
+    const fixedDomain = Number.isFinite(yMin) && Number.isFinite(yMax) && yMax > yMin;
+    let tickValues;
+    if (fixedDomain) {
+      low = yMin;
+      high = yMax;
+      tickValues = Array.from({ length: 4 }, (_, index) =>
+        low + (high - low) * index / 3);
+    } else {
+      const minimumSpan = field === 'voltage' ? 1 : 0.5;
+      if (high - low < minimumSpan) {
+        const middle = (high + low) / 2;
+        low = middle - minimumSpan / 2;
+        high = middle + minimumSpan / 2;
+      }
+      const tick = niceStep((high - low) / 4);
+      low = Math.floor(low / tick) * tick;
+      high = Math.ceil(high / tick) * tick;
+      if (high <= low) high = low + tick;
+      tickValues = [];
+      for (let value = low; value <= high + tick * 0.01; value += tick) {
+        tickValues.push(value);
+      }
     }
-    const tick = niceStep((high - low) / 4);
-    low = Math.floor(low / tick) * tick;
-    high = Math.ceil(high / tick) * tick;
-    if (high <= low) high = low + tick;
     const x = (timestamp) => plot.left + plot.width * (timestamp - start) / WINDOW_MS;
     const y = (value) => plot.top + plot.height * (high - value) / (high - low);
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    for (let value = low; value <= high + tick * 0.01; value += tick) {
+    const tickStep = tickValues.length > 1 ? tickValues[1] - tickValues[0] : high - low;
+    const tickDigits = fixedDomain ? 1 : (Math.abs(tickStep) < 1 ? 1 : 0);
+    for (const value of tickValues) {
       const py = y(value);
       ctx.strokeStyle = colors.grid;
       ctx.beginPath(); ctx.moveTo(plot.left, py); ctx.lineTo(plot.left + plot.width, py); ctx.stroke();
       ctx.fillStyle = colors.muted;
-      ctx.fillText(`${value.toFixed(Math.abs(tick) < 1 ? 1 : 0)} ${unit}`, plot.left - 5, py);
+      ctx.fillText(`${value.toFixed(tickDigits)} ${unit}`, plot.left - 5, py);
     }
     for (let seconds = 0; seconds <= 30; seconds += 10) {
       const px = x(start + seconds * 1000);

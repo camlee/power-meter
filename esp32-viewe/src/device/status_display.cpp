@@ -116,15 +116,24 @@ void drawSummary() {
     display.setFont(&FreeSans9pt7b);
     display.setTextSize(1);
     display.setCursor(0, 15);
-    if (((millis() / 4000) & 1U) == 0) {
-        display.printf("%s.local", network_manager::getHostname());
-    } else {
-        const bool stationConnected =
-            network_manager::getState() == network_manager::NetworkState::ConnectedStaLocal ||
-            network_manager::getState() == network_manager::NetworkState::ConnectedStaInternet;
-        const char* ssid = network_manager::getCurrentSsid();
-        if (stationConnected && ssid && ssid[0]) display.printf("WiFi %.10s", ssid);
-        else display.printf("%.16s", networkState());
+    const bool stationConnected =
+        network_manager::getState() == network_manager::NetworkState::ConnectedStaLocal ||
+        network_manager::getState() == network_manager::NetworkState::ConnectedStaInternet;
+    switch ((millis() / 4000) % 3U) {
+        case 0:
+            display.printf("%s.local", network_manager::getHostname());
+            break;
+        case 1: {
+            const char* ssid = network_manager::getCurrentSsid();
+            if (stationConnected && ssid && ssid[0]) display.printf("WiFi %.10s", ssid);
+            else display.printf("%.16s", networkState());
+            break;
+        }
+        default:
+            if (stationConnected) display.print(network_manager::getStaIpAddress());
+            else if (network_manager::isApEnabled()) display.print(network_manager::getApIpAddress());
+            else display.printf("%.16s", networkState());
+            break;
     }
 
     display.setCursor(0, 36);

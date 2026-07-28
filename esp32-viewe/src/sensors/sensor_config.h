@@ -20,9 +20,9 @@ struct Pins {
 // assignments live, so the final wiring can be changed without touching the
 // acquisition or UI code.
 constexpr Pins kPins[] = {
-    {.voltage = 5, .current = 6},   // In
-    {.voltage = 7, .current = 8},   // Out
-    {.voltage = 9, .current = 10},  // Aux
+    {.voltage = 6, .current = 5},   // In
+    {.voltage = 8, .current = 7},   // Out
+    {.voltage = 10, .current = 9},  // Aux
 };
 
 // Factory calibration defaults. Runtime per-channel values are persisted in

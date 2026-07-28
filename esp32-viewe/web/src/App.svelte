@@ -159,6 +159,11 @@
     receivedMonotonicAt: point.receivedMonotonicAt, ...(point.sensors?.[id] || {}),
   }))]));
   $: selectedSensorPoints = sensorPoints[selectedSensor] || [];
+  $: calibrationChartPoints = calibrationEditor?.chartUnits === 'raw'
+    ? rawCalibrationPoints(
+      calibrationEditor, selectedSensor, selectedChannel, selectedSensorPoints,
+    )
+    : selectedSensorPoints;
   // Pass dependencies explicitly: legacy Svelte reactive statements cannot
   // discover state read indirectly inside a zero-argument helper.
   $: calibrationPreviewPoints = previewCalibrationPoints(
@@ -492,23 +497,37 @@
     calibrationEditor = {
       sensor, measurement,
       gain: value.gain, offset: value.offset_input_v,
-      sensitivity: 1000 / value.gain,
       defaultGain: value.default_gain, defaultOffset: value.default_offset_input_v,
+      chartUnits: 'engineering',
     };
     calibrationReference = '';
     calibrationError = calibrationMessage = '';
   }
 
+  function adcInputFromEngineering(displayed, calibration) {
+    if (!Number.isFinite(displayed) || !Number.isFinite(calibration?.gain) ||
+        calibration.gain <= 0 || !Number.isFinite(calibration?.offset_input_v)) {
+      return Number.NaN;
+    }
+    return displayed / calibration.gain + calibration.offset_input_v;
+  }
+
+  function rawCalibrationPoints(editor, sensor, channel, sensorReadings) {
+    if (!editor || editor.sensor !== sensor) return [];
+    const saved = channel?.calibration?.[editor.measurement];
+    return sensorReadings.map((point) => ({
+      ...point,
+      raw_input_v: adcInputFromEngineering(point[editor.measurement], saved),
+    }));
+  }
+
   function previewCalibrationPoints(editor, sensor, channel, sensorReadings) {
     if (!editor || editor.sensor !== sensor) return [];
     const saved = channel?.calibration?.[editor.measurement];
-    if (!saved || !Number.isFinite(editor.sensitivity) || editor.sensitivity <= 0) return [];
-    const stagedGain = 1000 / editor.sensitivity;
+    if (!saved || !Number.isFinite(editor.gain) || editor.gain <= 0) return [];
     return sensorReadings.map((point) => {
-      const displayed = point[editor.measurement];
-      if (!Number.isFinite(displayed)) return { ...point, preview: Number.NaN };
-      const input = displayed / saved.gain + saved.offset_input_v;
-      return { ...point, preview: (input - editor.offset) * stagedGain };
+      const input = adcInputFromEngineering(point[editor.measurement], saved);
+      return { ...point, preview: (input - editor.offset) * editor.gain };
     });
   }
 
@@ -525,7 +544,7 @@
       calibrationError = 'Enter a positive reference while the measured input is away from the configured zero.';
       return;
     }
-    calibrationEditor = { ...calibrationEditor, sensitivity: 1000 / (reference / denominator) };
+    calibrationEditor = { ...calibrationEditor, gain: reference / denominator };
     calibrationError = '';
   }
 
@@ -534,13 +553,13 @@
       ...calibrationEditor,
       gain: calibrationEditor.defaultGain,
       offset: calibrationEditor.defaultOffset,
-      sensitivity: 1000 / calibrationEditor.defaultGain,
     };
   }
 
   async function submitCalibration() {
-    if (!calibrationEditor || !Number.isFinite(calibrationEditor.sensitivity) || calibrationEditor.sensitivity <= 0) {
-      calibrationError = 'Sensitivity must be a positive number.';
+    if (!calibrationEditor || !Number.isFinite(calibrationEditor.gain) ||
+        calibrationEditor.gain <= 0 || calibrationEditor.gain > 100) {
+      calibrationError = 'Gain must be a positive number no greater than 100.';
       return;
     }
     calibrationBusy = true;
@@ -549,7 +568,7 @@
       sensorStatus = await saveSensorCalibration({
         sensor: calibrationEditor.sensor,
         measurement: calibrationEditor.measurement,
-        gain: 1000 / calibrationEditor.sensitivity,
+        gain: Number(calibrationEditor.gain),
         offset_input_v: Number(calibrationEditor.offset),
       });
       calibrationMessage = 'Calibration saved.';
@@ -1837,12 +1856,38 @@
 
                 <div class="sensor-charts">
                   {#if calibrationEditor?.sensor === channel.id}
-                    <SensorChart points={sensorPoints[channel.id] || []} field={calibrationEditor.measurement}
-                      title={calibrationEditor.measurement === 'voltage' ? 'Voltage' : 'Current'}
-                      unit={calibrationEditor.measurement === 'voltage' ? 'V' : 'A'}
+                    <div class="calibration-unit-toggle">
+                      <span>Chart units</span>
+                      <div role="group" aria-label="Calibration chart units">
+                        <button type="button"
+                          class:active={calibrationEditor.chartUnits === 'engineering'}
+                          aria-pressed={calibrationEditor.chartUnits === 'engineering'}
+                          on:click={() => calibrationEditor = {
+                            ...calibrationEditor, chartUnits: 'engineering',
+                          }}>Engineering ({calibrationEditor.measurement === 'voltage' ? 'V' : 'A'})</button>
+                        <button type="button"
+                          class:active={calibrationEditor.chartUnits === 'raw'}
+                          aria-pressed={calibrationEditor.chartUnits === 'raw'}
+                          on:click={() => calibrationEditor = {
+                            ...calibrationEditor, chartUnits: 'raw',
+                          }}>Raw ADC</button>
+                      </div>
+                    </div>
+                    <SensorChart points={calibrationChartPoints}
+                      field={calibrationEditor.chartUnits === 'raw'
+                        ? 'raw_input_v' : calibrationEditor.measurement}
+                      title={calibrationEditor.chartUnits === 'raw'
+                        ? `${calibrationEditor.measurement === 'voltage' ? 'Voltage' : 'Current'} ADC input`
+                        : (calibrationEditor.measurement === 'voltage' ? 'Voltage' : 'Current')}
+                      unit={calibrationEditor.chartUnits === 'raw'
+                        ? 'V' : (calibrationEditor.measurement === 'voltage' ? 'V' : 'A')}
                       colorVariable={calibrationEditor.measurement === 'voltage' ? '--panel' : '--warning'}
                       active={!livePaused && selectedSensor === channel.id}
-                      previewPoints={calibrationPreviewPoints} showPreviewLegend={true} />
+                      yMin={calibrationEditor.chartUnits === 'raw' ? 0 : null}
+                      yMax={calibrationEditor.chartUnits === 'raw' ? 3.3 : null}
+                      previewPoints={calibrationEditor.chartUnits === 'raw'
+                        ? [] : calibrationPreviewPoints}
+                      showPreviewLegend={calibrationEditor.chartUnits !== 'raw'} />
                   {:else}
                     <SensorChart points={sensorPoints[channel.id] || []} field="voltage" title="Voltage" unit="V"
                       colorVariable="--panel" active={!livePaused && selectedSensor === channel.id} />
@@ -1869,11 +1914,11 @@
           {#if calibrationEditor}
             <form class="calibration-editor" on:submit|preventDefault={submitCalibration}>
               <h3>Calibrate {selectedChannel.label} {calibrationEditor.measurement}</h3>
-              <label>Offset / zero input (V)
+              <label>ADC offset / zero (V)
                 <input type="number" step="0.0001" min="0" max="3.3" bind:value={calibrationEditor.offset} />
               </label>
-              <label>Sensitivity (mV per {calibrationEditor.measurement === 'voltage' ? 'V' : 'A'})
-                <input type="number" step="0.001" min="0.001" bind:value={calibrationEditor.sensitivity} />
+              <label>Gain ({calibrationEditor.measurement === 'voltage' ? 'V' : 'A'} per ADC V)
+                <input type="number" step="0.001" min="0.001" max="100" bind:value={calibrationEditor.gain} />
               </label>
               <div class="calibration-reference">
                 <label>Trusted reference ({calibrationEditor.measurement === 'voltage' ? 'V' : 'A'})
@@ -1881,7 +1926,8 @@
                 </label>
                 <button type="button" on:click={calculateCalibration}>Calculate</button>
               </div>
-              <p class="field-note">Latest ADC input: {formatMeasurement(calibrationInput, 'V', 4)}</p>
+              <p class="field-note">Raw ADC values are measured before offset and gain.
+                Latest input: {formatMeasurement(calibrationInput, 'V ADC', 4)}</p>
               {#if calibrationError}<p class="error" role="alert">{calibrationError}</p>{/if}
               <div class="calibration-editor-actions">
                 <button type="button" on:click={zeroCalibration}>Use latest as zero</button>
@@ -2959,6 +3005,32 @@
     gap: 0.8rem;
     margin-top: 0.7rem;
   }
+
+  .calibration-unit-toggle {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+  }
+
+  .calibration-unit-toggle > div {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 0.3rem;
+    overflow: hidden;
+  }
+
+  .calibration-unit-toggle button {
+    min-height: 2rem;
+    padding: 0.35rem 0.6rem;
+    border-left: 1px solid var(--border);
+  }
+
+  .calibration-unit-toggle button:first-child { border-left: 0; }
+  .calibration-unit-toggle button.active { color: white; background: var(--accent); }
 
   .calibration-actions,
   .calibration-editor-actions {
