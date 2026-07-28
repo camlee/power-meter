@@ -142,11 +142,12 @@ it. A later migration of OTA routes to the native server can unite both on port
 
 The live WebSocket, sensor read model, browser time anchor, remote-display,
 settings, diagnostics, and signed-OTA endpoints are unauthenticated for use on
-a trusted local network. The Wi-Fi read model includes the saved AP password so
-it can reproduce the on-device editor. OTA authenticity comes from the
-embedded public signing key; local clients cannot select an arbitrary URL or
-install unsigned/equal/older firmware. Do not expose the meter beyond the
-trusted LAN without adding authentication to these browser-facing endpoints.
+a trusted local network. Wi-Fi passwords are write-only outside the network
+manager: read models and UI controls report only whether an AP password is
+configured. OTA authenticity comes from the embedded public signing key; local
+clients cannot select an arbitrary URL or install unsigned/equal/older
+firmware. Do not expose the meter beyond the trusted LAN without adding
+authentication to these browser-facing endpoints.
 
 The Wi-Fi settings page uses the same `network_manager` command and persistence
 methods as the LVGL Wi-Fi screen. Station scans and connections are asynchronous;
@@ -154,9 +155,11 @@ the page polls the small Wi-Fi read model once per second while visible to show
 scan, connection, retry, and credential-failure state. A user can select a scan
 result or enter a hidden SSID, connect with new credentials, reconnect to or
 forget a saved network, and explicitly disconnect station mode. Access-point
-settings include enabled/disabled, SSID, open/secured mode, password, IP address,
-and connected client MAC addresses. Applying a different active AP configuration
-can disconnect the browser, which must then join the new SSID.
+settings include enabled/disabled, SSID, open/secured mode,
+password-configured status, IP address, and connected client MAC addresses.
+Keeping, replacing, and removing an AP password are explicit write actions;
+saved values are never returned to the browser. Applying a different active AP
+configuration can disconnect the browser, which must then join the new SSID.
 
 `/api/v1/web/status` publishes the hardware profile and capabilities, including
 touch/status displays and individually supported sensor modes.
@@ -314,8 +317,8 @@ network task or mirror Preferences directly in JavaScript.
 Wi-Fi changes do not require a restart. The browser stages only the fields in
 the visible form, then calls the shared manager through the Wi-Fi API. The API
 validates ESP32 limits (SSID 1–32 bytes, WPA password 8–63 bytes), JSON-escapes
-arbitrary SSID/password characters, and reports an in-progress conflict rather
-than starting a second radio operation.
+arbitrary SSIDs, never echoes submitted credentials, and reports an in-progress
+conflict rather than starting a second radio operation.
 
 While Usage is visible, both browser and LVGL refresh just after a monotonic
 storage boundary at a cadence equal to one displayed x-axis bucket (2 minutes

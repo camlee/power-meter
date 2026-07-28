@@ -34,6 +34,7 @@ lv_timer_t* pollTimer = nullptr;
 
 lv_obj_t* pwdOverlay = nullptr;
 lv_obj_t* pwdTextarea = nullptr;
+lv_obj_t* pwdErrorLabel = nullptr;
 lv_obj_t* savedOverlay = nullptr;
 lv_obj_t* savedList = nullptr;
 lv_obj_t* forgetConfirm = nullptr;
@@ -56,6 +57,9 @@ struct SavedNetworkInfo {
 lv_obj_t* apSsidInput = nullptr;
 lv_obj_t* apSecureSwitch = nullptr;
 lv_obj_t* apPasswordInput = nullptr;
+lv_obj_t* apPasswordStatus = nullptr;
+lv_obj_t* apReplaceButton = nullptr;
+lv_obj_t* apReplaceButtonLabel = nullptr;
 lv_obj_t* apToggle = nullptr;
 lv_obj_t* apInfoLabel = nullptr;
 lv_obj_t* apCountLabel = nullptr;
@@ -64,6 +68,8 @@ lv_obj_t* apKeyboard = nullptr;
 lv_timer_t* apPollTimer = nullptr;
 int lastApStationCount = -1;
 bool hasScanned = false; // Track if we should say "Scan" or "Rescan"
+bool apPasswordConfigured = false;
+bool apReplacingPassword = false;
 
 
 // ============================================================
@@ -238,14 +244,22 @@ void setScanBusy(bool busy) {
 
 void closePasswordPrompt() {
     if (pwdOverlay) {
+        if (pwdTextarea) lv_textarea_set_text(pwdTextarea, "");
         lv_obj_del(pwdOverlay);
         pwdOverlay = nullptr;
         pwdTextarea = nullptr;
+        pwdErrorLabel = nullptr;
     }
+    pendingSsid[0] = '\0';
 }
 
 void pwdConnectCb(lv_event_t*) {
     const char* password = lv_textarea_get_text(pwdTextarea);
+    const size_t length = strlen(password);
+    if (length < 8 || length > 63) {
+        lv_label_set_text(pwdErrorLabel, "Use 8 to 63 characters.");
+        return;
+    }
     network_manager::connectTo(pendingSsid, password);
     closePasswordPrompt();
     refreshConnectionLabel();
@@ -285,13 +299,13 @@ void showPasswordPrompt(const char* ssid) {
     pwdTextarea = lv_textarea_create(panel);
     lv_textarea_set_one_line(pwdTextarea, true);
     lv_textarea_set_password_mode(pwdTextarea, true); // Mask password visually
+    lv_textarea_set_max_length(pwdTextarea, 63);
     lv_textarea_set_placeholder_text(pwdTextarea, "Enter Password");
     lv_obj_set_width(pwdTextarea, lv_pct(100));
 
-    char savedPass[64];
-    if (network_manager::getSavedPassword(ssid, savedPass, sizeof(savedPass))) {
-        lv_textarea_set_text(pwdTextarea, savedPass);
-    }
+    pwdErrorLabel = lv_label_create(panel);
+    lv_obj_set_style_text_color(pwdErrorLabel, lv_palette_main(LV_PALETTE_RED), 0);
+    lv_label_set_text(pwdErrorLabel, "");
 
     lv_obj_t* btnRow = lv_obj_create(panel);
     lv_obj_remove_style_all(btnRow);
@@ -470,11 +484,24 @@ void rowClickCb(lv_event_t* e) {
     auto* info = (NetworkInfo*)lv_event_get_user_data(e);
     if (!info) return;
 
-    if (info->secured) showPasswordPrompt(info->ssid);
-    else {
+    if (info->secured) {
+        bool saved = false;
+        const int count = network_manager::getSavedNetworkCount();
+        for (int i = 0; i < count; ++i) {
+            char savedSsid[33];
+            if (network_manager::getSavedNetwork(
+                    i, savedSsid, sizeof(savedSsid)) &&
+                strcmp(savedSsid, info->ssid) == 0) {
+                saved = true;
+                break;
+            }
+        }
+        if (saved) network_manager::connectSavedNetwork(info->ssid);
+        else showPasswordPrompt(info->ssid);
+    } else {
         network_manager::connectTo(info->ssid);
-        refreshConnectionLabel();
     }
+    refreshConnectionLabel();
 }
 
 void rebuildListFromScan() {
@@ -589,6 +616,52 @@ void apPollCb(lv_timer_t* timer) {
     apRefreshClientList();
 }
 
+void clearApPasswordEditor() {
+    if (apPasswordInput) lv_textarea_set_text(apPasswordInput, "");
+    if (apKeyboard) {
+        lv_keyboard_set_textarea(apKeyboard, nullptr);
+        lv_obj_add_flag(apKeyboard, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+void apUpdatePasswordEditor() {
+    if (!apPasswordInput || !apPasswordStatus || !apReplaceButton) return;
+    const bool secure =
+        lv_obj_has_state(apSecureSwitch, LV_STATE_CHECKED);
+    const bool running = network_manager::isApEnabled();
+
+    if (!secure) {
+        apReplacingPassword = false;
+        clearApPasswordEditor();
+        lv_label_set_text(apPasswordStatus, "Open access point (no password)");
+        lv_obj_add_flag(apReplaceButton, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_state(apPasswordInput, LV_STATE_DISABLED);
+        return;
+    }
+
+    if (!apPasswordConfigured) apReplacingPassword = true;
+    if (apReplacingPassword) {
+        lv_label_set_text(apPasswordStatus, "Enter a new password");
+        if (apPasswordConfigured) {
+            lv_obj_clear_flag(apReplaceButton, LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(apReplaceButtonLabel, "Cancel");
+        } else {
+            lv_obj_add_flag(apReplaceButton, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (running) lv_obj_add_state(apPasswordInput, LV_STATE_DISABLED);
+        else lv_obj_clear_state(apPasswordInput, LV_STATE_DISABLED);
+    } else {
+        clearApPasswordEditor();
+        lv_label_set_text(apPasswordStatus, "Saved password (not shown)");
+        lv_obj_clear_flag(apReplaceButton, LV_OBJ_FLAG_HIDDEN);
+        lv_label_set_text(apReplaceButtonLabel, "Replace");
+        lv_obj_add_state(apPasswordInput, LV_STATE_DISABLED);
+    }
+
+    if (running) lv_obj_add_state(apReplaceButton, LV_STATE_DISABLED);
+    else lv_obj_clear_state(apReplaceButton, LV_STATE_DISABLED);
+}
+
 void apUpdateToggleEnabled() {
     if (!apToggle) return;
     if (network_manager::isApEnabled()) {
@@ -598,20 +671,42 @@ void apUpdateToggleEnabled() {
     const char* ssid = lv_textarea_get_text(apSsidInput);
     bool secure = lv_obj_has_state(apSecureSwitch, LV_STATE_CHECKED);
     const char* password = lv_textarea_get_text(apPasswordInput);
-    bool valid = strlen(ssid) > 0 && (!secure || strlen(password) >= kMinApPasswordLen);
+    const size_t passwordLength = strlen(password);
+    const bool validPassword =
+        !secure ||
+        (!apReplacingPassword && apPasswordConfigured) ||
+        (apReplacingPassword && passwordLength >= kMinApPasswordLen &&
+         passwordLength <= 63);
+    bool valid = strlen(ssid) > 0 && validPassword;
 
     if (valid) lv_obj_clear_state(apToggle, LV_STATE_DISABLED);
     else lv_obj_add_state(apToggle, LV_STATE_DISABLED);
 }
 
 void apSecureSwitchEventCb(lv_event_t*) {
-    bool secure = lv_obj_has_state(apSecureSwitch, LV_STATE_CHECKED);
-    if (secure) lv_obj_clear_state(apPasswordInput, LV_STATE_DISABLED);
-    else lv_obj_add_state(apPasswordInput, LV_STATE_DISABLED);
+    if (!lv_obj_has_state(apSecureSwitch, LV_STATE_CHECKED)) {
+        apReplacingPassword = false;
+        clearApPasswordEditor();
+    } else if (!apPasswordConfigured) {
+        apReplacingPassword = true;
+    }
+    apUpdatePasswordEditor();
     apUpdateToggleEnabled();
 }
 
 void apFormFieldChangedCb(lv_event_t*) { apUpdateToggleEnabled(); }
+
+void apReplacePasswordCb(lv_event_t*) {
+    if (apReplacingPassword && apPasswordConfigured) {
+        apReplacingPassword = false;
+        clearApPasswordEditor();
+    } else {
+        apReplacingPassword = true;
+        clearApPasswordEditor();
+    }
+    apUpdatePasswordEditor();
+    apUpdateToggleEnabled();
+}
 
 void apInputFocusCb(lv_event_t* e) {
     lv_obj_t* ta = (lv_obj_t*)lv_event_get_target(e);
@@ -639,12 +734,32 @@ void apToggleEventCb(lv_event_t*) {
         const char* ssid = lv_textarea_get_text(apSsidInput);
         bool secure = lv_obj_has_state(apSecureSwitch, LV_STATE_CHECKED);
         const char* password = lv_textarea_get_text(apPasswordInput);
-
-        network_manager::startAp(ssid, password, secure);
+        const ApPasswordAction passwordAction =
+            !secure ? ApPasswordAction::Remove
+                    : (apReplacingPassword ? ApPasswordAction::Replace
+                                           : ApPasswordAction::Keep);
+        const char* replacement =
+            passwordAction == ApPasswordAction::Replace ? password : nullptr;
+        const ApStartResult result =
+            network_manager::startAp(ssid, secure, passwordAction, replacement);
+        clearApPasswordEditor();
+        if (result != ApStartResult::Success) {
+            lv_obj_clear_state(apToggle, LV_STATE_CHECKED);
+            lv_label_set_text(
+                apInfoLabel,
+                result == ApStartResult::InvalidSettings
+                    ? "Invalid access point settings."
+                    : "Could not start access point.");
+            apUpdatePasswordEditor();
+            apUpdateToggleEnabled();
+            return;
+        }
+        apPasswordConfigured = secure;
+        apReplacingPassword = false;
         lastApStationCount = -1;
         lv_obj_add_state(apSsidInput, LV_STATE_DISABLED);
         lv_obj_add_state(apSecureSwitch, LV_STATE_DISABLED);
-        lv_obj_add_state(apPasswordInput, LV_STATE_DISABLED);
+        apUpdatePasswordEditor();
         lv_label_set_text_fmt(apInfoLabel, "IP: %s", network_manager::getApIpAddress());
         apRefreshClientList();
     } else {
@@ -652,9 +767,9 @@ void apToggleEventCb(lv_event_t*) {
         lastApStationCount = -1;
         lv_obj_clear_state(apSsidInput, LV_STATE_DISABLED);
         lv_obj_clear_state(apSecureSwitch, LV_STATE_DISABLED);
-        if (lv_obj_has_state(apSecureSwitch, LV_STATE_CHECKED)) {
-            lv_obj_clear_state(apPasswordInput, LV_STATE_DISABLED);
-        }
+        clearApPasswordEditor();
+        apReplacingPassword = false;
+        apUpdatePasswordEditor();
         lv_label_set_text(apInfoLabel, "Access point stopped.");
         lv_obj_clean(apClientList);
         lv_list_add_text(apClientList, "Access point not running");
@@ -796,10 +911,23 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_state(apSecureSwitch, LV_STATE_CHECKED);
     lv_obj_add_event_cb(apSecureSwitch, apSecureSwitchEventCb, LV_EVENT_VALUE_CHANGED, nullptr);
 
-    apPasswordInput = lv_textarea_create(pwdRow);
+    apPasswordStatus = lv_label_create(pwdRow);
+    lv_obj_set_flex_grow(apPasswordStatus, 1);
+    lv_label_set_long_mode(apPasswordStatus, LV_LABEL_LONG_DOT);
+
+    apReplaceButton = lv_btn_create(pwdRow);
+    lv_obj_add_event_cb(apReplaceButton, apReplacePasswordCb,
+                        LV_EVENT_CLICKED, nullptr);
+    apReplaceButtonLabel = lv_label_create(apReplaceButton);
+    lv_label_set_text(apReplaceButtonLabel, "Replace");
+    lv_obj_center(apReplaceButtonLabel);
+
+    apPasswordInput = lv_textarea_create(apPanel);
     lv_textarea_set_one_line(apPasswordInput, true);
+    lv_textarea_set_password_mode(apPasswordInput, true);
+    lv_textarea_set_max_length(apPasswordInput, 63);
     lv_textarea_set_placeholder_text(apPasswordInput, "Access Point Password");
-    lv_obj_set_flex_grow(apPasswordInput, 1);
+    lv_obj_set_width(apPasswordInput, lv_pct(100));
     lv_obj_add_event_cb(apPasswordInput, apInputFocusCb, LV_EVENT_FOCUSED, nullptr);
     lv_obj_add_event_cb(apPasswordInput, apInputDefocusCb, LV_EVENT_DEFOCUSED, nullptr);
     lv_obj_add_event_cb(apPasswordInput, apFormFieldChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
@@ -835,20 +963,20 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_add_event_cb(apKeyboard, apKeyboardEventCb, LV_EVENT_ALL, nullptr);
 
     // Initial persistence sync
-    char savedSsid[33], savedPass[64];
+    char savedSsid[33];
     bool savedSecure;
-    network_manager::getSavedApSettings(savedSsid, sizeof(savedSsid), savedSecure, savedPass, sizeof(savedPass));
+    network_manager::getSavedApSettings(
+        savedSsid, sizeof(savedSsid), savedSecure, apPasswordConfigured);
     if (savedSsid[0] != '\0') lv_textarea_set_text(apSsidInput, savedSsid);
     if (savedSecure) lv_obj_add_state(apSecureSwitch, LV_STATE_CHECKED);
     else lv_obj_clear_state(apSecureSwitch, LV_STATE_CHECKED);
-    if (savedPass[0] != '\0') lv_textarea_set_text(apPasswordInput, savedPass);
 
     apSecureSwitchEventCb(nullptr);
     if (network_manager::isApEnabled()) {
         lv_obj_add_state(apToggle, LV_STATE_CHECKED);
         lv_obj_add_state(apSsidInput, LV_STATE_DISABLED);
         lv_obj_add_state(apSecureSwitch, LV_STATE_DISABLED);
-        lv_obj_add_state(apPasswordInput, LV_STATE_DISABLED);
+        apUpdatePasswordEditor();
         lv_label_set_text_fmt(apInfoLabel, "IP: %s", network_manager::getApIpAddress());
         lastApStationCount = -1;
         apRefreshClientList();

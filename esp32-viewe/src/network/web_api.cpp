@@ -1161,10 +1161,11 @@ void webWifi() {
     const bool stationConnected =
         stationState == network_manager::NetworkState::ConnectedStaLocal ||
         stationState == network_manager::NetworkState::ConnectedStaInternet;
-    char apSsid[33] = {}, apPassword[64] = {};
+    char apSsid[33] = {};
     bool apSecure = true;
+    bool apPasswordConfigured = false;
     network_manager::getSavedApSettings(apSsid, sizeof(apSsid), apSecure,
-                                        apPassword, sizeof(apPassword));
+                                        apPasswordConfigured);
 
     String response;
     response.reserve(4096);
@@ -1216,8 +1217,8 @@ void webWifi() {
     response += ",\"ssid\":";
     http_utils::appendJsonString(response, apSsid);
     response += String(",\"secure\":") + (apSecure ? "true" : "false") +
-        ",\"password\":";
-    http_utils::appendJsonString(response, apPassword);
+        ",\"password_configured\":" +
+        (apPasswordConfigured ? "true" : "false");
     response += String(",\"ip\":\"") +
         (network_manager::isApEnabled() ? network_manager::getApIpAddress() : "") +
         "\",\"client_count\":" + network_manager::getApClientCount() +
@@ -1311,21 +1312,37 @@ void webWifiAp() {
         return;
     }
 
-    String ssid, password;
+    String ssid, action, password;
     bool secure = true;
     if (!http_utils::jsonString(body, "ssid", ssid) ||
-        !http_utils::jsonString(body, "password", password) ||
+        !http_utils::jsonString(body, "password_action", action) ||
         !http_utils::jsonBool(body, "secure", secure) ||
         !validWifiText(ssid, 1, 32)) {
         server->send(400, "application/json", "{\"error\":\"invalid access-point settings\"}");
         return;
     }
-    if ((secure && !validWifiText(password, 8, 63)) ||
-        (!secure && !validWifiText(password, 0, 63))) {
-        server->send(400, "application/json", "{\"error\":\"A secured access point needs an 8 to 63 byte password\"}");
+    network_manager::ApPasswordAction passwordAction;
+    if (action == "keep") {
+        passwordAction = network_manager::ApPasswordAction::Keep;
+    } else if (action == "replace") {
+        passwordAction = network_manager::ApPasswordAction::Replace;
+    } else if (action == "remove") {
+        passwordAction = network_manager::ApPasswordAction::Remove;
+    } else {
+        server->send(400, "application/json", "{\"error\":\"invalid access-point settings\"}");
         return;
     }
-    if (!network_manager::startAp(ssid.c_str(), password.c_str(), secure)) {
+
+    const bool hasPassword = http_utils::jsonString(body, "password", password);
+    const char* replacementPassword = hasPassword ? password.c_str() : nullptr;
+    const network_manager::ApStartResult result = network_manager::startAp(
+        ssid.c_str(), secure, passwordAction, replacementPassword);
+    password = "";
+    if (result == network_manager::ApStartResult::InvalidSettings) {
+        server->send(400, "application/json", "{\"error\":\"invalid access-point settings\"}");
+        return;
+    }
+    if (result == network_manager::ApStartResult::StartFailed) {
         server->send(500, "application/json", "{\"error\":\"access point could not be started\"}");
         return;
     }

@@ -224,6 +224,32 @@ void saveNetworkCredential(const char* ssid, const char* password) {
     prefs.end();
 }
 
+bool loadSavedStationPassword(const char* ssid, char* passOut, size_t maxLen) {
+    if (!ssid || !passOut || maxLen == 0) return false;
+    passOut[0] = '\0';
+    Preferences prefs;
+    if (!prefs.begin("wifi_net", true)) return false;
+    const uint8_t count = prefs.getUChar("cnt", 0);
+    const int slot = findSavedNetworkSlot(prefs, count, ssid);
+    if (slot < 0) {
+        prefs.end();
+        return false;
+    }
+    char key[4];
+    snprintf(key, sizeof(key), "p%d", slot);
+    const String password = prefs.getString(key, "");
+    strncpy(passOut, password.c_str(), maxLen - 1);
+    passOut[maxLen - 1] = '\0';
+    prefs.end();
+    return true;
+}
+
+void clearSecret(char* value, size_t length) {
+    if (!value) return;
+    volatile char* cursor = value;
+    while (length-- > 0) *cursor++ = '\0';
+}
+
 bool removeSavedNetworkCredential(const char* ssid) {
     if (!ssid || ssid[0] == '\0') return false;
     Preferences prefs;
@@ -725,8 +751,8 @@ void prepareRecoveryCandidates() {
                             static_cast<uint8_t>(savedIndex), bestRssi};
         strncpy(candidate.ssid, ssid, sizeof(candidate.ssid) - 1);
         candidate.ssid[sizeof(candidate.ssid) - 1] = '\0';
-        if (!getSavedPassword(ssid, candidate.password,
-                              sizeof(candidate.password))) {
+        if (!loadSavedStationPassword(ssid, candidate.password,
+                                      sizeof(candidate.password))) {
             candidate.password[0] = '\0';
         }
     }
@@ -1095,16 +1121,43 @@ void disconnect() {
     device_state::changed(device_state::Domain::Network);
 }
 
-bool startAp(const char* ssid, const char* password, bool secure) {
+ApStartResult startAp(const char* ssid, bool secure,
+                      ApPasswordAction passwordAction,
+                      const char* replacementPassword) {
+    char savedSsid[33] = {};
+    char savedPassword[64] = {};
+    bool savedSecure = true;
+    bool savedEnabled = false;
+    const bool hasSavedSettings = loadApSettings(
+        savedSsid, sizeof(savedSsid), savedSecure,
+        savedPassword, sizeof(savedPassword), savedEnabled);
+    const bool savedPasswordConfigured =
+        hasSavedSettings && savedSecure &&
+        validWifiSettingText(savedPassword, 8, 63);
+    if (validateApSettings(ssid, secure, passwordAction, replacementPassword,
+                           savedPasswordConfigured) !=
+        ApSettingsValidation::Valid) {
+        clearSecret(savedPassword, sizeof(savedPassword));
+        return ApStartResult::InvalidSettings;
+    }
+
+    const char* password = nullptr;
+    if (passwordAction == ApPasswordAction::Keep) password = savedPassword;
+    else if (passwordAction == ApPasswordAction::Replace) {
+        password = replacementPassword;
+    }
+
     WiFi.mode(WIFI_AP_STA); // Forces hardware to support both
     if (WiFi.softAP(ssid, secure ? password : nullptr)) {
         apRunning = true;
         saveApSettings(ssid, secure, password, true);
+        clearSecret(savedPassword, sizeof(savedPassword));
         ensureMdns();
         device_state::changed(device_state::Domain::Network);
-        return true;
+        return ApStartResult::Success;
     }
-    return false;
+    clearSecret(savedPassword, sizeof(savedPassword));
+    return ApStartResult::StartFailed;
 }
 
 void stopAp() {
@@ -1265,9 +1318,11 @@ bool getSavedNetwork(int index, char* ssidOut, size_t ssidLen) {
 }
 
 bool connectSavedNetwork(const char* ssid) {
-    char password[64];
-    if (!getSavedPassword(ssid, password, sizeof(password))) return false;
-    return connectTo(ssid, password);
+    char password[64] = {};
+    if (!loadSavedStationPassword(ssid, password, sizeof(password))) return false;
+    const bool started = connectTo(ssid, password);
+    clearSecret(password, sizeof(password));
+    return started;
 }
 
 bool forgetSavedNetwork(const char* ssid) {
@@ -1304,27 +1359,15 @@ bool forgetSavedNetwork(const char* ssid) {
     return true;
 }
 
-bool getSavedPassword(const char* ssid, char* passOut, size_t maxLen) {
-    Preferences prefs;
-    if (!prefs.begin("wifi_net", true)) return false;
-    uint8_t count = prefs.getUChar("cnt", 0);
-    int slot = findSavedNetworkSlot(prefs, count, ssid);
-    if (slot >= 0) {
-        char key[4];
-        snprintf(key, sizeof(key), "p%d", slot);
-        String pass = prefs.getString(key, "");
-        strncpy(passOut, pass.c_str(), maxLen - 1);
-        passOut[maxLen - 1] = '\0';
-        prefs.end();
-        return true;
-    }
-    prefs.end();
-    return false;
-}
-
-void getSavedApSettings(char* ssidOut, size_t ssidLen, bool& secureOut, char* passOut, size_t passLen) {
+void getSavedApSettings(char* ssidOut, size_t ssidLen, bool& secureOut,
+                        bool& passwordConfiguredOut) {
+    char password[64] = {};
     bool enabled = false;
-    loadApSettings(ssidOut, ssidLen, secureOut, passOut, passLen, enabled);
+    const bool loaded = loadApSettings(
+        ssidOut, ssidLen, secureOut, password, sizeof(password), enabled);
+    passwordConfiguredOut =
+        loaded && secureOut && validWifiSettingText(password, 8, 63);
+    clearSecret(password, sizeof(password));
 }
 
 ScanState getScanState() { return scanState; }

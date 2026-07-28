@@ -3,6 +3,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "network_policy.h"
+#include "wifi_credential_policy.h"
 
 namespace network_manager {
 
@@ -39,6 +40,12 @@ enum class RecoveryState {
     Blocked,
 };
 
+enum class ApStartResult {
+    Success,
+    InvalidSettings,
+    StartFailed,
+};
+
 // Subsystem initialization and non-blocking event loop tick
 void init();
 void update();
@@ -46,7 +53,9 @@ void update();
 // Command API
 bool connectTo(const char* ssid, const char* password = nullptr);
 void disconnect();
-bool startAp(const char* ssid, const char* password = nullptr, bool secure = true);
+ApStartResult startAp(const char* ssid, bool secure,
+                      ApPasswordAction passwordAction,
+                      const char* replacementPassword = nullptr);
 void stopAp();
 bool scanNetworks();
 
@@ -81,8 +90,8 @@ int getSavedNetworkCount();
 bool getSavedNetwork(int index, char* ssidOut, size_t ssidLen);
 bool connectSavedNetwork(const char* ssid);
 bool forgetSavedNetwork(const char* ssid);
-bool getSavedPassword(const char* ssid, char* passOut, size_t maxLen);
-void getSavedApSettings(char* ssidOut, size_t ssidLen, bool& secureOut, char* passOut, size_t passLen);
+void getSavedApSettings(char* ssidOut, size_t ssidLen, bool& secureOut,
+                        bool& passwordConfiguredOut);
 // Removes both station and access-point credentials from NVS.
 bool clearSavedCredentials();
 

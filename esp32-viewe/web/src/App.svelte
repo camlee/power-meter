@@ -31,6 +31,12 @@
     saveSensorCalibration,
     saveUpdateSettings,
   } from './lib/api.js';
+  import {
+    apDraftFromDevice,
+    apDraftMatchesDevice,
+    apRequestFromDraft,
+    stationSelection,
+  } from './lib/wifiDraft.js';
 
   // ---------------------------------------------------------------------
   // Constants
@@ -210,6 +216,8 @@
   let apEnabled = false;
   let apSsid = '';
   let apSecure = true;
+  let apPasswordConfigured = false;
+  let apReplacingPassword = false;
   let apPassword = '';
   $: wifiNetworks = wifi?.scan?.networks || [];
   $: wifiScanBusy = ['starting', 'running'].includes(wifi?.scan?.state);
@@ -671,6 +679,12 @@
     clearTimeout(cycleRefreshTimer);
     clearInterval(wifiPollTimer);
     clearInterval(updatePollTimer);
+    if (next !== 'wifi') {
+      stationPassword = '';
+      apPassword = '';
+      apReplacingPassword = false;
+      apDraftLoaded = false;
+    }
     if (next !== 'raw') {
       clearTimeout(adcCapturePollTimer);
       adcCapturePollGeneration += 1;
@@ -793,16 +807,25 @@
   }
 
   function loadApDraft(value) {
-    apEnabled = value.enabled;
-    apSsid = value.ssid || '';
-    apSecure = value.secure;
-    apPassword = value.password || '';
+    const draft = apDraftFromDevice(value);
+    apEnabled = draft.enabled;
+    apSsid = draft.ssid;
+    apSecure = draft.secure;
+    apPasswordConfigured = draft.passwordConfigured;
+    apReplacingPassword = draft.replacingPassword;
+    apPassword = draft.password;
     apDraftLoaded = true;
   }
 
   function apDraftMatches(value) {
-    return !!value && apEnabled === value.enabled && apSsid === (value.ssid || '') &&
-      apSecure === value.secure && apPassword === (value.password || '');
+    return apDraftMatchesDevice({
+      enabled: apEnabled,
+      ssid: apSsid,
+      secure: apSecure,
+      passwordConfigured: apPasswordConfigured,
+      replacingPassword: apReplacingPassword,
+      password: apPassword,
+    }, value);
   }
 
   async function refreshWifi(syncAp = false) {
@@ -820,8 +843,14 @@
   }
 
   function selectStationNetwork(network) {
-    stationSsid = network.ssid;
-    stationSecure = network.secure;
+    const selection = stationSelection(network);
+    stationSsid = selection.ssid;
+    stationSecure = selection.secure;
+    stationPassword = selection.password;
+  }
+
+  function stationSsidChanged() {
+    stationSecure = false;
     stationPassword = '';
   }
 
@@ -836,6 +865,7 @@
     } catch (err) {
       wifiError = describeError(err, 'change station Wi-Fi');
     } finally {
+      stationPassword = '';
       wifiBusy = false;
     }
   }
@@ -865,6 +895,21 @@
     stationCommand({ action: 'forget', ssid }, `${ssid} forgotten.`);
   }
 
+  function apSecureChanged() {
+    apPassword = '';
+    apReplacingPassword = apSecure && !apPasswordConfigured;
+  }
+
+  function beginApPasswordReplacement() {
+    apPassword = '';
+    apReplacingPassword = true;
+  }
+
+  function cancelApPasswordReplacement() {
+    apPassword = '';
+    apReplacingPassword = false;
+  }
+
   async function submitAp() {
     wifiError = '';
     wifiMessage = '';
@@ -872,18 +917,32 @@
       wifiError = 'Enter an access-point network name.';
       return;
     }
-    if (apEnabled && apSecure && apPassword.length < 8) {
+    if (apEnabled && apSecure && !apReplacingPassword &&
+        !apPasswordConfigured) {
+      wifiError = 'Set a new password before enabling this secured access point.';
+      return;
+    }
+    const apPasswordBytes = new TextEncoder().encode(apPassword).length;
+    if (apEnabled && apSecure && apReplacingPassword &&
+        (apPasswordBytes < 8 || apPasswordBytes > 63)) {
       wifiError = 'A secured access point needs a password of at least 8 characters.';
       return;
     }
     if (wifi?.ap?.enabled &&
         (!apEnabled || apSsid !== wifi.ap.ssid || apSecure !== wifi.ap.secure ||
-         (apSecure && apPassword !== wifi.ap.password)) &&
+         apReplacingPassword) &&
         !window.confirm('Changing the active access point may disconnect this browser. Apply these settings?')) return;
 
     wifiBusy = true;
     try {
-      await saveWifiAp({ enabled: apEnabled, ssid: apSsid, secure: apSecure, password: apPassword });
+      await saveWifiAp(apRequestFromDraft({
+        enabled: apEnabled,
+        ssid: apSsid,
+        secure: apSecure,
+        passwordConfigured: apPasswordConfigured,
+        replacingPassword: apReplacingPassword,
+        password: apPassword,
+      }));
       wifiMessage = apEnabled
         ? 'Access-point settings applied. Reconnect to the new network if this browser disconnects.'
         : 'Access point stopped.';
@@ -892,6 +951,7 @@
     } catch (err) {
       wifiError = describeError(err, 'change the access point');
     } finally {
+      apPassword = '';
       wifiBusy = false;
     }
   }
@@ -1621,9 +1681,9 @@
 
           <form class="wifi-connect" on:submit|preventDefault={connectStation}>
             <label for="station-ssid">Network name (SSID)</label>
-            <input id="station-ssid" bind:value={stationSsid} on:input={() => stationSecure = false} maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" />
+            <input id="station-ssid" bind:value={stationSsid} on:input={stationSsidChanged} maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" />
             <label for="station-password">Password</label>
-            <input id="station-password" type="password" bind:value={stationPassword} maxlength="63" autocomplete="current-password" placeholder={stationSecure ? 'Required for this network' : 'Leave empty for an open network'} />
+            <input id="station-password" type="password" bind:value={stationPassword} maxlength="63" autocomplete="new-password" placeholder={stationSecure ? 'Required for this network' : 'Leave empty for an open network'} />
             <button class="primary" type="submit" disabled={wifiBusy || wifiScanBusy || !stationSsid}>Connect</button>
           </form>
 
@@ -1662,9 +1722,21 @@
               <label class="switch-row"><input type="checkbox" bind:checked={apEnabled} /> Enable access point</label>
               <label for="ap-ssid">Network name (SSID)</label>
               <input id="ap-ssid" bind:value={apSsid} maxlength="32" autocomplete="off" autocapitalize="none" spellcheck="false" />
-              <label class="switch-row"><input type="checkbox" bind:checked={apSecure} /> Require a password</label>
-              <label for="ap-password">Access-point password</label>
-              <input id="ap-password" type="password" bind:value={apPassword} maxlength="63" minlength={apSecure ? 8 : undefined} disabled={!apSecure} autocomplete="new-password" />
+              <label class="switch-row"><input type="checkbox" bind:checked={apSecure} on:change={apSecureChanged} /> Require a password</label>
+              {#if apSecure && apPasswordConfigured && !apReplacingPassword}
+                <div class="password-status">
+                  <span>Saved password (not shown)</span>
+                  <button class="secondary compact" type="button" on:click={beginApPasswordReplacement}>Replace password</button>
+                </div>
+              {:else if apSecure}
+                <label for="ap-password">New access-point password</label>
+                <input id="ap-password" type="password" bind:value={apPassword} maxlength="63" minlength="8" autocomplete="new-password" />
+                {#if apPasswordConfigured}
+                  <button class="secondary compact password-cancel" type="button" on:click={cancelApPasswordReplacement}>Cancel replacement</button>
+                {/if}
+              {:else}
+                <p class="field-note password-status-text">Open access point (no password)</p>
+              {/if}
             </fieldset>
             <button class="primary" type="submit" disabled={wifiBusy}>{wifiBusy ? 'Applying…' : 'Apply access-point settings'}</button>
           </form>
@@ -2845,6 +2917,16 @@
     margin: 0.4rem 0 0.2rem;
   }
   .switch-row input { accent-color: var(--accent); }
+  .password-status {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.7rem;
+    color: var(--muted);
+    font-size: 0.82rem;
+  }
+  .password-status-text { margin: 0.2rem 0; }
+  .password-cancel { justify-self: start; }
 
   .saved-title { margin-top: 1rem; }
 
