@@ -9,6 +9,7 @@
 #define ESP_UTILS_LOG_TAG "LvPort"
 #include "esp_lib_utils.h"
 #include "lvgl_v8_port.h"
+#include "board_setup.h"
 #include "ui/input/remote_input.h"
 #include <esp_heap_caps.h>
 #include "memory/heap_policy.h"
@@ -25,6 +26,12 @@ static void *lvgl_buf[LVGL_PORT_BUFFER_NUM_MAX] = {};
 static uint8_t *remote_framebuffer = nullptr;
 static uint16_t remote_framebuffer_width = 0;
 static uint16_t remote_framebuffer_height = 0;
+static uint32_t touch_fault_count = 0;
+static uint32_t touch_fault_streak = 0;
+static uint32_t touch_last_recovery_ms = 0;
+
+static constexpr uint32_t kTouchFaultsBeforeRecovery = 10;
+static constexpr uint32_t kTouchRecoveryCooldownMs = 5000;
 
 static void remote_framebuffer_capture(const lv_area_t *area, const lv_color_t *color_map)
 {
@@ -673,11 +680,60 @@ static void touchpad_read(lv_indev_drv_t *indev_drv, lv_indev_data_t *data)
     /* Read data from touch controller */
     int read_touch_result = tp->readPoints(&point, 1, 0);
     if (read_touch_result > 0) {
-        data->point.x = point.x;
-        data->point.y = point.y;
-        data->state = LV_INDEV_STATE_PRESSED;
+        const int width = lv_disp_get_hor_res(indev_drv->disp);
+        const int height = lv_disp_get_ver_res(indev_drv->disp);
+        if ((point.x >= 0) && (point.x < width) &&
+                (point.y >= 0) && (point.y < height)) {
+            if (touch_fault_streak > 0) {
+                ESP_UTILS_LOGI(
+                    "Valid touch input resumed after %lu faulty frame(s)",
+                    static_cast<unsigned long>(touch_fault_streak)
+                );
+            }
+            touch_fault_streak = 0;
+            data->point.x = point.x;
+            data->point.y = point.y;
+            data->state = LV_INDEV_STATE_PRESSED;
+            return;
+        }
+
+        ++touch_fault_count;
+        ++touch_fault_streak;
+        if ((touch_fault_streak == 1) || ((touch_fault_count % 1000) == 0)) {
+            ESP_UTILS_LOGW(
+                "Ignoring out-of-range touch point (%d,%d), display=%dx%d, total=%lu",
+                point.x, point.y, width, height,
+                static_cast<unsigned long>(touch_fault_count)
+            );
+        }
+    } else if (read_touch_result < 0) {
+        ++touch_fault_count;
+        ++touch_fault_streak;
+        if ((touch_fault_streak == 1) || ((touch_fault_count % 1000) == 0)) {
+            ESP_UTILS_LOGW(
+                "Touch-controller read failed, total=%lu",
+                static_cast<unsigned long>(touch_fault_count)
+            );
+        }
     } else {
-        data->state = LV_INDEV_STATE_RELEASED;
+        touch_fault_streak = 0;
+    }
+
+    data->state = LV_INDEV_STATE_RELEASED;
+
+    const uint32_t now = millis();
+    if ((touch_fault_streak >= kTouchFaultsBeforeRecovery) &&
+            ((touch_last_recovery_ms == 0) ||
+             (now - touch_last_recovery_ms >= kTouchRecoveryCooldownMs))) {
+        ESP_UTILS_LOGW(
+            "Resetting CHSC6540 after %lu consecutive faulty frames",
+            static_cast<unsigned long>(touch_fault_streak)
+        );
+        if (!resetTouchController()) {
+            ESP_UTILS_LOGE("CHSC6540 reset failed");
+        }
+        touch_last_recovery_ms = millis();
+        touch_fault_streak = 0;
     }
 }
 
