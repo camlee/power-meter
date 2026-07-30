@@ -4,19 +4,19 @@
 #include <cstddef>
 #include <limits>
 
-// Sensor roles in this simple solar system:
-//   SENSOR_IN  -- Solar, positive production
-//   SENSOR_OUT -- Load, positive consumption
-//   SENSOR_AUX -- Battery, positive charge and negative discharge
-// Stable In/Out/Aux identifiers remain in APIs and storage until the physical
-// sensor/logical role refactor.
+// Logical roles consumed by power flow, storage, APIs, and UI. Hardware
+// sources are independently identified as Sensor 1/2/3 in sensor_mapping.
 namespace sensors {
 
 enum SensorId : uint8_t {
-    SENSOR_IN = 0,
-    SENSOR_OUT = 1,
-    SENSOR_AUX = 2,
-    SENSOR_COUNT
+    SENSOR_SOLAR = 0,
+    SENSOR_LOAD = 1,
+    SENSOR_BATTERY = 2,
+    SENSOR_COUNT = 3,
+    // Stable aliases for persisted/wire formats that still use In/Out/Aux.
+    SENSOR_IN = SENSOR_SOLAR,
+    SENSOR_OUT = SENSOR_LOAD,
+    SENSOR_AUX = SENSOR_BATTERY,
 };
 
 constexpr uint32_t kSampleIntervalMs = 500;
@@ -108,7 +108,7 @@ struct AdcCaptureWindow {
 struct AdcCaptureStatus {
     AdcCaptureState state = AdcCaptureState::Unavailable;
     uint32_t captureId = 0;
-    SensorId channel = SENSOR_IN;
+    SensorId channel = SENSOR_SOLAR;
     uint16_t pointCount = 0;
     uint8_t windowCount = 0;
     uint8_t targetWindowCount = kAdcCaptureWindowCount;
@@ -117,7 +117,7 @@ struct AdcCaptureStatus {
 
 struct AdcCaptureResult {
     uint32_t captureId = 0;
-    SensorId channel = SENSOR_IN;
+    SensorId channel = SENSOR_SOLAR;
     uint32_t requestedIntervalUs = kFastestAcquisitionIntervalMs * 1000;
     uint32_t measuredIntervalUs = 0;
     uint16_t pointCount = 0;
@@ -148,6 +148,12 @@ const char* adcCaptureStateName(AdcCaptureState state);
 size_t getRecent(SensorId id, Reading* out, size_t maxCount);
 bool getLatest(SensorId id, Reading& out);
 
+// Latest engineering reading for a physical Sensor 1/2/3 channel, after that
+// channel's calibration and current-direction transform but before role
+// mapping. This is the diagnostics/configuration surface; operational
+// consumers should continue using logical getLatest().
+bool getLatestPhysical(uint8_t physicalSensor, Reading& out);
+
 // --- Derived values ----------------------------------------------------------
 // Duty cycle over the most recent `window` samples: mean power / near-peak
 // power, clamped to [0, 1]. 1.0 means the sensor is running flat-out;
@@ -168,9 +174,9 @@ bool getAvailablePower(SensorId id, float& outWatts);
 bool getNetBatteryPower(float& outWatts);
 
 // Preferred user-facing system net power. Positive means charging and
-// negative means discharging. The direct Battery/Aux channel is authoritative;
-// its hardware convention is positive while charging. If Battery is
-// unavailable, Solar/In minus Load/Out is used.
+// negative means discharging. A mapped, valid Battery is authoritative and
+// follows the configured positive-while-charging convention. If Battery is
+// unmapped or unavailable, Solar minus Load is used.
 enum class NetPowerSource : uint8_t {
     Battery,
     SolarLoadFallback,

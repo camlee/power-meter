@@ -156,11 +156,11 @@ void update(lv_timer_t*) {
     if (!screenObject || !lv_obj_is_visible(screenObject)) return;
 
     const size_t solarCount =
-        sensors::getRecent(sensors::SENSOR_IN, readings[sensors::SENSOR_IN], kPointCount);
+        sensors::getRecent(sensors::SENSOR_SOLAR, readings[sensors::SENSOR_SOLAR], kPointCount);
     const size_t loadCount =
-        sensors::getRecent(sensors::SENSOR_OUT, readings[sensors::SENSOR_OUT], kPointCount);
+        sensors::getRecent(sensors::SENSOR_LOAD, readings[sensors::SENSOR_LOAD], kPointCount);
     const size_t batteryCount =
-        sensors::getRecent(sensors::SENSOR_AUX, readings[sensors::SENSOR_AUX], kPointCount);
+        sensors::getRecent(sensors::SENSOR_BATTERY, readings[sensors::SENSOR_BATTERY], kPointCount);
     valueCount = std::max(batteryCount, std::min(solarCount, loadCount));
     if (valueCount > kPointCount) valueCount = kPointCount;
 
@@ -172,12 +172,12 @@ void update(lv_timer_t*) {
             ? valueCount - std::min(solarCount, loadCount) : 0;
         float value = NAN;
         if (i >= batteryOffset) {
-            const auto& battery = readings[sensors::SENSOR_AUX][i - batteryOffset];
+            const auto& battery = readings[sensors::SENSOR_BATTERY][i - batteryOffset];
             if (sensors::isCalculationEligible(battery)) value = battery.power;
         }
         if (!std::isfinite(value) && i >= flowOffset) {
-            const auto& solar = readings[sensors::SENSOR_IN][i - flowOffset];
-            const auto& load = readings[sensors::SENSOR_OUT][i - flowOffset];
+            const auto& solar = readings[sensors::SENSOR_SOLAR][i - flowOffset];
+            const auto& load = readings[sensors::SENSOR_LOAD][i - flowOffset];
             if (sensors::isCalculationEligible(solar) && sensors::isCalculationEligible(load)) {
                 value = solar.power - load.power;
             }
@@ -209,12 +209,12 @@ void update(lv_timer_t*) {
     }
 
     float voltage = NAN;
-    const bool directBattery = eligibleVoltage(sensors::SENSOR_AUX, voltage);
-    if (!directBattery) eligibleVoltage(sensors::SENSOR_OUT, voltage);
+    if (!eligibleVoltage(sensors::SENSOR_BATTERY, voltage)) {
+        eligibleVoltage(sensors::SENSOR_LOAD, voltage);
+    }
     char text[24];
     if (std::isfinite(voltage)) {
-        snprintf(text, sizeof(text), "%.1f V%s",
-                 static_cast<double>(voltage), directBattery ? "" : " (Load)");
+        snprintf(text, sizeof(text), "%.1f V", static_cast<double>(voltage));
     } else {
         snprintf(text, sizeof(text), "-- V");
     }

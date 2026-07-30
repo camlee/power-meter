@@ -29,6 +29,7 @@
 #include "network/web_assets.generated.h"
 #include "sensors/pm1_uart_protocol.h"
 #include "sensors/sensor_calibration.h"
+#include "sensors/sensor_mapping.h"
 #include "sensors/sensor_mode.h"
 #include "sensors/sensor_source_ads1115.h"
 #include "sensors/sensor_source_uart.h"
@@ -99,9 +100,9 @@ void serveWebAsset() {
 
 void webStatus() {
     sensors::Reading in{}, out{}, aux{};
-    const bool hasIn = sensors::getLatest(sensors::SENSOR_IN, in);
-    const bool hasOut = sensors::getLatest(sensors::SENSOR_OUT, out);
-    sensors::getLatest(sensors::SENSOR_AUX, aux);
+    const bool hasIn = sensors::getLatest(sensors::SENSOR_SOLAR, in);
+    const bool hasOut = sensors::getLatest(sensors::SENSOR_LOAD, out);
+    sensors::getLatest(sensors::SENSOR_BATTERY, aux);
     float net = NAN;
     sensors::getNetBatteryPower(net);
     time_service::Anchor anchor{};
@@ -232,17 +233,17 @@ constexpr size_t kAdcCapturePointBytes = 16;
 
 const char* adcCaptureChannelName(sensors::SensorId channel) {
     switch (channel) {
-        case sensors::SENSOR_IN: return "in";
-        case sensors::SENSOR_OUT: return "out";
-        case sensors::SENSOR_AUX: return "aux";
+        case sensors::SENSOR_SOLAR: return "in";
+        case sensors::SENSOR_LOAD: return "out";
+        case sensors::SENSOR_BATTERY: return "aux";
         default: return "in";
     }
 }
 
 bool parseAdcCaptureChannel(const String& value, sensors::SensorId& channel) {
-    if (value == "in") channel = sensors::SENSOR_IN;
-    else if (value == "out") channel = sensors::SENSOR_OUT;
-    else if (value == "aux") channel = sensors::SENSOR_AUX;
+    if (value == "in") channel = sensors::SENSOR_SOLAR;
+    else if (value == "out") channel = sensors::SENSOR_LOAD;
+    else if (value == "aux") channel = sensors::SENSOR_BATTERY;
     else return false;
     return true;
 }
@@ -334,7 +335,7 @@ void webAdcCapture() {
             return;
         }
         String requestedChannel;
-        sensors::SensorId channel = sensors::SENSOR_IN;
+        sensors::SensorId channel = sensors::SENSOR_SOLAR;
         if (!http_utils::jsonString(server->arg("plain"), "channel", requestedChannel) ||
             !parseAdcCaptureChannel(requestedChannel, channel)) {
             server->send(400, "application/json",
@@ -450,13 +451,24 @@ void appendSensorJson(String& json, const char* id, const char* label, sensors::
                       sensor_mode::Mode mode) {
     sensors::Reading reading{};
     const bool hasReading = sensors::getLatest(sensor, reading);
+    sensors::mapping::PhysicalSensorId physical{};
+    const bool mapped =
+        sensors::mapping::physicalForLogical(mode, sensor, physical);
     const bool observed = hasReading &&
         (reading.state == sensors::ReadingState::Valid || reading.state == sensors::ReadingState::OutOfRange);
     json += "{\"id\":\"";
     json += id;
     json += "\",\"label\":\"";
     json += label;
-    json += "\",\"configured\":";
+    json += "\",\"physical_sensor\":";
+    if (mapped) {
+        json += '"';
+        json += sensors::mapping::physicalId(physical);
+        json += '"';
+    } else {
+        json += "null";
+    }
+    json += ",\"configured\":";
     json += (hasReading && reading.configured) ? "true" : "false";
     json += ",\"observed\":";
     json += (observed ? "true" : "false");
@@ -475,26 +487,171 @@ void appendSensorJson(String& json, const char* id, const char* label, sensors::
     appendJsonFloat(json, hasReading ? reading.voltageInputV : NAN);
     json += ",\"input_current_v\":";
     appendJsonFloat(json, hasReading ? reading.currentInputV : NAN);
+    json += ",\"current_multiplier\":";
+    json += String(mapped
+        ? sensors::mapping::currentMultiplier(mode, physical) : 1);
     json += ",\"duty\":{\"state\":\"";
     json += (hasReading ? dutyStateName(reading.dutyState) : "not_reported");
     json += "\",\"value\":";
     appendJsonFloat(json, hasReading ? reading.dutyCycle : NAN);
     json += "},\"calibration\":";
     sensors::calibration::Source calibrationSource{};
-    if (calibrationSourceForMode(mode, calibrationSource)) {
+    if (mapped && calibrationSourceForMode(mode, calibrationSource)) {
         json += "{\"editable\":";
         json += (hasReading && reading.configured) ? "true" : "false";
         json += ",\"voltage\":";
-        appendCalibrationValue(json, calibrationSource, sensor,
+        appendCalibrationValue(
+            json, calibrationSource, static_cast<uint8_t>(physical),
                                sensors::calibration::Measurement::Voltage);
         json += ",\"current\":";
-        appendCalibrationValue(json, calibrationSource, sensor,
+        appendCalibrationValue(
+            json, calibrationSource, static_cast<uint8_t>(physical),
                                sensors::calibration::Measurement::Current);
         json += '}';
     } else {
         json += "null";
     }
     json += '}';
+}
+
+void appendPhysicalSensorJson(
+    String& json, sensor_mode::Mode mode,
+    sensors::mapping::PhysicalSensorId physical,
+    const sensors::mapping::Entry& entry) {
+    const uint8_t index = static_cast<uint8_t>(physical);
+    sensors::Reading reading{};
+    const bool hasReading = sensors::getLatestPhysical(index, reading);
+    const bool observed = hasReading &&
+        (reading.state == sensors::ReadingState::Valid ||
+         reading.state == sensors::ReadingState::OutOfRange);
+    json += "{\"id\":\"";
+    json += sensors::mapping::physicalId(physical);
+    json += "\",\"label\":\"";
+    json += sensors::mapping::physicalLabel(physical);
+    json += "\",\"role\":\"";
+    json += sensors::mapping::roleName(entry.role);
+    json += "\",\"current_direction\":\"";
+    json += sensors::mapping::directionName(entry.currentDirection);
+    json += "\",\"current_multiplier\":";
+    json += String(sensors::mapping::multiplier(entry.currentDirection));
+    json += ",\"source_configured\":";
+    json += (hasReading && reading.configured) ? "true" : "false";
+    json += ",\"observed\":";
+    json += (observed ? "true" : "false");
+    json += ",\"state\":\"";
+    json += (hasReading ? readingStateName(reading.state) : "waiting");
+    json += "\",\"sample_age_ms\":";
+    if (hasReading) {
+        json += String(static_cast<uint32_t>(millis() - reading.timestamp_ms));
+    } else {
+        json += "null";
+    }
+    json += ",\"voltage\":";
+    appendJsonFloat(json, hasReading ? reading.voltage : NAN);
+    json += ",\"current\":";
+    appendJsonFloat(json, hasReading ? reading.current : NAN);
+    json += ",\"power\":";
+    appendJsonFloat(json, hasReading ? reading.power : NAN);
+    json += ",\"input_voltage_v\":";
+    appendJsonFloat(json, hasReading ? reading.voltageInputV : NAN);
+    json += ",\"input_current_v\":";
+    appendJsonFloat(json, hasReading ? reading.currentInputV : NAN);
+    json += ",\"calibration\":";
+    sensors::calibration::Source calibrationSource{};
+    if (calibrationSourceForMode(mode, calibrationSource)) {
+        json += "{\"editable\":";
+        json += (hasReading && reading.configured) ? "true" : "false";
+        json += ",\"voltage\":";
+        appendCalibrationValue(json, calibrationSource, index,
+                               sensors::calibration::Measurement::Voltage);
+        json += ",\"current\":";
+        appendCalibrationValue(json, calibrationSource, index,
+                               sensors::calibration::Measurement::Current);
+        json += '}';
+    } else {
+        json += "null";
+    }
+    json += '}';
+}
+
+void appendSensorMappingJson(String& json, sensor_mode::Mode mode) {
+    const sensors::mapping::Profile profile = sensors::mapping::get(mode);
+    json = "{\"api_version\":1,\"source\":\"";
+    json += sensor_mode::name(mode);
+    json += "\",\"requires_restart\":true,\"physical_sensors\":[";
+    for (uint8_t index = 0; index < sensors::mapping::kPhysicalSensorCount;
+         ++index) {
+        if (index) json += ',';
+        appendPhysicalSensorJson(
+            json, mode,
+            static_cast<sensors::mapping::PhysicalSensorId>(index),
+            profile.physical[index]);
+    }
+    json += "]}";
+}
+
+void webSensorMapping() {
+    const sensor_mode::Mode mode = sensor_mode::get();
+    if (server->method() == HTTP_GET) {
+        String json;
+        json.reserve(2600);
+        appendSensorMappingJson(json, mode);
+        server->sendHeader("Cache-Control", "no-store");
+        server->send(200, "application/json", json);
+        return;
+    }
+
+    const String body = server->arg("plain");
+    String requestedSource;
+    if (!http_utils::jsonString(body, "source", requestedSource) ||
+        requestedSource != sensor_mode::name(mode)) {
+        server->send(
+            409, "application/json",
+            "{\"error\":\"mapping source must match the active sensor source\"}");
+        return;
+    }
+
+    sensors::mapping::Profile candidate{};
+    for (uint8_t index = 0; index < sensors::mapping::kPhysicalSensorCount;
+         ++index) {
+        char roleKey[24];
+        char directionKey[36];
+        snprintf(roleKey, sizeof(roleKey), "sensor%u_role", index + 1);
+        snprintf(directionKey, sizeof(directionKey),
+                 "sensor%u_current_direction", index + 1);
+        String role;
+        String direction;
+        if (!http_utils::jsonString(body, roleKey, role) ||
+            !http_utils::jsonString(body, directionKey, direction) ||
+            !sensors::mapping::parseRole(
+                role.c_str(), candidate.physical[index].role) ||
+            !sensors::mapping::parseDirection(
+                direction.c_str(),
+                candidate.physical[index].currentDirection)) {
+            server->send(
+                400, "application/json",
+                "{\"error\":\"invalid or incomplete sensor mapping\"}");
+            return;
+        }
+    }
+    if (!sensors::mapping::isValid(candidate)) {
+        server->send(
+            400, "application/json",
+            "{\"error\":\"map Solar and Load exactly once; Battery at most once\"}");
+        return;
+    }
+    if (!sensors::mapping::set(mode, candidate)) {
+        server->send(
+            500, "application/json",
+            "{\"error\":\"could not persist sensor mapping\"}");
+        return;
+    }
+
+    server->sendHeader("Cache-Control", "no-store");
+    server->send(
+        200, "application/json", "{\"ok\":true,\"restarting\":true}");
+    delay(250);
+    ESP.restart();
 }
 
 void sendHistoryJobState(uint32_t job, const char* resource) {
@@ -616,11 +773,11 @@ void webSensors() {
         json += "null";
     }
     json += "},\"channels\":[";
-    appendSensorJson(json, "in", "Solar", sensors::SENSOR_IN, mode);
+    appendSensorJson(json, "in", "Solar", sensors::SENSOR_SOLAR, mode);
     json += ',';
-    appendSensorJson(json, "out", "Load", sensors::SENSOR_OUT, mode);
+    appendSensorJson(json, "out", "Load", sensors::SENSOR_LOAD, mode);
     json += ',';
-    appendSensorJson(json, "aux", "Battery", sensors::SENSOR_AUX, mode);
+    appendSensorJson(json, "aux", "Battery", sensors::SENSOR_BATTERY, mode);
     json += "]}";
     server->sendHeader("Cache-Control", "no-store");
     server->send(200, "application/json", json);
@@ -643,10 +800,31 @@ void webSensorCalibration() {
         server->send(400, "application/json", "{\"error\":\"invalid calibration request\"}");
         return;
     }
-    uint8_t sensor = sensors::SENSOR_COUNT;
-    if (sensorName == "in") sensor = sensors::SENSOR_IN;
-    else if (sensorName == "out") sensor = sensors::SENSOR_OUT;
-    else if (sensorName == "aux") sensor = sensors::SENSOR_AUX;
+    uint8_t physicalSensor = sensors::mapping::kPhysicalSensorCount;
+    sensors::Reading reading{};
+    bool hasReading = false;
+    sensors::SensorId logical = sensors::SENSOR_COUNT;
+    if (sensorName == "in") logical = sensors::SENSOR_SOLAR;
+    else if (sensorName == "out") logical = sensors::SENSOR_LOAD;
+    else if (sensorName == "aux") logical = sensors::SENSOR_BATTERY;
+    if (logical < sensors::SENSOR_COUNT) {
+        sensors::mapping::PhysicalSensorId physical;
+        if (sensors::mapping::physicalForLogical(mode, logical, physical)) {
+            physicalSensor = static_cast<uint8_t>(physical);
+            hasReading = sensors::getLatest(logical, reading);
+        }
+    } else {
+        for (uint8_t index = 0;
+             index < sensors::mapping::kPhysicalSensorCount; ++index) {
+            const auto physical =
+                static_cast<sensors::mapping::PhysicalSensorId>(index);
+            if (sensorName == sensors::mapping::physicalId(physical)) {
+                physicalSensor = index;
+                hasReading = sensors::getLatestPhysical(index, reading);
+                break;
+            }
+        }
+    }
     sensors::calibration::Measurement measurement;
     if (measurementName == "voltage") measurement = sensors::calibration::Measurement::Voltage;
     else if (measurementName == "current") measurement = sensors::calibration::Measurement::Current;
@@ -655,16 +833,17 @@ void webSensorCalibration() {
         return;
     }
     const sensors::calibration::Value value{gain, offset};
-    if (sensor >= sensors::SENSOR_COUNT || !sensors::calibration::isValid(measurement, value)) {
+    if (physicalSensor >= sensors::mapping::kPhysicalSensorCount ||
+        !sensors::calibration::isValid(measurement, value)) {
         server->send(400, "application/json", "{\"error\":\"calibration value is outside allowed limits\"}");
         return;
     }
-    sensors::Reading reading{};
-    if (!sensors::getLatest(static_cast<sensors::SensorId>(sensor), reading) || !reading.configured) {
+    if (!hasReading || !reading.configured) {
         server->send(409, "application/json", "{\"error\":\"sensor channel is not configured\"}");
         return;
     }
-    if (!sensors::calibration::set(source, sensor, measurement, value)) {
+    if (!sensors::calibration::set(
+            source, physicalSensor, measurement, value)) {
         server->send(500, "application/json", "{\"error\":\"could not persist calibration\"}");
         return;
     }
@@ -823,6 +1002,7 @@ void webSetup() {
 
     if (resetSetup) {
         if (!clearPreferences("device") || !clearPreferences("sensors") ||
+            !clearPreferences("sensor_map") ||
             !clearPreferences("appearance") || !clearPreferences("status_oled")) {
             server->send(500, "application/json", "{\"error\":\"Could not reset setup preferences.\"}");
             return;
@@ -1432,6 +1612,8 @@ void registerRoutes(WebServer& value) {
     server->on("/api/v1/cycles", HTTP_POST, webCycles);
     server->on("/api/v1/web/status", HTTP_GET, webStatus);
     server->on("/api/v1/sensors", HTTP_GET, webSensors);
+    server->on("/api/v1/sensors/mapping", HTTP_GET, webSensorMapping);
+    server->on("/api/v1/sensors/mapping", HTTP_PUT, webSensorMapping);
     server->on("/api/v1/sensors/calibration", HTTP_POST, webSensorCalibration);
     server->on("/api/v1/sensors/capture", HTTP_GET, webAdcCapture);
     server->on("/api/v1/sensors/capture", HTTP_POST, webAdcCapture);

@@ -17,7 +17,7 @@ struct Pins {
 };
 
 // Confirmed VIEWE physical order and wiring. This remains the only place GPIO
-// assignments live so acquisition and UI code operate on sensor identities.
+// assignments live so acquisition code operates only on physical identities.
 constexpr Pins kPins[] = {
     {.voltage = 6, .current = 5},   // Sensor 1: Solar (legacy In)
     {.voltage = 10, .current = 9},  // Sensor 2: Load (legacy Out)

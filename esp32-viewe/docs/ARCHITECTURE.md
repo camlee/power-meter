@@ -25,21 +25,22 @@ All functionality must remain useful with no network, NTP, or peer available.
 
 ## Hardware and electrical model
 
-There are three independent channels:
+There are three physical measurement channels and three logical roles:
 
-| Logical channel | Meaning now | Role in system calculations |
+| Logical role | Stable wire/storage ID | Role in system calculations |
 | --- | --- | --- |
-| `In` | **Solar** input to the battery system | Positive production |
-| `Out` | **Load** output from the battery system | Positive consumption |
-| `Aux` | **Battery** bidirectional measurement | Positive charge, negative discharge |
+| **Solar** | `In` | Positive production |
+| **Load** | `Out` | Positive consumption |
+| **Battery** | `Aux` | Positive charge, negative discharge |
 
 The VIEWE local ADC target has a voltage and current input for each channel:
-Sensor 1 / Solar uses voltage GPIO 6 and current GPIO 5; Sensor 2 / Load uses
-voltage GPIO 10 and current GPIO 9; Sensor 3 / Battery uses voltage GPIO 8 and
-current GPIO 7. Sources and devices may provide only a subset of the logical
-channels. Presence is explicit configuration/data; a floating ADC value is not
-attachment detection. Logical-role and polarity mapping becomes persisted
-configuration in the sensor-mapping milestone.
+Sensor 1 uses voltage GPIO 6 and current GPIO 5; Sensor 2 uses voltage GPIO 10
+and current GPIO 9; Sensor 3 uses voltage GPIO 8 and current GPIO 7. Each
+acquisition source has a versioned NVS profile assigning every physical sensor
+to Solar, Load, Battery, or Unmapped and selecting normal/reversed current.
+Solar and Load must each be assigned exactly once; Battery is optional.
+Presence is explicit configuration/data—a floating ADC value is not attachment
+detection.
 
 Initial nominal transfer functions, applied to calibrated ADC input voltage in
 volts, are:
@@ -47,8 +48,16 @@ volts, are:
 ```text
 measured_voltage_V = (adc_V - 0.000) / 0.027027
 measured_current_A = (adc_V - 1.667) / 0.026667
-power_W            = measured_voltage_V * measured_current_A
+effective_current_A = measured_current_A * current_direction
+power_W             = measured_voltage_V * effective_current_A
 ```
+
+Factory mapping is Sensor 1 = Solar, Sensor 2 = Load, and Sensor 3 = Battery.
+The ESP32 ADC profile defaults Sensor 3 to `current_direction = -1`, preserving
+the installed meter correction; its other sensors use `+1`. Demo, UART, and
+ADS1115 default all directions to `+1`. Direction is applied after physical
+calibration, so saved gain/offset values and raw input voltages are unchanged
+when a sensor is remapped.
 
 The ADC input range is expected to be 0–3.3 V. This is an electrical design
 constraint, not a promise that every ESP32 ADC reading is intrinsically
@@ -61,9 +70,13 @@ hardware validation will establish per-channel offsets and gains.
 Demo / ESP32 ADC / ADS1115 / UART sources
         |
         v
-Sensor source contract -------> sensors (validation, buffers, derived values)
-        |                                |
-        |                                +--> live UI
+physical Sensor 1/2/3 --> calibration --> current direction
+        |
+        v
+persisted role mapping --> logical Solar/Load/optional Battery
+        |
+        v
+sensors (validation, buffers, derived values) --> live UI
         v
 Measurement/energy aggregation --> persistent history --> historical UI/API
         |
@@ -75,12 +88,14 @@ Network services --> Wi-Fi UI, NTP/browser time, web app/API, OTA, remote displa
 ### 1. Sensor acquisition
 
 `sensors/` owns acquisition and exposes thread-safe normalized readings.
-`SensorSource` is the acquisition boundary. A source returns channel presence,
-health, timestamps, voltage/current, and optionally direct duty. ESP32 ADC and
-ADS1115 values are raw inputs to their own source-specific calibration; Demo
-and UART values are already engineering units. The service validates values,
-applies calibration exactly once, derives power once, and owns short in-memory
-histories.
+`SensorSource` is the physical acquisition boundary. A source returns Sensor
+1/2/3 presence, health, voltage/current, and optionally direct duty. ESP32 ADC
+and ADS1115 values are raw inputs to source-specific, per-physical-sensor
+calibration; Demo and UART values are already engineering units. The service
+applies calibration and physical current direction exactly once, derives power
+once, maps the readings to logical roles, and owns short logical histories. It
+also retains only the latest physical readings for diagnostics, avoiding a
+second set of history buffers.
 
 Realtime Demo remains valuable for exercising the complete live/history path.
 The ESP32 ADC and external ADS1115 sources are independently build-selectable.
@@ -93,7 +108,7 @@ shared frame source rather than three independent serial readers.
 Physical ADC sources use one continuous high-rate acquisition task. Its
 source-specific scheduler targets are 5 ms for the built-in ESP32 ADC and
 15 ms for ADS1115. Each loop acquires voltage and current together for every
-configured logical channel, calibrates those observations, and adds them to
+configured physical channel, calibrates those observations, and adds them to
 the production reducer. The reducer publishes one `Reading` per channel every
 500 ms; normal power, duty, energy, and history consumers continue to use that
 stream. ADS1115's nominal conversion rate applies to individual conversions,
@@ -148,8 +163,10 @@ Current LVGL top-level screens are:
   a floating conflict stack that preserves every magnitude. Inferred two-sensor
   history has no Balance series. Normal stacks order Battery charge/discharge
   at zero, then Solar/Load, with any Balance residual at the outer tip.
-- **Power:** Solar, Load, Battery, and Balance live metrics.
-- **Sensors:** raw per-sensor voltage/current/power and short trend charts.
+- **Power:** Solar and Load live metrics, plus Battery and Balance when Battery
+  is mapped.
+- **Sensors:** raw voltage/current/power and short trend charts for mapped
+  logical sensors only.
 - **Settings:** nested configuration and diagnostics pages:
   - **Wi-Fi:** station scan/connect, station IP/RSSI, plus local AP control
     and its gateway IP;
@@ -280,11 +297,17 @@ the first network contract should work over ordinary Wi-Fi AP/station mode.
 
 Configuration belongs in NVS/Preferences and is versioned. It includes the V1
 `ADC | ADS1115 | UART | Demo` sensor source mode, source-specific calibration
-values, device identity, and
-Wi-Fi/AP settings. Persisted source-specific channel enable masks remain an
-active follow-up; source-advertised presence already flows through the runtime
-model. No alpha source-mode compatibility is required. Future peer/service
-settings are out of the current phase.
+values, per-source physical-to-logical mapping/current directions, device
+identity, and Wi-Fi/AP settings. Mapping lives in the `sensor_map` namespace;
+calibration remains in `sensor_cal` and follows its physical sensor when roles
+change. The mapping API is `GET/PUT /api/v1/sensors/mapping`; phase (d) exposes
+the contract, and the LVGL Setup editor applies that same contract for the
+active source. It previews physical V/A/W readings, direction changes, and
+Balance before saving; the Web editor remains future work. Applying a mapping
+restarts acquisition so logical history cannot mix roles. Source-advertised
+presence already flows through the runtime model. No alpha source-mode
+compatibility is required. Future peer/service settings are out of the current
+phase.
 
 Secrets need an explicit security policy before remote access is introduced.
 The current plain NVS credential storage is acceptable only as a local-device

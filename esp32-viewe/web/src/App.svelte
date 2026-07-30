@@ -37,6 +37,11 @@
     apRequestFromDraft,
     stationSelection,
   } from './lib/wifiDraft.js';
+  import {
+    adcInputFromEngineering,
+    calibratedPreview,
+    calculatedGain,
+  } from './lib/calibrationMath.js';
   import { powerBalance } from './lib/powerFlow.js';
 
   // ---------------------------------------------------------------------
@@ -533,20 +538,21 @@
     calibrationError = calibrationMessage = '';
   }
 
-  function adcInputFromEngineering(displayed, calibration) {
-    if (!Number.isFinite(displayed) || !Number.isFinite(calibration?.gain) ||
-        calibration.gain <= 0 || !Number.isFinite(calibration?.offset_input_v)) {
-      return Number.NaN;
-    }
-    return displayed / calibration.gain + calibration.offset_input_v;
+  function calibrationMultiplier(editor, channel) {
+    return editor?.measurement === 'current'
+      ? channel?.current_multiplier ?? 1
+      : 1;
   }
 
   function rawCalibrationPoints(editor, sensor, channel, sensorReadings) {
     if (!editor || editor.sensor !== sensor) return [];
     const saved = channel?.calibration?.[editor.measurement];
+    const multiplier = calibrationMultiplier(editor, channel);
     return sensorReadings.map((point) => ({
       ...point,
-      raw_input_v: adcInputFromEngineering(point[editor.measurement], saved),
+      raw_input_v: adcInputFromEngineering(
+        point[editor.measurement], saved, multiplier,
+      ),
     }));
   }
 
@@ -554,9 +560,17 @@
     if (!editor || editor.sensor !== sensor) return [];
     const saved = channel?.calibration?.[editor.measurement];
     if (!saved || !Number.isFinite(editor.gain) || editor.gain <= 0) return [];
+    const multiplier = calibrationMultiplier(editor, channel);
     return sensorReadings.map((point) => {
-      const input = adcInputFromEngineering(point[editor.measurement], saved);
-      return { ...point, preview: (input - editor.offset) * editor.gain };
+      const input = adcInputFromEngineering(
+        point[editor.measurement], saved, multiplier,
+      );
+      return {
+        ...point,
+        preview: calibratedPreview(
+          input, editor.gain, editor.offset, multiplier,
+        ),
+      };
     });
   }
 
@@ -568,12 +582,17 @@
 
   function calculateCalibration() {
     const reference = Number(calibrationReference);
-    const denominator = calibrationInput - calibrationEditor.offset;
-    if (!Number.isFinite(reference) || reference <= 0 || !Number.isFinite(denominator) || Math.abs(denominator) < 0.005) {
+    const gain = calculatedGain(
+      reference,
+      calibrationInput,
+      calibrationEditor.offset,
+      calibrationMultiplier(calibrationEditor, selectedChannel),
+    );
+    if (!Number.isFinite(gain)) {
       calibrationError = 'Enter a positive reference while the measured input is away from the configured zero.';
       return;
     }
-    calibrationEditor = { ...calibrationEditor, gain: reference / denominator };
+    calibrationEditor = { ...calibrationEditor, gain };
     calibrationError = '';
   }
 

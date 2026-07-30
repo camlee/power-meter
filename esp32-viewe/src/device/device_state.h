@@ -11,6 +11,7 @@ enum class Domain : uint8_t {
     DeviceIdentity,
     Network,
     Calibration,
+    SensorMapping,
     Time,
     History,
     Update,

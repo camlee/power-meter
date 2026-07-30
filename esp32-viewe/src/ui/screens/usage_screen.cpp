@@ -231,10 +231,10 @@ void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
             chartStorage->stacked[4][point] =
                 bucket.componentAveragePowerW[historical_storage::PANEL_USAGE];
         } else {
-            const float solar = channelAveragePower(bucket, sensors::SENSOR_IN);
-            const float load = channelAveragePower(bucket, sensors::SENSOR_OUT);
+            const float solar = channelAveragePower(bucket, sensors::SENSOR_SOLAR);
+            const float load = channelAveragePower(bucket, sensors::SENSOR_LOAD);
             const float directBattery =
-                channelAveragePower(bucket, sensors::SENSOR_AUX);
+                channelAveragePower(bucket, sensors::SENSOR_BATTERY);
             const bool batteryMeasured = std::isfinite(directBattery);
             hasMeasuredBattery = hasMeasuredBattery || batteryMeasured;
             float battery = directBattery;

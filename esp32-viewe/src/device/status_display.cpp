@@ -76,8 +76,8 @@ void drawDense() {
         network_manager::getState() == network_manager::NetworkState::ConnectedStaInternet;
     display.printf("%s\n", stationConnected ? network_manager::getStaIpAddress() :
                    (network_manager::isApEnabled() ? network_manager::getApIpAddress() : "0.0.0.0"));
-    printReading("Sol", sensors::SENSOR_IN);
-    printReading("Load", sensors::SENSOR_OUT);
+    printReading("Sol", sensors::SENSOR_SOLAR);
+    printReading("Load", sensors::SENSOR_LOAD);
     display.printf("%s  WS:%u\n", sensor_mode::label(),
                    static_cast<unsigned>(live_websocket_service::clientCount()));
 }
@@ -137,9 +137,9 @@ void drawSummary() {
     }
 
     display.setCursor(0, 36);
-    printSummaryPower("SOLAR", sensors::SENSOR_IN);
+    printSummaryPower("SOLAR", sensors::SENSOR_SOLAR);
     display.setCursor(0, 57);
-    printSummaryPower("LOAD", sensors::SENSOR_OUT);
+    printSummaryPower("LOAD", sensors::SENSOR_LOAD);
 }
 
 void draw() {

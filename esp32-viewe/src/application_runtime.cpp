@@ -47,17 +47,18 @@ historical_storage::SampleFrame makeHistoryFrame(uint32_t now) {
         }
     }
 
-    const bool haveIn = present[sensors::SENSOR_IN] &&
-                        sensors::isCalculationEligible(readings[sensors::SENSOR_IN]);
-    const bool haveOut = present[sensors::SENSOR_OUT] &&
-                         sensors::isCalculationEligible(readings[sensors::SENSOR_OUT]);
-    const bool haveBattery = present[sensors::SENSOR_AUX] &&
-                             sensors::isCalculationEligible(readings[sensors::SENSOR_AUX]);
-    if (haveIn && haveOut) {
-        const float in = readings[sensors::SENSOR_IN].power;
-        const float out = readings[sensors::SENSOR_OUT].power;
-        const float net = in - out;
-        const float panelToLoad = std::min(std::max(in, 0.0f), std::max(out, 0.0f));
+    const bool haveSolar = present[sensors::SENSOR_SOLAR] &&
+                           sensors::isCalculationEligible(readings[sensors::SENSOR_SOLAR]);
+    const bool haveLoad = present[sensors::SENSOR_LOAD] &&
+                          sensors::isCalculationEligible(readings[sensors::SENSOR_LOAD]);
+    const bool haveBattery = present[sensors::SENSOR_BATTERY] &&
+                             sensors::isCalculationEligible(readings[sensors::SENSOR_BATTERY]);
+    if (haveSolar && haveLoad) {
+        const float solar = readings[sensors::SENSOR_SOLAR].power;
+        const float load = readings[sensors::SENSOR_LOAD].power;
+        const float net = solar - load;
+        const float panelToLoad =
+            std::min(std::max(solar, 0.0f), std::max(load, 0.0f));
         frame.componentPowerW[historical_storage::PANEL_IN] = panelToLoad;
         frame.componentPowerW[historical_storage::PANEL_USAGE] = panelToLoad;
         frame.eligibleComponentMask |=
@@ -73,7 +74,7 @@ historical_storage::SampleFrame makeHistoryFrame(uint32_t now) {
     }
 
     if (!hardware_profile::kControllerIsPwm && haveBattery) {
-        const float battery = readings[sensors::SENSOR_AUX].power;
+        const float battery = readings[sensors::SENSOR_BATTERY].power;
         frame.componentPowerW[historical_storage::BATTERY_CHARGING] =
             std::max(battery, 0.0f);
         frame.componentPowerW[historical_storage::BATTERY_USAGE] =
@@ -83,15 +84,19 @@ historical_storage::SampleFrame makeHistoryFrame(uint32_t now) {
                                  (1U << historical_storage::BATTERY_USAGE));
     }
 
-    if (haveIn) {
-        float availableInPowerW = 0.0f;
-        if (sensors::getAvailablePower(sensors::SENSOR_IN, availableInPowerW) &&
-            std::isfinite(availableInPowerW)) {
+    if (haveSolar) {
+        float availableSolarPowerW = 0.0f;
+        if (sensors::getAvailablePower(
+                sensors::SENSOR_SOLAR, availableSolarPowerW) &&
+            std::isfinite(availableSolarPowerW)) {
             frame.componentPowerW[historical_storage::PANEL_SURPLUS] =
-                std::max(availableInPowerW - readings[sensors::SENSOR_IN].power, 0.0f);
+                std::max(
+                    availableSolarPowerW -
+                        readings[sensors::SENSOR_SOLAR].power,
+                    0.0f);
             frame.eligibleComponentMask |=
                 static_cast<uint8_t>(1U << historical_storage::PANEL_SURPLUS);
-        } else if (readings[sensors::SENSOR_IN].dutyState == sensors::DutyState::Invalid) {
+        } else if (readings[sensors::SENSOR_SOLAR].dutyState == sensors::DutyState::Invalid) {
             frame.qualityFlags |= historical_storage::QUALITY_REJECTED;
         }
     }

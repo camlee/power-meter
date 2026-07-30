@@ -22,9 +22,12 @@ constexpr float kVoltageMaxV = kMaximumVoltageV;
 constexpr float kCurrentMaxA = kMaximumCurrentA;
 
 void init();
-Value defaults(Source source, uint8_t sensor, Measurement measurement);
-Value get(Source source, uint8_t sensor, Measurement measurement);
-bool set(Source source, uint8_t sensor, Measurement measurement, Value value);
+// Calibration belongs to the physical Sensor 1/2/3 channel, so it follows the
+// hardware if that channel is assigned to a different logical role.
+Value defaults(Source source, uint8_t physicalSensor, Measurement measurement);
+Value get(Source source, uint8_t physicalSensor, Measurement measurement);
+bool set(Source source, uint8_t physicalSensor, Measurement measurement,
+         Value value);
 bool isValid(Measurement measurement, Value value);
 float apply(float inputV, Value value);
 

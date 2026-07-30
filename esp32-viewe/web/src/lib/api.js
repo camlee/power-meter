@@ -10,6 +10,30 @@ export async function getSensors() {
   return response.json();
 }
 
+export async function getSensorMapping() {
+  const response = await fetch('/api/v1/sensors/mapping', {
+    cache: 'no-store',
+  });
+  if (!response.ok) throw await responseError(response, 'sensor mapping');
+  return response.json();
+}
+
+export async function saveSensorMapping(mapping) {
+  const body = { source: mapping.source };
+  for (const sensor of mapping.physical_sensors || []) {
+    body[`${sensor.id}_role`] = sensor.role;
+    body[`${sensor.id}_current_direction`] = sensor.current_direction;
+  }
+  const response = await fetch('/api/v1/sensors/mapping', {
+    method: 'PUT',
+    cache: 'no-store',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) throw await responseError(response, 'sensor mapping');
+  return response.json();
+}
+
 export async function getHistoryFiles(dataset = 'real', offset = 0, limit = 25) {
   const params = new URLSearchParams({ dataset, offset: String(offset), limit: String(limit) });
   const response = await fetch(`/api/v1/history/files?${params}`, { cache: 'no-store' });

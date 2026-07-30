@@ -7,6 +7,7 @@
 #include "sensor_source_uart.h"
 #include "sensor_mode.h"
 #include "sensor_calibration.h"
+#include "sensor_mapping.h"
 #include "memory/heap_policy.h"
 #include <algorithm>
 #include <cmath>
@@ -22,8 +23,11 @@ namespace {
 Reading buffer[SENSOR_COUNT][kHistorySize];
 size_t writeIndex[SENSOR_COUNT] = {0, 0, 0};
 size_t count[SENSOR_COUNT] = {0, 0, 0};
+Reading physicalLatest[mapping::kPhysicalSensorCount];
+bool hasPhysicalLatest[mapping::kPhysicalSensorCount] = {false, false, false};
 SemaphoreHandle_t mutex = nullptr; // one mutex guards all 3 buffers; they're small
 SemaphoreHandle_t captureMutex = nullptr;
+mapping::Profile activeMapping{};
 
 // Below this, mean/peak power is too small to say anything meaningful about
 // duty cycle, so we just report 1.0 (fully on) instead of a noisy ratio.
@@ -179,14 +183,39 @@ uint32_t allocateCaptureIdLocked() {
     return result;
 }
 
-void publishReadings(const Reading readings[SENSOR_COUNT]) {
+void publishReadings(
+    const Reading logicalReadings[SENSOR_COUNT],
+    const Reading physicalReadings[mapping::kPhysicalSensorCount]) {
     xSemaphoreTake(mutex, portMAX_DELAY);
     for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-        buffer[i][writeIndex[i]] = readings[i];
+        buffer[i][writeIndex[i]] = logicalReadings[i];
         writeIndex[i] = (writeIndex[i] + 1) % kHistorySize;
         if (count[i] < kHistorySize) count[i]++;
     }
+    for (uint8_t i = 0; i < mapping::kPhysicalSensorCount; ++i) {
+        physicalLatest[i] = physicalReadings[i];
+        hasPhysicalLatest[i] = true;
+    }
     xSemaphoreGive(mutex);
+}
+
+void mapPhysicalReadings(
+    uint32_t now,
+    const Reading physical[mapping::kPhysicalSensorCount],
+    Reading logical[SENSOR_COUNT]) {
+    for (uint8_t i = 0; i < SENSOR_COUNT; ++i) {
+        logical[i] = {};
+        logical[i].timestamp_ms = now;
+        logical[i].state = ReadingState::NotConfigured;
+    }
+    for (uint8_t i = 0; i < mapping::kPhysicalSensorCount; ++i) {
+        SensorId role;
+        if (mapping::logicalForPhysical(
+                activeMapping, static_cast<mapping::PhysicalSensorId>(i),
+                role)) {
+            logical[role] = physical[i];
+        }
+    }
 }
 
 void armCaptureAtWindowBoundary(uint32_t nowUs) {
@@ -200,17 +229,25 @@ void armCaptureAtWindowBoundary(uint32_t nowUs) {
     xSemaphoreGive(captureMutex);
 }
 
-void captureAdcPoint(const uint32_t observedUs[SENSOR_COUNT],
-                     const Reading readings[SENSOR_COUNT]) {
+void captureAdcPoint(
+    const uint32_t observedUs[mapping::kPhysicalSensorCount],
+    const Reading readings[mapping::kPhysicalSensorCount]) {
     if (!captureMutex) return;
     xSemaphoreTake(captureMutex, portMAX_DELAY);
     expireCaptureLocked(millis());
     if (captureState == AdcCaptureState::Capturing && captureResult) {
         const SensorId channel = captureResult->channel;
-        const Reading& reading = readings[channel];
+        mapping::PhysicalSensorId physical;
+        if (!mapping::physicalForLogical(activeMapping, channel, physical)) {
+            releaseCaptureLocked();
+            xSemaphoreGive(captureMutex);
+            return;
+        }
+        const uint8_t physicalIndex = static_cast<uint8_t>(physical);
+        const Reading& reading = readings[physicalIndex];
         if (captureResult->pointCount < kAdcCapturePointCapacity) {
             AdcCapturePoint& point = captureResult->points[captureResult->pointCount++];
-            point.elapsedUs = observedUs[channel] - captureStartedUs;
+            point.elapsedUs = observedUs[physicalIndex] - captureStartedUs;
             point.voltage = reading.voltage;
             point.current = reading.current;
             point.power = reading.power;
@@ -251,23 +288,27 @@ void finishCaptureWindow(uint32_t nowUs, const Reading readings[SENSOR_COUNT]) {
     xSemaphoreGive(captureMutex);
 }
 
-SensorSource* makeSource(SensorId id) {
-    if (id >= SENSOR_COUNT) return nullptr;
+SensorSource* makeSource(mapping::PhysicalSensorId id) {
+    const uint8_t index = static_cast<uint8_t>(id);
+    if (index >= mapping::kPhysicalSensorCount) return nullptr;
     switch (sensor_mode::get()) {
         case sensor_mode::Mode::Demo:
-            return new SimulatedSensorSource(static_cast<uint8_t>(id));
+            return new SimulatedSensorSource(index);
         case sensor_mode::Mode::Uart:
-            return new UartPm1SensorSource(static_cast<uint8_t>(id));
+            return new UartPm1SensorSource(index);
         case sensor_mode::Mode::Adc: {
-            const config::Pins& pins = config::kPins[id];
+            const config::Pins& pins = config::kPins[index];
             return new Esp32AnalogSource(pins.voltage, pins.current);
         }
         case sensor_mode::Mode::Ads1115:
 #if POWER_METER_HAS_ADS1115
             switch (id) {
-                case SENSOR_IN: return new Ads1115SensorSource(id, 1, 0);
-                case SENSOR_OUT: return new Ads1115SensorSource(id, 3, 2);
-                case SENSOR_AUX: return new Ads1115SensorSource(id, 0, 0, false);
+                case mapping::PhysicalSensorId::Sensor1:
+                    return new Ads1115SensorSource(index, 1, 0);
+                case mapping::PhysicalSensorId::Sensor2:
+                    return new Ads1115SensorSource(index, 3, 2);
+                case mapping::PhysicalSensorId::Sensor3:
+                    return new Ads1115SensorSource(index, 0, 0, false);
                 default: return nullptr;
             }
 #else
@@ -276,12 +317,13 @@ SensorSource* makeSource(SensorId id) {
     }
     return nullptr;
 }
-SensorSource* sources[SENSOR_COUNT] = {nullptr, nullptr, nullptr};
-bool sourceReady[SENSOR_COUNT] = {false, false, false};
-uint32_t lastSourceInitAttemptMs[SENSOR_COUNT] = {0, 0, 0};
+SensorSource* sources[mapping::kPhysicalSensorCount] = {nullptr, nullptr, nullptr};
+bool sourceReady[mapping::kPhysicalSensorCount] = {false, false, false};
+uint32_t lastSourceInitAttemptMs[mapping::kPhysicalSensorCount] = {0, 0, 0};
 constexpr uint32_t kSourceInitRetryMs = 5000;
 
-Reading makeReading(uint32_t now, SensorSample sample, bool applyCalibration, uint8_t sensor) {
+Reading makeReading(uint32_t now, SensorSample sample, bool applyCalibration,
+                    mapping::PhysicalSensorId physicalSensor) {
     Reading reading;
     reading.timestamp_ms = now;
     reading.configured = sample.configured;
@@ -312,11 +354,18 @@ Reading makeReading(uint32_t now, SensorSample sample, bool applyCalibration, ui
         const calibration::Source calibrationSource =
             sensor_mode::get() == sensor_mode::Mode::Ads1115
                 ? calibration::Source::Ads1115 : calibration::Source::Esp32Adc;
+        const uint8_t physicalIndex = static_cast<uint8_t>(physicalSensor);
         reading.voltage = calibration::apply(
-            sample.voltage, calibration::get(calibrationSource, sensor, calibration::Measurement::Voltage));
+            sample.voltage, calibration::get(
+                calibrationSource, physicalIndex,
+                calibration::Measurement::Voltage));
         reading.current = calibration::apply(
-            sample.current, calibration::get(calibrationSource, sensor, calibration::Measurement::Current));
+            sample.current, calibration::get(
+                calibrationSource, physicalIndex,
+                calibration::Measurement::Current));
     }
+    reading.current *= static_cast<float>(
+        mapping::currentMultiplier(activeMapping, physicalSensor));
 
     if (sample.hasDutyCycle) {
         reading.dutyCycle = sample.dutyCycle;
@@ -345,8 +394,8 @@ void standardTaskFn(void*) {
     TickType_t lastWake = xTaskGetTickCount();
     for (;;) {
         uint32_t now = millis();
-        Reading readings[SENSOR_COUNT];
-        for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
+        Reading physical[mapping::kPhysicalSensorCount];
+        for (uint8_t i = 0; i < mapping::kPhysicalSensorCount; i++) {
             SensorSample sample;
             if (sources[i] && !sourceReady[i] &&
                 now - lastSourceInitAttemptMs[i] >= kSourceInitRetryMs) {
@@ -359,12 +408,15 @@ void standardTaskFn(void*) {
                 sample.configured = sensor_mode::get() != sensor_mode::Mode::Uart;
             }
             else sample = sources[i]->read();
-            readings[i] = makeReading(now, sample,
-                                      sources[i] && sources[i]->requiresCalibration(), i);
+            physical[i] = makeReading(
+                now, sample, sources[i] && sources[i]->requiresCalibration(),
+                static_cast<mapping::PhysicalSensorId>(i));
         }
+        Reading logical[SENSOR_COUNT];
+        mapPhysicalReadings(now, physical, logical);
         // Physical I/O and calibration happen outside the history lock. API,
         // display, and storage readers are blocked only for this short copy.
-        publishReadings(readings);
+        publishReadings(logical, physical);
         vTaskDelayUntil(&lastWake, pdMS_TO_TICKS(kSampleIntervalMs));
     }
 }
@@ -374,7 +426,7 @@ void highRateTaskFn(void*) {
     uint32_t windowStartedMs = millis();
     const uint32_t intervalMs = acquisitionIntervalMs(sensor_mode::get());
     const TickType_t intervalTicks = pdMS_TO_TICKS(intervalMs);
-    AdcWindowAccumulator accumulators[SENSOR_COUNT];
+    AdcWindowAccumulator accumulators[mapping::kPhysicalSensorCount];
 
     for (;;) {
         const TickType_t loopStartedTicks = xTaskGetTickCount();
@@ -385,9 +437,9 @@ void highRateTaskFn(void*) {
             lastWake = loopStartedTicks;
         }
         const uint32_t nowMs = millis();
-        Reading observations[SENSOR_COUNT];
-        uint32_t observedUs[SENSOR_COUNT];
-        for (uint8_t i = 0; i < SENSOR_COUNT; ++i) {
+        Reading physicalObservations[mapping::kPhysicalSensorCount];
+        uint32_t physicalObservedUs[mapping::kPhysicalSensorCount];
+        for (uint8_t i = 0; i < mapping::kPhysicalSensorCount; ++i) {
             SensorSample sample;
             if (sources[i] && !sourceReady[i] &&
                 nowMs - lastSourceInitAttemptMs[i] >= kSourceInitRetryMs) {
@@ -401,25 +453,28 @@ void highRateTaskFn(void*) {
             } else {
                 sample = sources[i]->read();
             }
-            observedUs[i] = micros();
-            observations[i] = makeReading(nowMs, sample,
-                                          sources[i] && sources[i]->requiresCalibration(), i);
-            accumulators[i].add(observations[i]);
+            physicalObservedUs[i] = micros();
+            physicalObservations[i] = makeReading(
+                nowMs, sample, sources[i] && sources[i]->requiresCalibration(),
+                static_cast<mapping::PhysicalSensorId>(i));
+            accumulators[i].add(physicalObservations[i]);
         }
 
         // The capture stores the selected calibrated observation consumed by
         // the production reducer above; it never performs a second ADC read.
-        captureAdcPoint(observedUs, observations);
+        captureAdcPoint(physicalObservedUs, physicalObservations);
 
         if (nowMs - windowStartedMs >= kSampleIntervalMs) {
             const uint32_t boundaryUs = micros();
-            Reading reduced[SENSOR_COUNT];
-            for (uint8_t i = 0; i < SENSOR_COUNT; ++i) {
-                reduced[i] = accumulators[i].finish(nowMs);
+            Reading physicalReduced[mapping::kPhysicalSensorCount];
+            for (uint8_t i = 0; i < mapping::kPhysicalSensorCount; ++i) {
+                physicalReduced[i] = accumulators[i].finish(nowMs);
                 accumulators[i].reset();
             }
-            publishReadings(reduced);
-            finishCaptureWindow(boundaryUs, reduced);
+            Reading logicalReduced[SENSOR_COUNT];
+            mapPhysicalReadings(nowMs, physicalReduced, logicalReduced);
+            publishReadings(logicalReduced, physicalReduced);
+            finishCaptureWindow(boundaryUs, logicalReduced);
             armCaptureAtWindowBoundary(boundaryUs);
             windowStartedMs = nowMs;
         }
@@ -446,6 +501,8 @@ void highRateTaskFn(void*) {
 
 void start() {
     calibration::init();
+    mapping::init();
+    activeMapping = mapping::get(sensor_mode::get());
     mutex = xSemaphoreCreateMutex();
     captureMutex = xSemaphoreCreateMutex();
     if (!mutex || !captureMutex) {
@@ -454,8 +511,8 @@ void start() {
     }
 
     randomSeed(esp_random());
-    for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
-        sources[i] = makeSource(static_cast<SensorId>(i));
+    for (uint8_t i = 0; i < mapping::kPhysicalSensorCount; i++) {
+        sources[i] = makeSource(static_cast<mapping::PhysicalSensorId>(i));
         lastSourceInitAttemptMs[i] = millis();
         sourceReady[i] = sources[i] && sources[i]->init();
         if (!sourceReady[i]) {
@@ -471,8 +528,12 @@ void start() {
 
 bool requestAdcCapture(SensorId channel, uint32_t& captureId) {
     captureId = 0;
+    mapping::PhysicalSensorId physical;
     if (!captureMutex || channel >= SENSOR_COUNT ||
-        !usesHighRateAcquisition(sensor_mode::get())) return false;
+        !usesHighRateAcquisition(sensor_mode::get()) ||
+        !mapping::physicalForLogical(activeMapping, channel, physical)) {
+        return false;
+    }
 
     xSemaphoreTake(captureMutex, portMAX_DELAY);
     expireCaptureLocked(millis());
@@ -571,6 +632,15 @@ bool getLatest(SensorId id, Reading& out) {
     out = buffer[id][(writeIndex[id] + kHistorySize - 1) % kHistorySize];
     xSemaphoreGive(mutex);
     return true;
+}
+
+bool getLatestPhysical(uint8_t physicalSensor, Reading& out) {
+    if (!mutex || physicalSensor >= mapping::kPhysicalSensorCount) return false;
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    const bool available = hasPhysicalLatest[physicalSensor];
+    if (available) out = physicalLatest[physicalSensor];
+    xSemaphoreGive(mutex);
+    return available;
 }
 
 bool isConfigured(const Reading& reading) {
@@ -687,16 +757,17 @@ bool getAvailablePower(SensorId id, float& outWatts) {
 }
 
 bool getNetBatteryPower(float& outWatts) {
-    Reading in, out;
-    if (!getLatest(SENSOR_IN, in) || !getLatest(SENSOR_OUT, out) ||
-        !isCalculationEligible(in) || !isCalculationEligible(out)) return false;
-    outWatts = in.power - out.power;
+    Reading solar, load;
+    if (!getLatest(SENSOR_SOLAR, solar) || !getLatest(SENSOR_LOAD, load) ||
+        !isCalculationEligible(solar) ||
+        !isCalculationEligible(load)) return false;
+    outWatts = solar.power - load.power;
     return true;
 }
 
 bool getSystemNetPower(float& outWatts, NetPowerSource* source) {
     Reading battery;
-    if (getLatest(SENSOR_AUX, battery) && isCalculationEligible(battery)) {
+    if (getLatest(SENSOR_BATTERY, battery) && isCalculationEligible(battery)) {
         outWatts = battery.power;
         if (source) *source = NetPowerSource::Battery;
         return true;

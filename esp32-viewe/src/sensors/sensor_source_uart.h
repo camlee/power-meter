@@ -4,9 +4,9 @@
 #include "sensor_source.h"
 #include <cstdint>
 
-// One logical channel of the shared UART PM1 stream. Construct one source for
-// each channel index (In=0, Out=1, Aux=2); all instances share a single UART
-// receiver and therefore publish one coherent accepted frame.
+// One physical channel of the shared UART PM1 stream. Construct one source for
+// each producer channel index; the mapping layer assigns those channels to
+// Solar/Load/Battery. All instances share one coherent accepted frame.
 class UartPm1SensorSource final : public SensorSource {
 public:
     explicit UartPm1SensorSource(uint8_t channel) : channel_(channel) {}

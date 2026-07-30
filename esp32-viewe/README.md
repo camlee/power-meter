@@ -250,12 +250,24 @@ The endpoint is paginated and caps a page at 50 files.
 ## Sensor source
 
 Simulation is enabled by default so UI and storage work without sensor
-hardware. `src/sensors/sensor_config.h` contains the confirmed VIEWE order:
-Sensor 1 / Solar (`In`) voltage GPIO 6 and current GPIO 5; Sensor 2 / Load
-(`Out`) voltage GPIO 10 and current GPIO 9; Sensor 3 / Battery (`Aux`) voltage
-GPIO 8 and current GPIO 7. Set
+hardware. `src/sensors/sensor_config.h` contains the physical VIEWE wiring:
+Sensor 1 voltage/current GPIO 6/5, Sensor 2 GPIO 10/9, and Sensor 3 GPIO 8/7.
+A versioned per-source mapping then assigns those physical sensors to logical
+Solar, Load, Battery, or Unmapped roles and selects current direction. Defaults
+are Sensor 1 = Solar, Sensor 2 = Load, and Sensor 3 = Battery. The ESP32 ADC
+Sensor 3 direction is reversed after calibration so charging is positive
+without changing its persisted gain/offset or raw input voltage; Demo, UART,
+and ADS1115 retain normal direction defaults. Battery may be unmapped, in which
+case power is inferred from Solar minus Load and Load voltage is used as the
+Battery-voltage fallback. Set
 `POWER_METER_USE_SIMULATED_SENSORS` to `0` when the physical hardware is ready
 for validation.
+
+`GET /api/v1/sensors/mapping` exposes physical readings and the active mapping.
+`PUT /api/v1/sensors/mapping` persists a complete active-source profile and
+restarts the meter. On the touchscreen, Setup's edit button opens the active
+source's full-screen mapping editor with live physical V/A/W readings and
+draft-aware Balance. The Web editor is added in the next phase.
 
 The WROOM build keeps Demo as the fresh-device default but exposes ADS1115 in
 Setup. Its SSD1306 (address `0x3c`) and ADS1115 (`0x48`) share GPIO 5 SDA / GPIO

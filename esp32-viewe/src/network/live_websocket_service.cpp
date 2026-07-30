@@ -204,9 +204,9 @@ void sendPending(void*) {
 
 bool buildFrame(LiveFrame& frame) {
     sensors::Reading in{}, out{}, aux{};
-    if (!sensors::getLatest(sensors::SENSOR_IN, in) ||
-        !sensors::getLatest(sensors::SENSOR_OUT, out) ||
-        !sensors::getLatest(sensors::SENSOR_AUX, aux)) return false;
+    if (!sensors::getLatest(sensors::SENSOR_SOLAR, in) ||
+        !sensors::getLatest(sensors::SENSOR_LOAD, out) ||
+        !sensors::getLatest(sensors::SENSOR_BATTERY, aux)) return false;
 
     frame = {};
     frame.magic = kLiveMagic;
@@ -252,9 +252,9 @@ bool buildFrame(LiveFrame& frame) {
         const float value = sensors::getDutyCycle(id);
         return std::isfinite(value) ? value : NAN;
     };
-    frame.inDuty = duty(sensors::SENSOR_IN, in);
-    frame.outDuty = duty(sensors::SENSOR_OUT, out);
-    frame.auxDuty = duty(sensors::SENSOR_AUX, aux);
+    frame.inDuty = duty(sensors::SENSOR_SOLAR, in);
+    frame.outDuty = duty(sensors::SENSOR_LOAD, out);
+    frame.auxDuty = duty(sensors::SENSOR_BATTERY, aux);
     return true;
 }
 

@@ -10,6 +10,7 @@
 #include "network/network_manager.h"
 #include "sensors/sensor_mode.h"
 #include "sensors/sensors.h"
+#include "sensor_mapping_overlay.h"
 #include "../../display_brightness.h"
 #include "../../theme/ui_theme.h"
 
@@ -23,7 +24,9 @@ lv_obj_t* adcModeButton = nullptr;
 lv_obj_t* ads1115ModeButton = nullptr;
 lv_obj_t* uartModeButton = nullptr;
 lv_obj_t* demoModeButton = nullptr;
+lv_obj_t* activeSensorModeLabel = nullptr;
 lv_obj_t* activeSensorStatusLabel = nullptr;
+lv_obj_t* mappingEditButton = nullptr;
 lv_obj_t* screenObject = nullptr;
 lv_obj_t* hostnameLabel = nullptr;
 lv_obj_t* lightModeButton = nullptr;
@@ -71,15 +74,27 @@ const char* readingSymbol(sensors::SensorId id) {
 }
 
 void updateActiveSensorStatus() {
-    if (!activeSensorStatusLabel) return;
+    if (!activeSensorModeLabel || !activeSensorStatusLabel) return;
     char text[96];
-    snprintf(text, sizeof(text), "%s  Solar %s  Load %s  Bat %s",
-             sensorModeLabel(sensor_mode::get()), readingSymbol(sensors::SENSOR_IN),
-             readingSymbol(sensors::SENSOR_OUT), readingSymbol(sensors::SENSOR_AUX));
+    lv_label_set_text(
+        activeSensorModeLabel, sensorModeLabel(sensor_mode::get()));
+    snprintf(text, sizeof(text), "Solar %s  Load %s  Bat %s",
+             readingSymbol(sensors::SENSOR_SOLAR),
+             readingSymbol(sensors::SENSOR_LOAD), readingSymbol(sensors::SENSOR_BATTERY));
     lv_label_set_text(activeSensorStatusLabel, text);
+    lv_obj_set_style_text_opa(activeSensorModeLabel,
+                              pendingSensorMode == sensor_mode::get() ? LV_OPA_COVER : LV_OPA_20,
+                              0);
     lv_obj_set_style_text_opa(activeSensorStatusLabel,
                               pendingSensorMode == sensor_mode::get() ? LV_OPA_COVER : LV_OPA_20,
                               0);
+    if (mappingEditButton) {
+        if (pendingSensorMode == sensor_mode::get()) {
+            lv_obj_clear_state(mappingEditButton, LV_STATE_DISABLED);
+        } else {
+            lv_obj_add_state(mappingEditButton, LV_STATE_DISABLED);
+        }
+    }
 }
 
 void screenRefreshCb(lv_event_t* event) {
@@ -90,6 +105,10 @@ void screenRefreshCb(lv_event_t* event) {
 
 void sensorStatusTimerCb(lv_timer_t*) {
     if (screenObject && lv_obj_is_visible(screenObject)) updateActiveSensorStatus();
+}
+
+void editSensorMappingCb(lv_event_t*) {
+    if (pendingSensorMode == sensor_mode::get()) sensor_mapping_overlay::show();
 }
 
 bool checkboxChecked(lv_obj_t* checkbox) {
@@ -203,7 +222,7 @@ void saveChangesCb(lv_event_t*) {
 
     if (resetSetup) {
         if (!clearPreferences("device") || !clearPreferences("sensors") ||
-            !clearPreferences("appearance")) {
+            !clearPreferences("sensor_map") || !clearPreferences("appearance")) {
             lv_label_set_text(statusLabel, "Could not reset setup preferences.");
             return;
         }
@@ -360,11 +379,35 @@ lv_obj_t* create(lv_obj_t* parent) {
                              sensor_mode::get() == sensor_mode::Mode::Uart ? uartModeButton : demoModeButton;
     selectSegment(activeSensor, adcModeButton, ads1115ModeButton, uartModeButton, demoModeButton);
 
-    activeSensorStatusLabel = lv_label_create(screen);
-    lv_obj_set_width(activeSensorStatusLabel, lv_pct(100));
+    lv_obj_t* activeSensorRow = lv_obj_create(screen);
+    lv_obj_remove_style_all(activeSensorRow);
+    lv_obj_set_size(activeSensorRow, lv_pct(100), 30);
+    lv_obj_set_flex_flow(activeSensorRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(activeSensorRow, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+    activeSensorModeLabel = lv_label_create(activeSensorRow);
+    lv_obj_set_width(activeSensorModeLabel, 48);
+    lv_obj_set_style_text_align(activeSensorModeLabel, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_style_text_font(activeSensorModeLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(activeSensorModeLabel, ui_theme::mutedText(), 0);
+
+    activeSensorStatusLabel = lv_label_create(activeSensorRow);
+    lv_obj_set_flex_grow(activeSensorStatusLabel, 1);
     lv_obj_set_style_text_align(activeSensorStatusLabel, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_style_text_font(activeSensorStatusLabel, &lv_font_montserrat_12, 0);
     lv_obj_set_style_text_color(activeSensorStatusLabel, ui_theme::mutedText(), 0);
+    mappingEditButton = lv_btn_create(activeSensorRow);
+    lv_obj_remove_style_all(mappingEditButton);
+    lv_obj_set_size(mappingEditButton, 38, 30);
+    lv_obj_set_ext_click_area(mappingEditButton, 6);
+    lv_obj_set_style_opa(mappingEditButton, LV_OPA_30, LV_STATE_DISABLED);
+    lv_obj_add_event_cb(mappingEditButton, editSensorMappingCb,
+                        LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* editLabel = lv_label_create(mappingEditButton);
+    lv_label_set_text(editLabel, LV_SYMBOL_EDIT);
+    lv_obj_set_style_text_color(editLabel, ui_theme::mutedText(), 0);
+    lv_obj_center(editLabel);
 
     lv_obj_t* appearanceLabel = lv_label_create(screen);
     lv_label_set_text(appearanceLabel, "APPEARANCE");

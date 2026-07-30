@@ -1,6 +1,7 @@
 #include "sensors_screen.h"
 #include "../../sensors/sensors.h"
 #include "../../sensors/sensor_calibration.h"
+#include "../../sensors/sensor_mapping.h"
 #include "../../sensors/sensor_mode.h"
 #include "../../device/hardware_profile.h"
 #include "../../memory/heap_policy.h"
@@ -252,6 +253,45 @@ sensors::calibration::Source activeCalibrationSource() {
         : sensors::calibration::Source::Esp32Adc;
 }
 
+bool calibrationPhysicalSensor(uint8_t logicalSensor, uint8_t& physicalSensor) {
+    sensors::mapping::PhysicalSensorId physical;
+    if (!sensors::mapping::physicalForLogical(
+            sensor_mode::get(), static_cast<sensors::SensorId>(logicalSensor),
+            physical)) {
+        return false;
+    }
+    physicalSensor = static_cast<uint8_t>(physical);
+    return true;
+}
+
+float applyLogicalCurrentDirection(uint8_t logicalSensor, float current) {
+    return current * static_cast<float>(
+        sensors::mapping::currentMultiplierForLogical(
+            sensor_mode::get(),
+            static_cast<sensors::SensorId>(logicalSensor)));
+}
+
+float calibratedPreview(uint8_t sensor,
+                        sensors::calibration::Measurement measurement,
+                        float input,
+                        sensors::calibration::Value calibration) {
+    const float value = sensors::calibration::apply(input, calibration);
+    return measurement == sensors::calibration::Measurement::Current
+        ? applyLogicalCurrentDirection(sensor, value)
+        : value;
+}
+
+float calibrationInputFromDisplayed(uint8_t sensor,
+                                    sensors::calibration::Measurement measurement,
+                                    float displayed,
+                                    sensors::calibration::Value calibration) {
+    const float sourceValue =
+        measurement == sensors::calibration::Measurement::Current
+            ? applyLogicalCurrentDirection(sensor, displayed)
+            : displayed;
+    return sourceValue / calibration.gain + calibration.offsetInputV;
+}
+
 bool rawCaptureAvailable() {
     const sensor_mode::Mode mode = sensor_mode::get();
     return mode == sensor_mode::Mode::Adc || mode == sensor_mode::Mode::Ads1115;
@@ -278,7 +318,8 @@ bool latestCalibrationInput(const SensorTab::CalibrationEditor& editor, float& i
     } else {
         const float displayed = editor.measurement == sensors::calibration::Measurement::Voltage
             ? latest.voltage : latest.current;
-        input = displayed / editor.saved.gain + editor.saved.offsetInputV;
+        input = calibrationInputFromDisplayed(
+            editor.sensor, editor.measurement, displayed, editor.saved);
     }
     return std::isfinite(input);
 }
@@ -307,7 +348,11 @@ bool calculateCalibrationGain(SensorTab::CalibrationEditor& editor) {
     float input = NAN;
     if (!end || end == text || *end != '\0' || !std::isfinite(reference) || reference <= 0.0f ||
         reference > max || !latestCalibrationInput(editor, input)) return false;
-    const float denominator = input - editor.staged.offsetInputV;
+    const float sourceDenominator = input - editor.staged.offsetInputV;
+    const float denominator =
+        editor.measurement == sensors::calibration::Measurement::Current
+            ? applyLogicalCurrentDirection(editor.sensor, sourceDenominator)
+            : sourceDenominator;
     if (fabsf(denominator) < 0.005f) return false;
     sensors::calibration::Value candidate = editor.staged;
     candidate.gain = reference / denominator;
@@ -431,13 +476,21 @@ void calibrationControlCb(lv_event_t* event) {
         return;
     }
     if (control->action == CalibrationAction::Reset) {
-        editor.staged = sensors::calibration::defaults(
-            activeCalibrationSource(), sensor, editor.measurement);
+        uint8_t physicalSensor = 0;
+        if (calibrationPhysicalSensor(sensor, physicalSensor)) {
+            editor.staged = sensors::calibration::defaults(
+                activeCalibrationSource(), physicalSensor, editor.measurement);
+        }
     }
     if (control->action == CalibrationAction::Save) {
+        uint8_t physicalSensor = 0;
         if (!sensor_mode::usesCalibration(sensor_mode::get()) ||
-            sensors::calibration::set(activeCalibrationSource(), sensor,
-                                      editor.measurement, editor.staged)) editor.saved = editor.staged;
+            (calibrationPhysicalSensor(sensor, physicalSensor) &&
+             sensors::calibration::set(
+                 activeCalibrationSource(), physicalSensor,
+                 editor.measurement, editor.staged))) {
+            editor.saved = editor.staged;
+        }
     }
     refreshCalibrationInputs(editor);
     refreshCalibrationEditor(tab, sensor);
@@ -891,9 +944,12 @@ void createCalibrationEditor(lv_obj_t* parent, SensorTab& tab, uint8_t sensor) {
 
 void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measurement measurement) {
     auto& editor = tab.calibration;
+    uint8_t physicalSensor = 0;
+    if (!calibrationPhysicalSensor(sensor, physicalSensor)) return;
     if (!editor.root) createCalibrationEditor(tab.chartsColumn, tab, sensor);
     editor.measurement = measurement;
-    editor.saved = sensors::calibration::get(activeCalibrationSource(), sensor, measurement);
+    editor.saved = sensors::calibration::get(
+        activeCalibrationSource(), physicalSensor, measurement);
     editor.staged = editor.saved;
     editor.visible = true;
     editor.calculatingGain = false;
@@ -929,11 +985,13 @@ void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measu
         ? latest.timestamp_ms : 0;
     if (editor.lastPreviewTimestamp) {
         const float oldValue = voltage ? latest.voltage : latest.current;
-        const float newValue = sensors::calibration::apply(
+        const float input =
             sensor_mode::usesCalibration(sensor_mode::get())
                 ? (voltage ? latest.voltageInputV : latest.currentInputV)
-                : oldValue / editor.saved.gain + editor.saved.offsetInputV,
-            editor.staged);
+                : calibrationInputFromDisplayed(
+                      sensor, measurement, oldValue, editor.saved);
+        const float newValue =
+            calibratedPreview(sensor, measurement, input, editor.staged);
         char text[12];
         snprintf(text, sizeof(text), "%.1f", oldValue); lv_label_set_text(tab.oldValueLabel, text);
         snprintf(text, sizeof(text), "%.1f", newValue); lv_label_set_text(tab.newValueLabel, text);
@@ -1552,11 +1610,13 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor,
         // compatible input so the preview graph remains meaningful for UI
         // walkthroughs without ever applying/saving demo calibration.
         const float value = voltage ? reading.voltage : reading.current;
-        return value / editor.saved.gain + editor.saved.offsetInputV;
+        return calibrationInputFromDisplayed(
+            sensor, editor.measurement, value, editor.saved);
     };
     const sensors::Reading& latest = readings[n - 1];
     const float oldValue = voltage ? latest.voltage : latest.current;
-    const float newValue = sensors::calibration::apply(inputFor(latest), editor.staged);
+    const float newValue = calibratedPreview(
+        sensor, editor.measurement, inputFor(latest), editor.staged);
     char text[12];
     snprintf(text, sizeof(text), "%.1f", oldValue); lv_label_set_text(tab.oldValueLabel, text);
     snprintf(text, sizeof(text), "%.1f", newValue); lv_label_set_text(tab.newValueLabel, text);
@@ -1569,7 +1629,8 @@ void updateCalibrationEditor(SensorTab& tab, uint8_t sensor,
     bool appended = false;
     for (size_t i = 0; i < n; ++i) {
         if (readings[i].timestamp_ms <= editor.lastPreviewTimestamp) continue;
-        const float preview = sensors::calibration::apply(inputFor(readings[i]), editor.staged);
+        const float preview = calibratedPreview(
+            sensor, editor.measurement, inputFor(readings[i]), editor.staged);
         lv_chart_set_next_value(editor.activeChart, editor.preview, chartCoordinate(preview, scale));
         editor.lastPreviewTimestamp = readings[i].timestamp_ms;
         appended = true;
@@ -1591,6 +1652,7 @@ void refreshCalibrationEditor(SensorTab& tab, uint8_t sensor) {
 void updateRawCaptureViews() {
     for (uint8_t sensor = 0; sensor < sensors::SENSOR_COUNT; ++sensor) {
         SensorTab& tab = sensorTabs[sensor];
+        if (!tab.contentRoot) continue;
         auto& capture = tab.capture;
         if (!capture.visible || !capture.ownsRequest) continue;
 
@@ -1654,10 +1716,11 @@ void updateCb(lv_timer_t* timer) {
     sensors::Reading readings[kChartPoints];
 
     for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
+        SensorTab& tab = sensorTabs[i];
+        if (!tab.contentRoot) continue;
         size_t n = sensors::getRecent(static_cast<sensors::SensorId>(i), readings, kChartPoints);
         if (n == 0) continue;
 
-        SensorTab& tab = sensorTabs[i];
         const sensors::Reading& latest = readings[n - 1];
         if (rawCaptureAvailable() && sensors::isConfigured(latest)) {
             lv_obj_clear_flag(tab.captureButton, LV_OBJ_FLAG_HIDDEN);
@@ -1788,6 +1851,11 @@ lv_obj_t* create(lv_obj_t* parent) {
 
     const char* names[sensors::SENSOR_COUNT] = {"Solar", "Load", "Battery"};
     for (uint8_t i = 0; i < sensors::SENSOR_COUNT; i++) {
+        sensors::mapping::PhysicalSensorId physical;
+        if (!sensors::mapping::physicalForLogical(
+                sensor_mode::get(), static_cast<sensors::SensorId>(i), physical)) {
+            continue;
+        }
         lv_obj_t* tabBtn = lv_tabview_add_tab(tabview, names[i]);
         createSensorTab(tabBtn, i);
     }
