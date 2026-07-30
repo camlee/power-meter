@@ -16,6 +16,25 @@ struct Series {
     bool positive;
 };
 
+// A filled floating range. Unlike Series, its endpoints are absolute signed
+// watt-axis coordinates, allowing a diagnostic segment to cross zero.
+struct RangeSeries {
+    lv_color_t color;
+    const float* fromValues;
+    const float* toValues;
+};
+
+struct RangeValue {
+    float from;
+    float to;
+};
+
+// Supplies all floating ranges for one point in a single call. This lets a
+// caller retain a compact source representation and derive segment endpoints
+// only while the chart is measuring or drawing them.
+using RangePointProvider = bool (*)(
+    const void* context, size_t point, RangeValue* values, uint8_t valueCount);
+
 enum class AxisMode : uint8_t {
     Relative,
     WallClock,
@@ -31,6 +50,10 @@ struct Data {
     AxisMode axisMode = AxisMode::Relative;
     int64_t axisStartTimeMs = 0;
     int16_t utcOffsetMinutes = 0;
+    const RangeSeries* rangeSeries = nullptr;
+    uint8_t rangeSeriesCount = 0;
+    RangePointProvider rangePointProvider = nullptr;
+    const void* rangePointContext = nullptr;
 };
 
 lv_obj_t* create(lv_obj_t* parent);

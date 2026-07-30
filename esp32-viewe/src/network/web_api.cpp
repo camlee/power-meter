@@ -681,15 +681,12 @@ void webHistoryQuery() {
         uint32_t lookbackMinutes = 0;
         uint16_t defaultBucketMinutes = 30;
         const String rangeArg = server->arg("range");
-        if (rangeArg == "last20minutes") {
+        if (rangeArg == "last1hour") {
             kind = history_query_service::UsageQueryKind::Rolling;
-            lookbackMinutes = 20; defaultBucketMinutes = 1;
-        } else if (rangeArg == "last1hour") {
-            kind = history_query_service::UsageQueryKind::Rolling;
-            lookbackMinutes = 60; defaultBucketMinutes = 2;
+            lookbackMinutes = 60; defaultBucketMinutes = 1;
         } else if (rangeArg == "last6hours") {
             kind = history_query_service::UsageQueryKind::Rolling;
-            lookbackMinutes = 360; defaultBucketMinutes = 15;
+            lookbackMinutes = 360; defaultBucketMinutes = 10;
         } else if (rangeArg == "last24hours") {
             kind = history_query_service::UsageQueryKind::Rolling;
             lookbackMinutes = 1440; defaultBucketMinutes = 30;

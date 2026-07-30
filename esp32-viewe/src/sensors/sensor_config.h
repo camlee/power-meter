@@ -16,13 +16,12 @@ struct Pins {
     uint8_t current;
 };
 
-// Provisional sequential pairing. This is intentionally the only place pin
-// assignments live, so the final wiring can be changed without touching the
-// acquisition or UI code.
+// Confirmed VIEWE physical order and wiring. This remains the only place GPIO
+// assignments live so acquisition and UI code operate on sensor identities.
 constexpr Pins kPins[] = {
-    {.voltage = 6, .current = 5},   // In/Solar
-    {.voltage = 10, .current = 9},  // Aux/Battery
-    {.voltage = 8, .current = 7},   // Out/Load
+    {.voltage = 6, .current = 5},   // Sensor 1: Solar (legacy In)
+    {.voltage = 10, .current = 9},  // Sensor 2: Load (legacy Out)
+    {.voltage = 8, .current = 7},   // Sensor 3: Battery (legacy Aux)
 };
 
 // Factory calibration defaults. Runtime per-channel values are persisted in

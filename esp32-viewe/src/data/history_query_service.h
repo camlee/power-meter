@@ -6,8 +6,8 @@
 #include "historical_storage.h"
 #include "energy_cycle.h"
 
-// Executes potentially slow LittleFS history work away from LVGL. Results are
-// copied into caller-owned buffers by the UI after a job completes.
+// Executes potentially slow LittleFS history work away from LVGL. Completed
+// Usage results can be copied or briefly leased from the service-owned buffer.
 namespace history_query_service {
 
 constexpr size_t kMaxUsageBuckets = 336;

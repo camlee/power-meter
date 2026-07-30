@@ -36,6 +36,10 @@ sessions and Today, Yesterday, and All History replace Since Boot. Calendar
 views use a persisted fixed UTC offset. Full timezone/DST rules remain future
 work.
 
+Last 1 Hour uses the stored one-minute precision. Last 6 Hours uses ten-minute
+buckets; longer ranges use progressively wider buckets to keep the chart and
+history queries bounded.
+
 Time uncertainty and measurement availability are independent:
 
 - an anchored minute can still have a sensor-coverage gap;

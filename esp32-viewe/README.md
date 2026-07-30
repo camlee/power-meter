@@ -250,9 +250,10 @@ The endpoint is paginated and caps a page at 50 files.
 ## Sensor source
 
 Simulation is enabled by default so UI and storage work without sensor
-hardware. `src/sensors/sensor_config.h` contains the provisional sequential
-mapping: Solar (`In`) voltage/current = GPIO 5/6, Load (`Out`) = 7/8, and
-Battery (`Aux`) = 9/10. Set
+hardware. `src/sensors/sensor_config.h` contains the confirmed VIEWE order:
+Sensor 1 / Solar (`In`) voltage GPIO 6 and current GPIO 5; Sensor 2 / Load
+(`Out`) voltage GPIO 10 and current GPIO 9; Sensor 3 / Battery (`Aux`) voltage
+GPIO 8 and current GPIO 7. Set
 `POWER_METER_USE_SIMULATED_SENSORS` to `0` when the physical hardware is ready
 for validation.
 

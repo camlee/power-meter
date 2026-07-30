@@ -9,6 +9,24 @@ namespace {
 struct State { Data data{}; float min = -1; float max = 1; float step = 1; };
 constexpr int kLeft = 42, kRight = 4, kTop = 18, kBottom = 24;
 
+bool loadRangeValues(const Data& data, size_t point, RangeValue* values) {
+    if (!values || data.rangeSeriesCount > kMaxSeries) return false;
+    for (uint8_t series = 0; series < data.rangeSeriesCount; ++series) {
+        values[series] = {NAN, NAN};
+    }
+    if (data.rangePointProvider) {
+        return data.rangePointProvider(
+            data.rangePointContext, point, values, data.rangeSeriesCount);
+    }
+    if (!data.rangeSeries) return false;
+    for (uint8_t series = 0; series < data.rangeSeriesCount; ++series) {
+        const RangeSeries& source = data.rangeSeries[series];
+        values[series].from = source.fromValues ? source.fromValues[point] : NAN;
+        values[series].to = source.toValues ? source.toValues[point] : NAN;
+    }
+    return true;
+}
+
 float niceStep(float value) {
     if (value <= 0) return 1;
     const float power = powf(10, floorf(log10f(value)));
@@ -150,6 +168,23 @@ void drawCb(lv_event_t* event) {
             rect.bg_color = s.color; lv_draw_rect(ctx, &rect, &bar);
             if (s.positive) positive += value; else negative += value;
         }
+        RangeValue rangeValues[kMaxSeries];
+        const bool haveRangeValues =
+            loadRangeValues(state->data, point, rangeValues);
+        for (uint8_t series = 0;
+             haveRangeValues && series < state->data.rangeSeriesCount; ++series) {
+            const RangeSeries& s = state->data.rangeSeries[series];
+            const float from = rangeValues[series].from;
+            const float to = rangeValues[series].to;
+            if (!std::isfinite(from) || !std::isfinite(to) ||
+                fabsf(to - from) <= 0.0001f) continue;
+            const int yFrom = yFor(*state, top, height, from);
+            const int yTo = yFor(*state, top, height, to);
+            lv_area_t bar{(lv_coord_t)x1, (lv_coord_t)std::min(yFrom, yTo),
+                          (lv_coord_t)x2, (lv_coord_t)std::max(yFrom, yTo)};
+            rect.bg_color = s.color;
+            lv_draw_rect(ctx, &rect, &bar);
+        }
     }
     (void)zeroY;
 }
@@ -173,6 +208,21 @@ void setData(lv_obj_t* chart, const Data& data) {
             (data.series[s].positive ? up : down) += value;
         }
         high = fmaxf(high, up); low = fmaxf(low, down);
+        RangeValue rangeValues[kMaxSeries];
+        const bool haveRangeValues = loadRangeValues(data, point, rangeValues);
+        for (uint8_t s = 0;
+             haveRangeValues && s < data.rangeSeriesCount; ++s) {
+            const float from = rangeValues[s].from;
+            const float to = rangeValues[s].to;
+            if (std::isfinite(from)) {
+                if (from >= 0) high = fmaxf(high, from);
+                else low = fmaxf(low, -from);
+            }
+            if (std::isfinite(to)) {
+                if (to >= 0) high = fmaxf(high, to);
+                else low = fmaxf(low, -to);
+            }
+        }
     }
     state->step = niceStep(fmaxf(high + low, 1) / 6); state->max = ceilf(high / state->step) * state->step;
     state->min = -ceilf(low / state->step) * state->step;

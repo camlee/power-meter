@@ -37,6 +37,7 @@
     apRequestFromDraft,
     stationSelection,
   } from './lib/wifiDraft.js';
+  import { powerBalance } from './lib/powerFlow.js';
 
   // ---------------------------------------------------------------------
   // Constants
@@ -75,9 +76,8 @@
   // The all-history bucket is selected by the firmware and learned from the
   // response. Yesterday is complete and therefore manual-refresh only.
   const rollingHistoryRanges = [
-    { id: 'last20minutes', label: 'Last 20 Minutes', minutes: 1, tickMinutes: 5, refreshMs: 60_000 },
-    { id: 'last1hour', label: 'Last 1 Hour', minutes: 2, tickMinutes: 15, refreshMs: 2 * 60_000 },
-    { id: 'last6hours', label: 'Last 6 Hours', minutes: 15, tickMinutes: 60, refreshMs: 15 * 60_000 },
+    { id: 'last1hour', label: 'Last 1 Hour', minutes: 1, tickMinutes: 15, refreshMs: 60_000 },
+    { id: 'last6hours', label: 'Last 6 Hours', minutes: 10, tickMinutes: 60, refreshMs: 10 * 60_000 },
     { id: 'last24hours', label: 'Last 24 Hours', minutes: 30, tickMinutes: 180, refreshMs: 30 * 60_000 },
     { id: 'last2days', label: 'Last 2 Days', minutes: 60, tickMinutes: 360, refreshMs: 60 * 60_000 },
     { id: 'lastweek', label: 'Last Week', minutes: 240, tickMinutes: 1440, refreshMs: 240 * 60_000 },
@@ -273,6 +273,10 @@
   let historyRefreshTimer;
   let historyRequestGeneration = 0;
   let historyRangesHaveTime = false;
+  let historyHasMeasuredBattery = false;
+  $: historyHasMeasuredBattery = history?.buckets?.some(
+    (bucket) => Number.isFinite(bucket.aux),
+  ) ?? false;
 
   // Energy cycle view.
   let cycles = null;
@@ -1168,6 +1172,7 @@
       ? batteryPower
       : (Number.isFinite(solarPower) && Number.isFinite(loadPower)
         ? solarPower - loadPower : Number.NaN);
+    const balancePower = powerBalance(solarPower, loadPower, batteryPower);
     const directBatteryVoltage = eligible(2) ? frame.aux.voltage : Number.NaN;
     const fallbackBatteryVoltage = eligible(1) ? frame.out.voltage : Number.NaN;
     points = [
@@ -1177,6 +1182,7 @@
         load: loadPower,
         battery: batteryPower,
         net: netPower,
+        balance: balancePower,
         batteryVoltage: Number.isFinite(directBatteryVoltage)
           ? directBatteryVoltage : fallbackBatteryVoltage,
         batteryVoltageFallback: !Number.isFinite(directBatteryVoltage) &&
@@ -2216,11 +2222,13 @@
           <span class="battery"></span>Battery
           <span class="load"></span>Load
         {:else}
-          <span class="panel-color"></span>Solar
-          <span class="battery"></span>Discharge
-          <span class="load"></span>Load
-          <span class="charge"></span>Charge
-          <span class="error-color"></span>Error
+          <span class="charge"></span>Battery Charging
+          <span class="panel-color"></span>Solar In
+          <span class="load"></span>Solar Usage
+          <span class="battery"></span>Battery Usage
+          {#if historyHasMeasuredBattery}
+            <span class="balance-color"></span>Balance
+          {/if}
         {/if}
       </p>
 
@@ -2246,7 +2254,7 @@
         <span class="panel-color"></span>Solar
         <span class="load"></span>Load
         <span class="battery"></span>Battery
-        <span class="charge"></span>Net
+        <span class="balance-color"></span>Balance
       </p>
       <LiveChart {points} sessionId={lastSessionId} active={!livePaused} />
     </section>
@@ -2518,7 +2526,7 @@
   .chart-legend .surplus { background: var(--surplus); }
   .chart-legend .battery { background: var(--battery); }
   .chart-legend .load { background: var(--load); }
-  .chart-legend .error-color { background: var(--muted); }
+  .chart-legend .balance-color { background: var(--muted); }
 
   .home-view {
     display: flex;

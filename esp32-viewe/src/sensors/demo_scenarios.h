@@ -49,6 +49,12 @@ constexpr Scenario kScenarios[] = {
         {{20.0f, 20.0f}, {13.0f, 6.0f}, {13.0f, 22.0f}},
         -8.0f,
     },
+    {
+        "discharge-conflict",
+        "Battery discharge exceeds Load with an intentional +8 W difference",
+        {{19.0f, 6.0f}, {12.4f, 20.0f}, {12.4f, -22.0f}},
+        8.0f,
+    },
 };
 
 constexpr size_t kScenarioCount = sizeof(kScenarios) / sizeof(kScenarios[0]);

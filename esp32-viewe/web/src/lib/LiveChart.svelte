@@ -85,6 +85,7 @@
       battery: css.getPropertyValue('--battery').trim(),
       panel: css.getPropertyValue('--panel').trim(),
       load: css.getPropertyValue('--load').trim(),
+      balance: css.getPropertyValue('--muted').trim(),
     };
   }
 
@@ -138,7 +139,7 @@
 
   function computeYAxis(visiblePoints) {
     const values = visiblePoints
-      .flatMap((point) => [point.solar, point.load, point.battery, point.net])
+      .flatMap((point) => [point.solar, point.load, point.battery, point.balance])
       .filter(Number.isFinite);
     const low = Math.min(0, ...values);
     const high = Math.max(1, ...values);
@@ -353,8 +354,8 @@
     drawMarkers(ctx, drawPoints, 'load', chartColors.load, scaleX, scaleY);
     drawSeries(ctx, drawPoints, 'battery', chartColors.battery, scaleX, scaleY);
     drawMarkers(ctx, drawPoints, 'battery', chartColors.battery, scaleX, scaleY);
-    drawSeries(ctx, drawPoints, 'net', chartColors.charge, scaleX, scaleY);
-    drawMarkers(ctx, drawPoints, 'net', chartColors.charge, scaleX, scaleY);
+    drawSeries(ctx, drawPoints, 'balance', chartColors.balance, scaleX, scaleY);
+    drawMarkers(ctx, drawPoints, 'balance', chartColors.balance, scaleX, scaleY);
     ctx.restore();
   }
 
@@ -411,7 +412,7 @@
       {/each}
     </select>
   </div>
-  <canvas bind:this={canvas} aria-label="Live Solar, Load, Battery, and Net power graph with watt and time axes"></canvas>
+  <canvas bind:this={canvas} aria-label="Live Solar, Load, Battery, and Balance power graph with watt and time axes"></canvas>
 </div>
 
 <style>

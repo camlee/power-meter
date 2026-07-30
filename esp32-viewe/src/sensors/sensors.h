@@ -5,10 +5,11 @@
 #include <limits>
 
 // Sensor roles in this simple solar system:
-//   SENSOR_IN  -- panel feeding the battery
-//   SENSOR_OUT -- battery feeding the load
-//   SENSOR_AUX -- independent sensor, NOT part of the panel/battery/load
-//                 balance (excluded from getNetBatteryPower)
+//   SENSOR_IN  -- Solar, positive production
+//   SENSOR_OUT -- Load, positive consumption
+//   SENSOR_AUX -- Battery, positive charge and negative discharge
+// Stable In/Out/Aux identifiers remain in APIs and storage until the physical
+// sensor/logical role refactor.
 namespace sensors {
 
 enum SensorId : uint8_t {
@@ -161,10 +162,9 @@ float getDutyCycle(SensorId id, size_t window = kDutyWindowSize);
 // Returns false if there's no reading yet for `id`.
 bool getAvailablePower(SensorId id, float& outWatts);
 
-// SENSOR_IN power minus SENSOR_OUT power. Positive == net energy flowing
-// into the battery (charging); negative == net draw from the battery
-// (discharging). SENSOR_AUX is intentionally excluded from this balance.
-// Returns false if either sensor has no reading yet.
+// Legacy two-channel inferred battery power: Solar minus Load. Positive means
+// charging; negative means discharging. This intentionally does not use the
+// direct Battery channel. Returns false if either input has no reading yet.
 bool getNetBatteryPower(float& outWatts);
 
 // Preferred user-facing system net power. Positive means charging and

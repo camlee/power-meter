@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { usageBreakdown } from './powerFlow.js';
 
   export let buckets = [];
   export let timelineBasis = 'wall-clock';
@@ -40,7 +41,7 @@
       surplus: css.getPropertyValue('--surplus').trim(),
       battery: css.getPropertyValue('--battery').trim(),
       load: css.getPropertyValue('--load').trim(),
-      error: css.getPropertyValue('--muted').trim(),
+      balance: css.getPropertyValue('--muted').trim(),
     };
   }
 
@@ -89,24 +90,14 @@
   // Axis computation
   // ---------------------------------------------------------------------
 
-  function directStacks(bucket) {
-    const solar = Number.isFinite(bucket.in) ? Math.max(bucket.in, 0) : Number.NaN;
-    const load = Number.isFinite(bucket.out) ? Math.max(bucket.out, 0) : Number.NaN;
-    const battery = bucket.aux;
-    const error = Number.isFinite(solar) && Number.isFinite(load) && Number.isFinite(battery)
-      ? solar - load - battery : Number.NaN;
-    return {
-      positive: [
-        solar,
-        Number.isFinite(battery) ? Math.max(-battery, 0) : Number.NaN,
-        Number.isFinite(error) ? Math.max(-error, 0) : Number.NaN,
-      ],
-      negative: [
-        load,
-        Number.isFinite(battery) ? Math.max(battery, 0) : Number.NaN,
-        Number.isFinite(error) ? Math.max(error, 0) : Number.NaN,
-      ],
-    };
+  function flowForBucket(bucket) {
+    const batteryMeasured = Number.isFinite(bucket.aux);
+    const battery = batteryMeasured
+      ? bucket.aux
+      : (Number.isFinite(bucket.charging) && Number.isFinite(bucket.batteryUsage)
+        ? bucket.charging - bucket.batteryUsage
+        : Number.NaN);
+    return usageBreakdown(bucket.in, bucket.out, battery, batteryMeasured);
   }
 
   function computeYAxis(coveredBuckets) {
@@ -120,9 +111,14 @@
         high = Math.max(high, sumFinite(bucket.charging, bucket.panelIn, bucket.panelSurplus));
         low = Math.min(low, -sumFinite(bucket.batteryUsage, bucket.panelUsage));
       } else {
-        const stacks = directStacks(bucket);
-        high = Math.max(high, sumFinite(...stacks.positive));
-        low = Math.min(low, -sumFinite(...stacks.negative));
+        const flow = flowForBucket(bucket);
+        const endpoints = [
+          flow.solarSegment, flow.loadSegment, flow.chargeSegment,
+          flow.dischargeSegment, flow.balanceSegment,
+        ].flatMap((segment) => [segment.from, segment.to])
+          .filter(Number.isFinite);
+        high = Math.max(high, flow.solarTotal, ...endpoints);
+        low = Math.min(low, -flow.loadTotal, ...endpoints);
       }
     });
 
@@ -174,6 +170,15 @@
     });
   }
 
+  function drawRange(ctx, x, barWidth, range, color, valueToY) {
+    if (!Number.isFinite(range?.from) || !Number.isFinite(range?.to) ||
+        Math.abs(range.to - range.from) <= 0.0001) return;
+    const from = valueToY(range.from);
+    const to = valueToY(range.to);
+    ctx.fillStyle = color;
+    ctx.fillRect(x, Math.min(from, to), barWidth, Math.max(1, Math.abs(to - from)));
+  }
+
   function drawBars(ctx, plot, coveredBuckets, bucketWidth, barWidth, valueToY, colors) {
     coveredBuckets.forEach(({ bucket, index }) => {
       const x = plot.left + index * bucketWidth + (bucketWidth - barWidth) / 2;
@@ -189,17 +194,12 @@
           -1, valueToY,
         );
       } else {
-        const stacks = directStacks(bucket);
-        drawStack(ctx, x, barWidth, [
-          [stacks.positive[0], colors.panel],
-          [stacks.positive[1], colors.battery],
-          [stacks.positive[2], colors.error],
-        ], 1, valueToY);
-        drawStack(ctx, x, barWidth, [
-          [stacks.negative[0], colors.load],
-          [stacks.negative[1], colors.charge],
-          [stacks.negative[2], colors.error],
-        ], -1, valueToY);
+        const flow = flowForBucket(bucket);
+        drawRange(ctx, x, barWidth, flow.chargeSegment, colors.charge, valueToY);
+        drawRange(ctx, x, barWidth, flow.solarSegment, colors.panel, valueToY);
+        drawRange(ctx, x, barWidth, flow.loadSegment, colors.load, valueToY);
+        drawRange(ctx, x, barWidth, flow.dischargeSegment, colors.battery, valueToY);
+        drawRange(ctx, x, barWidth, flow.balanceSegment, colors.balance, valueToY);
       }
     });
   }
@@ -327,7 +327,7 @@
   });
 </script>
 
-<canvas bind:this={canvas} aria-label="Stacked history power graph with time and watt axes"></canvas>
+<canvas bind:this={canvas} aria-label="Stacked history power graph with Balance segments, time, and watt axes"></canvas>
 
 <style>
   canvas {

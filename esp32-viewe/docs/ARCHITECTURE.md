@@ -33,11 +33,13 @@ There are three independent channels:
 | `Out` | **Load** output from the battery system | Positive consumption |
 | `Aux` | **Battery** bidirectional measurement | Positive charge, negative discharge |
 
-The final local ADC target has a voltage and current input for each channel, for
-six inputs on provisional GPIO 5 through 10. Sources and devices may provide
-only a subset of the logical channels. Presence is explicit configuration/data;
-a floating ADC value is not attachment detection. The exact final pin/polarity
-map is part of the future on-site hardware-integration milestone.
+The VIEWE local ADC target has a voltage and current input for each channel:
+Sensor 1 / Solar uses voltage GPIO 6 and current GPIO 5; Sensor 2 / Load uses
+voltage GPIO 10 and current GPIO 9; Sensor 3 / Battery uses voltage GPIO 8 and
+current GPIO 7. Sources and devices may provide only a subset of the logical
+channels. Presence is explicit configuration/data; a floating ADC value is not
+attachment detection. Logical-role and polarity mapping becomes persisted
+configuration in the sensor-mapping milestone.
 
 Initial nominal transfer functions, applied to calibrated ADC input voltage in
 volts, are:
@@ -140,9 +142,13 @@ Current LVGL top-level screens are:
 
 - **Home:** direct-Battery-first charging summary, 30-second net trend, Battery
   voltage, and the immediately applied/persisted manual brightness slider.
-- **Usage:** rolling and calendar Solar/Load/Battery history with an explicit
-  balance-error component.
-- **Power:** Solar, Load, Battery, and net live metrics.
+- **Usage:** rolling and calendar history whose positive Solar and negative
+  Load totals are subdivided by Battery charge/discharge, with signed Balance
+  shown as a muted filled segment. Contradictory three-sensor measurements use
+  a floating conflict stack that preserves every magnitude. Inferred two-sensor
+  history has no Balance series. Normal stacks order Battery charge/discharge
+  at zero, then Solar/Load, with any Balance residual at the outer tip.
+- **Power:** Solar, Load, Battery, and Balance live metrics.
 - **Sensors:** raw per-sensor voltage/current/power and short trend charts.
 - **Settings:** nested configuration and diagnostics pages:
   - **Wi-Fi:** station scan/connect, station IP/RSSI, plus local AP control
