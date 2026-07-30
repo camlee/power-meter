@@ -114,6 +114,19 @@ void test_inferred_battery_subdivides_history_without_claiming_balance() {
     assertTotals(flow);
 }
 
+void test_hidden_balance_keeps_measurement_totals_without_conflict_extensions() {
+    const auto flow = power_flow::usage(20.0f, 6.0f, 22.0f, true, false);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 20.0f, flow.charge);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, flow.solarRemainder);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 6.0f, flow.loadRemainder);
+    TEST_ASSERT_FLOAT_WITHIN(0.001f, 0.0f, flow.discharge);
+    TEST_ASSERT_FALSE(flow.conflict);
+    assertRange(flow.chargeSegment, 0.0f, 20.0f);
+    assertRange(flow.loadSegment, 0.0f, -6.0f);
+    TEST_ASSERT_TRUE(std::isnan(flow.balanceSegment.from));
+    assertTotals(flow);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_day_charge_is_part_of_the_positive_solar_total);
@@ -125,5 +138,6 @@ int main(int, char**) {
     RUN_TEST(test_discharge_conflict_is_the_mirrored_floating_stack);
     RUN_TEST(test_missing_battery_preserves_measured_solar_and_load_totals);
     RUN_TEST(test_inferred_battery_subdivides_history_without_claiming_balance);
+    RUN_TEST(test_hidden_balance_keeps_measurement_totals_without_conflict_extensions);
     return UNITY_END();
 }

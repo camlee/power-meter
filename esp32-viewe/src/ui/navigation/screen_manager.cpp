@@ -55,6 +55,12 @@ void ScreenManager::build() {
     notifyActiveScreen();
 }
 
+void ScreenManager::showScreen(size_t index) {
+    if (!tabview || index >= screens.size()) return;
+    lv_tabview_set_act(tabview, static_cast<uint16_t>(index), LV_ANIM_OFF);
+    notifyActiveScreen();
+}
+
 void ScreenManager::tabChangedCb(lv_event_t* event) {
     auto* self = static_cast<ScreenManager*>(lv_event_get_user_data(event));
     if (self) self->notifyActiveScreen();

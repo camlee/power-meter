@@ -129,6 +129,10 @@ bool autoDayNight() {
     return automaticDayNight;
 }
 
+bool usingNightBrightness() {
+    return automaticDayNight && appliedNightPeriod;
+}
+
 bool update() {
     if (!automaticDayNight || !clockIsValid()) return false;
     const bool desiredNightPeriod = isNightPeriod();

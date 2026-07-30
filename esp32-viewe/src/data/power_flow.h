@@ -55,7 +55,8 @@ inline float balance(float solar, float load, float battery) {
 // Battery flow. It can still subdivide the stacks, but cannot establish an
 // independent three-sensor Balance.
 inline UsageBreakdown usage(float solar, float load, float battery,
-                            bool batteryMeasured = true) {
+                            bool batteryMeasured = true,
+                            bool showBalance = true) {
     const bool haveSolar = std::isfinite(solar);
     const bool haveLoad = std::isfinite(load);
     const float solarTotal = haveSolar ? std::max(solar, 0.0f) : unavailable();
@@ -81,6 +82,20 @@ inline UsageBreakdown usage(float solar, float load, float battery,
 
     result.charge = std::max(battery, 0.0f);
     result.discharge = std::max(-battery, 0.0f);
+    if (!batteryMeasured || !showBalance) {
+        // The normal user view preserves the measured Solar and Load totals
+        // and treats Battery only as a subdivision of those bars. Diagnostic
+        // conflict extensions are reserved for the Balance-visible view.
+        result.charge = std::min(result.charge, solarTotal);
+        result.discharge = std::min(result.discharge, loadTotal);
+        result.solarRemainder = solarTotal - result.charge;
+        result.loadRemainder = loadTotal - result.discharge;
+        result.chargeSegment = segment(0.0f, result.charge);
+        result.solarSegment = segment(result.charge, solarTotal);
+        result.dischargeSegment = segment(0.0f, -result.discharge);
+        result.loadSegment = segment(-result.discharge, -loadTotal);
+        return result;
+    }
     const float balanceIn = batteryMeasured ? std::max(result.balance, 0.0f) : 0.0f;
     const float balanceOut = batteryMeasured ? std::max(-result.balance, 0.0f) : 0.0f;
     const float solarDirect = solarTotal - result.charge - balanceIn;

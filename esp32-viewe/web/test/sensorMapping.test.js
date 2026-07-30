@@ -15,6 +15,7 @@ function mapping(entries = [
 ]) {
   return {
     source: 'adc',
+    balance_visible: false,
     physical_sensors: entries.map(([id, role, direction], index) => ({
       id,
       label: `Sensor ${index + 1}`,
@@ -53,6 +54,9 @@ test('clone and equality compare only persisted mapping choices', () => {
   draft.physical_sensors[0].role = 'load';
   assert.equal(mappingsEqual(saved, draft), false);
   assert.equal(saved.physical_sensors[0].role, 'solar');
+  draft.physical_sensors[0].role = 'solar';
+  draft.balance_visible = true;
+  assert.equal(mappingsEqual(saved, draft), false);
 });
 
 test('draft polarity immediately reverses effective current and power', () => {

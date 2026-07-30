@@ -407,27 +407,45 @@ void rebuildSavedList() {
         lv_obj_remove_style_all(row);
         lv_obj_set_size(row, lv_pct(100), 44);
         lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+        lv_obj_set_flex_align(
+            row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+            LV_FLEX_ALIGN_CENTER);
         lv_obj_set_style_pad_column(row, 4, 0);
+        lv_obj_set_style_border_width(row, 0, 0);
+        lv_obj_set_style_border_width(row, 1, LV_PART_MAIN);
+        lv_obj_set_style_border_side(row, LV_BORDER_SIDE_BOTTOM, 0);
+        lv_obj_set_style_border_color(row, ui_theme::border(), 0);
+        lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_bg_color(
+            row, ui_theme::surfaceAlt(), LV_STATE_PRESSED);
+        lv_obj_set_style_bg_opa(row, LV_OPA_COVER, LV_STATE_PRESSED);
+        lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
         lv_obj_set_user_data(row, info);
         lv_obj_add_event_cb(row, savedInfoDeleteCb, LV_EVENT_DELETE, nullptr);
+        lv_obj_add_event_cb(row, savedConnectCb, LV_EVENT_CLICKED, info);
 
-        lv_obj_t* connectButton = lv_btn_create(row);
-        lv_obj_set_height(connectButton, 40);
-        lv_obj_set_flex_grow(connectButton, 1);
-        lv_obj_add_event_cb(connectButton, savedConnectCb,
-                            LV_EVENT_CLICKED, info);
-        lv_obj_t* label = lv_label_create(connectButton);
+        lv_obj_t* wifiIcon = lv_label_create(row);
+        lv_obj_set_width(wifiIcon, 28);
+        lv_obj_set_style_text_align(wifiIcon, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(wifiIcon, ui_theme::mutedText(), 0);
+        lv_label_set_text(wifiIcon, LV_SYMBOL_WIFI);
+
+        lv_obj_t* label = lv_label_create(row);
         lv_label_set_text(label, ssid);
         lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-        lv_obj_set_width(label, lv_pct(100));
-        lv_obj_center(label);
+        lv_obj_set_width(label, 0);
+        lv_obj_set_flex_grow(label, 1);
 
         lv_obj_t* forgetButton = lv_btn_create(row);
+        lv_obj_remove_style_all(forgetButton);
         lv_obj_set_size(forgetButton, 42, 40);
+        lv_obj_set_ext_click_area(forgetButton, 2);
         lv_obj_add_event_cb(forgetButton, savedForgetCb,
                             LV_EVENT_CLICKED, info);
         lv_obj_t* forgetLabel = lv_label_create(forgetButton);
         lv_label_set_text(forgetLabel, LV_SYMBOL_TRASH);
+        lv_obj_set_style_text_color(
+            forgetLabel, ui_theme::mutedText(), 0);
         lv_obj_center(forgetLabel);
     }
 }
@@ -437,42 +455,64 @@ void savedCloseCb(lv_event_t*) { closeSavedOverlay(); }
 void showSavedOverlay(lv_event_t*) {
     if (savedOverlay) return;
     savedOverlay = lv_obj_create(lv_layer_top());
-    lv_obj_remove_style_all(savedOverlay);
-    lv_obj_set_size(savedOverlay, lv_pct(100), lv_pct(100));
-    lv_obj_set_style_bg_color(savedOverlay, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(savedOverlay, LV_OPA_70, 0);
+    ui_theme::styleScreen(savedOverlay, 5);
     lv_obj_set_flex_flow(savedOverlay, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_flex_align(savedOverlay, LV_FLEX_ALIGN_CENTER,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(savedOverlay, 6, 0);
 
-    lv_obj_t* panel = lv_obj_create(savedOverlay);
-    ui_theme::styleCard(panel, 8);
-    lv_obj_set_size(panel, lv_pct(92), lv_pct(84));
-    lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_row(panel, 6, 0);
-
-    lv_obj_t* titleRow = lv_obj_create(panel);
+    lv_obj_t* titleRow = lv_obj_create(savedOverlay);
     lv_obj_remove_style_all(titleRow);
-    lv_obj_set_size(titleRow, lv_pct(100), 36);
+    lv_obj_set_size(titleRow, lv_pct(100), 42);
     lv_obj_set_flex_flow(titleRow, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(titleRow, LV_FLEX_ALIGN_SPACE_BETWEEN,
+    lv_obj_set_flex_align(titleRow, LV_FLEX_ALIGN_START,
                           LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_t* backButton = lv_btn_create(titleRow);
+    lv_obj_remove_style_all(backButton);
+    lv_obj_set_size(backButton, 38, 40);
+    lv_obj_set_ext_click_area(backButton, 6);
+    lv_obj_add_event_cb(
+        backButton, savedCloseCb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* backLabel = lv_label_create(backButton);
+    lv_label_set_text(backLabel, LV_SYMBOL_LEFT);
+    lv_obj_set_style_text_color(backLabel, ui_theme::accent(), 0);
+    lv_obj_center(backLabel);
     lv_obj_t* title = lv_label_create(titleRow);
     lv_label_set_text(title, "Saved networks");
     lv_obj_set_style_text_font(title, &lv_font_montserrat_18, 0);
-    lv_obj_t* closeButton = lv_btn_create(titleRow);
-    lv_obj_set_size(closeButton, 38, 34);
-    lv_obj_add_event_cb(closeButton, savedCloseCb, LV_EVENT_CLICKED, nullptr);
-    lv_label_set_text(lv_label_create(closeButton), LV_SYMBOL_CLOSE);
 
-    savedList = lv_obj_create(panel);
+    savedList = lv_list_create(savedOverlay);
+    ui_theme::styleCard(savedList, 2);
     lv_obj_set_width(savedList, lv_pct(100));
     lv_obj_set_height(savedList, 0);
     lv_obj_set_flex_grow(savedList, 1);
     lv_obj_set_flex_flow(savedList, LV_FLEX_FLOW_COLUMN);
-    lv_obj_set_style_pad_all(savedList, 2, 0);
-    lv_obj_set_style_pad_row(savedList, 2, 0);
+    lv_obj_set_style_pad_row(savedList, 0, 0);
     rebuildSavedList();
+
+    lv_obj_t* actionRow = lv_obj_create(savedOverlay);
+    lv_obj_remove_style_all(actionRow);
+    lv_obj_set_size(actionRow, lv_pct(100), 40);
+    lv_obj_set_flex_flow(actionRow, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(actionRow, 5, 0);
+
+    lv_obj_t* cancelButton = lv_btn_create(actionRow);
+    lv_obj_set_height(cancelButton, 40);
+    lv_obj_set_flex_grow(cancelButton, 1);
+    lv_obj_set_style_bg_color(cancelButton, ui_theme::surfaceAlt(), 0);
+    lv_obj_set_style_bg_opa(cancelButton, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_color(cancelButton, ui_theme::border(), 0);
+    lv_obj_set_style_border_width(cancelButton, 1, 0);
+    lv_obj_set_style_radius(cancelButton, 6, 0);
+    lv_obj_set_style_text_color(cancelButton, ui_theme::text(), 0);
+    lv_obj_add_event_cb(
+        cancelButton, savedCloseCb, LV_EVENT_CLICKED, nullptr);
+    lv_obj_t* cancelLabel = lv_label_create(cancelButton);
+    lv_label_set_text(cancelLabel, "Cancel");
+    lv_obj_center(cancelLabel);
+
+    lv_obj_t* actionSpacer = lv_obj_create(actionRow);
+    lv_obj_remove_style_all(actionSpacer);
+    lv_obj_set_height(actionSpacer, 40);
+    lv_obj_set_flex_grow(actionSpacer, 1);
 }
 
 void rowDeleteCb(lv_event_t* e) {

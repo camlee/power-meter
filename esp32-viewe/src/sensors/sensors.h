@@ -127,6 +127,15 @@ struct AdcCaptureResult {
     AdcCapturePoint points[kAdcCapturePointCapacity]{};
 };
 
+struct AdcReductionDiagnostics {
+    uint32_t windows = 0;
+    uint32_t cleanWindows = 0;
+    uint32_t toleratedWindows = 0;
+    uint32_t rejectedWindows = 0;
+    uint32_t validSamples = 0;
+    uint32_t rejectedSamples = 0;
+};
+
 bool isConfigured(const Reading& reading);
 bool isCalculationEligible(const Reading& reading);
 bool isDirectDutyEligible(const Reading& reading);
@@ -153,6 +162,8 @@ bool getLatest(SensorId id, Reading& out);
 // mapping. This is the diagnostics/configuration surface; operational
 // consumers should continue using logical getLatest().
 bool getLatestPhysical(uint8_t physicalSensor, Reading& out);
+bool getAdcReductionDiagnostics(
+    uint8_t physicalSensor, AdcReductionDiagnostics& out);
 
 // --- Derived values ----------------------------------------------------------
 // Duty cycle over the most recent `window` samples: mean power / near-peak

@@ -110,8 +110,13 @@ source-specific scheduler targets are 5 ms for the built-in ESP32 ADC and
 15 ms for ADS1115. Each loop acquires voltage and current together for every
 configured physical channel, calibrates those observations, and adds them to
 the production reducer. The reducer publishes one `Reading` per channel every
-500 ms; normal power, duty, energy, and history consumers continue to use that
-stream. ADS1115's nominal conversion rate applies to individual conversions,
+500 ms. A window is calculation-eligible when at least 80% of its observations
+are valid. Rejected spikes are excluded from the operational mean; a sustained
+out-of-range window remains visible with its finite diagnostic mean but is not
+used for power or energy. Per-physical-sensor clean/tolerated/rejected counters
+make this distinction observable. Normal power, duty, energy, and history
+consumers continue to use that stream. ADS1115's nominal conversion rate
+applies to individual conversions,
 not logical samples: the WROOM mapping requires four sequential conversions
 for its In and Out voltage/current pairs.
 
@@ -155,16 +160,22 @@ read hardware or files directly.
 
 Current LVGL top-level screens are:
 
-- **Home:** direct-Battery-first charging summary, 30-second net trend, Battery
-  voltage, and the immediately applied/persisted manual brightness slider.
+- **Home:** direct-Battery-first charging summary over a 30-second net trend
+  refreshed at 2 Hz. The numeric KPI normally publishes a trailing
+  four-sample average every two seconds, with an early update after two
+  consecutive readings confirm a meaningful step. Battery voltage uses the
+  same averaging window, and the active day/night brightness slider applies
+  immediately and persists on release.
 - **Usage:** rolling and calendar history whose positive Solar and negative
-  Load totals are subdivided by Battery charge/discharge, with signed Balance
-  shown as a muted filled segment. Contradictory three-sensor measurements use
+  Load totals are subdivided by Battery charge/discharge. Signed Balance is
+  hidden by default and can be enabled from sensor mapping as a muted filled
+  segment. Contradictory three-sensor measurements use
   a floating conflict stack that preserves every magnitude. Inferred two-sensor
   history has no Balance series. Normal stacks order Battery charge/discharge
   at zero, then Solar/Load, with any Balance residual at the outer tip.
-- **Power:** Solar and Load live metrics, plus Battery and Balance when Battery
-  is mapped.
+- **Power:** Solar and Load live metrics, plus Battery when mapped or inferred
+  Net when it is not. Balance appears only when Battery is mapped and its
+  diagnostic visibility is enabled.
 - **Sensors:** raw voltage/current/power and short trend charts for mapped
   logical sensors only.
 - **Settings:** nested configuration and diagnostics pages:

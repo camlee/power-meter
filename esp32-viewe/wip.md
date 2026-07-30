@@ -32,7 +32,7 @@ verified, and flashed to `meter2` before the next phase begins.
   - Preserve feature parity and formally support an unmapped Battery.
 - [x] **(e) Add LVGL sensor-mapping UI**
 - [x] **(f) Add Web sensor-mapping UI**
-- [ ] **(g) Final UI refinements**
+- [x] **(g) Final UI refinements**
   - Balance visibility controls and final interaction/presentation cleanup.
 
 ## Phase (a) verification oracle
@@ -296,3 +296,88 @@ sets the embedded version explicitly.
 - Web tests passed: 29/29 and the embedded asset check passed. Firmware version
   `0.2.3-f.4` was flashed to `meter2` over USB; esptool verified every image,
   and the running device reported the matching version and Web build.
+
+### Phase (g) verification — 2026-07-30
+
+- Balance is now a persisted diagnostic display option, hidden by default from
+  both Usage and Power series/legends/KPIs and available from the LVGL and Web
+  mapping editors. Hidden mode preserves measured Solar/Load stack totals
+  without drawing Balance conflict extensions.
+- Without mapped Battery, Power presents the Solar-minus-Load fallback as Net.
+  With Battery mapped it presents Battery, and adds Balance only when enabled.
+- Home now updates its presentation every two seconds, reports `Idle` near
+  zero, distinguishes the active day/night brightness slot, and uses a dynamic
+  nice-number axis that always includes a labeled `0 W`. Charging colors are
+  blue through 50 W and green above 50 W. Web suppresses sensor-error wording
+  until its first live reading arrives.
+- Mapping provides one `Calibrate sensors` handoff to the existing Sensors
+  voltage/current workflow. Saved networks now follows the same full-screen
+  back-chevron and bottom-Cancel pattern as mapping and calibration.
+- ADC/ADS1115 acquisition retains its 5/15 ms cadence. The 500 ms reducer now
+  accepts windows with at least 80% valid observations and excludes rejected
+  spikes from valid means, while sustained out-of-range values remain visible
+  for calibration. Physical mapping diagnostics report clean, tolerated, and
+  rejected window/sample counters.
+- Native tests passed: 50/50. Web tests passed: 33/33. The embedded Web asset
+  check, protected Demo fixture, and both VIEWE and WROOM firmware builds
+  passed; WROOM remains within its application partition at 96.5% flash use.
+- Firmware `0.2.3-g.5` was flashed to `meter2` over USB and reports Web build
+  `f900ed8a9fb0c2aa`. Before the reducer fix, a 20-check probe caught Sensor 1
+  dropping out of range. Afterward it remained valid for 40/40 checks while
+  counters showed six tolerated windows containing seven rejected samples;
+  Sensor 2 remained clean, and Sensor 3 correctly remained out of range due
+  to its sustained roughly 59 A reading. The mapping layout and calibration
+  handoff were also exercised through the remote display.
+- Home graphs now refresh every 500 ms. LVGL and Web KPI values normally show
+  the trailing four-point average every two seconds, but two consecutive
+  samples beyond `max(5 W, 5%)` publish early so a real load step remains
+  responsive. Web cadence uses browser receipt time, so replayed startup
+  frames cannot briefly turn the loading state into a missing-sensor error.
+- Calibration is a reusable full-screen LVGL overlay with back navigation,
+  `Calibration` title, a physical/role/measurement subtitle such as
+  `Sensor 1 (Solar) - Current`, live Old/New preview, focused numeric editing,
+  and bottom Cancel/Reset/Save actions. Sensor charts and the mapping V/A
+  pencils open the same implementation; the former inline editor and the
+  generic `Calibrate sensors` handoff are no longer allocated.
+- Mapping presents rounded V/A values with direct edit pencils and calls the
+  diagnostic option `Show Balance in graphs` in both UIs. The Web editor uses
+  equivalent direct measurement pencils.
+- Saved Wi-Fi networks now use clean, text-first rows matching the nearby
+  network list, with a plain trash symbol retained for deletion.
+- Native tests passed: 55/55. Web tests passed: 37/37. The embedded Web asset
+  check, protected Demo fixture, and both VIEWE and WROOM firmware builds
+  passed; WROOM remains at 96.5% of its application partition.
+- The `0.2.3-g.6` preflight reported Web build `f5e1c7cadf31b289`, the expected
+  persisted ADC mapping, hidden Balance default, and live physical calibration
+  metadata for all three sensors. Its framebuffer confirmed the full-screen
+  layout and exact `Sensor 1 (Solar) - Voltage` subtitle; the only observed
+  label wrap was corrected.
+- Firmware `0.2.3-g.7` containing that final layout correction was then flashed
+  to `meter2` over USB, and esptool verified every written image.
+- Saved Wi-Fi rows now vertically center the Wi-Fi symbol, SSID, and plain
+  delete symbol as one aligned row.
+- Calibration removes its redundant preview caption and lets the graph consume
+  all free height. Three engineering-value labels and `-30s / -15s / now`
+  labels make both axes explicit.
+- Calc moved beside Gain. Its focused mode hides the header, Offset, and bottom
+  actions while preserving Old/New, the graph, and Gain. New becomes the
+  trusted-reference input, and each valid keypad change recalculates and
+  displays Gain immediately; keypad accept keeps the staged result and cancel
+  restores the prior calibration.
+- Native tests passed: 55/55. Web tests passed: 37/37, and the embedded Web
+  asset check passed. Firmware `0.2.3-g.8` was flashed to `meter2` over USB,
+  esptool verified every image, and live framebuffer review passed for the
+  saved-network, normal-calibration, and focused-Calc layouts.
+- Offset, Gain, and Calc now share one focused calibration-edit layout: the
+  header, unrelated calibration row, status text, and bottom actions are
+  hidden while Old/New, the live graph, and the active field remain visible.
+  A roughly two-fifths-height numeric keypad leaves useful graph space.
+- The active row replaces Zero/Calc with compact Cancel and Done actions.
+  Invalid or incomplete input is handled silently by keeping Done disabled,
+  eliminating transient validation and instructional messages while typing.
+  Calc continues to update Gain and its preview live from a valid reference.
+- The VIEWE build passed, native tests passed 55/55, Web tests passed 37/37,
+  and the embedded Web asset check passed. The working firmware was flashed
+  to `meter2` over USB and esptool verified every image. Live framebuffer
+  review passed for normal, Offset, Gain, empty Calc, populated Calc, and
+  cancel/restore states.

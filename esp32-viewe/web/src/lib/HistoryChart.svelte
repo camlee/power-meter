@@ -8,6 +8,7 @@
   export let endTimeMs = 0;
   export let tickMinutes = 0;
   export let pwmUiEnabled = false;
+  export let showBalance = false;
 
   // ---------------------------------------------------------------------
   // Constants
@@ -97,7 +98,9 @@
       : (Number.isFinite(bucket.charging) && Number.isFinite(bucket.batteryUsage)
         ? bucket.charging - bucket.batteryUsage
         : Number.NaN);
-    return usageBreakdown(bucket.in, bucket.out, battery, batteryMeasured);
+    return usageBreakdown(
+      bucket.in, bucket.out, battery, batteryMeasured, showBalance,
+    );
   }
 
   function computeYAxis(coveredBuckets) {
@@ -199,7 +202,9 @@
         drawRange(ctx, x, barWidth, flow.solarSegment, colors.panel, valueToY);
         drawRange(ctx, x, barWidth, flow.loadSegment, colors.load, valueToY);
         drawRange(ctx, x, barWidth, flow.dischargeSegment, colors.battery, valueToY);
-        drawRange(ctx, x, barWidth, flow.balanceSegment, colors.balance, valueToY);
+        if (showBalance) {
+          drawRange(ctx, x, barWidth, flow.balanceSegment, colors.balance, valueToY);
+        }
       }
     });
   }
@@ -314,7 +319,8 @@
   // Lifecycle
   // ---------------------------------------------------------------------
 
-  $: buckets, timelineBasis, startTimeMs, endTimeMs, tickMinutes, pwmUiEnabled, draw();
+  $: buckets, timelineBasis, startTimeMs, endTimeMs, tickMinutes,
+    pwmUiEnabled, showBalance, draw();
 
   onMount(() => {
     const observer = new ResizeObserver(draw);
@@ -327,7 +333,9 @@
   });
 </script>
 
-<canvas bind:this={canvas} aria-label="Stacked history power graph with Balance segments, time, and watt axes"></canvas>
+<canvas bind:this={canvas}
+  aria-label={`Stacked history power graph${showBalance
+    ? ' with Balance segments' : ''}, time, and watt axes`}></canvas>
 
 <style>
   canvas {

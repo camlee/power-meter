@@ -5,6 +5,7 @@
 #include "../../data/power_flow.h"
 #include "../../device/hardware_profile.h"
 #include "../../memory/heap_policy.h"
+#include "../../sensors/sensor_mapping.h"
 #include "../../sensors/sensors.h"
 #include "../../time/time_service.h"
 #include "../components/linear_progress.h"
@@ -97,6 +98,7 @@ uint8_t selectedRange = kDefaultRange;
 uint8_t visibleRanges[sizeof(kRanges) / sizeof(kRanges[0])] = {};
 uint8_t visibleRangeCount = 0;
 bool rangeOptionsHaveTime = false;
+bool showBalance = false;
 lv_obj_t* screenObject = nullptr;
 uint32_t pendingJob = 0;
 uint32_t nextRefreshAtMs = 0;
@@ -126,7 +128,7 @@ bool provideMpptRanges(const void* context, size_t point,
     const auto& storage = *static_cast<const MpptStorage*>(context);
     const power_flow::UsageBreakdown flow = power_flow::usage(
         storage.solar[point], storage.load[point], storage.battery[point],
-        storage.batteryMeasured[point]);
+        storage.batteryMeasured[point], showBalance);
     const power_flow::SegmentRange segments[] = {
         flow.chargeSegment,
         flow.solarSegment,
@@ -254,7 +256,9 @@ void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
         }
     }
     if (balanceLegendItem) {
-        if (hasMeasuredBattery) lv_obj_clear_flag(balanceLegendItem, LV_OBJ_FLAG_HIDDEN);
+        if (showBalance && hasMeasuredBattery) {
+            lv_obj_clear_flag(balanceLegendItem, LV_OBJ_FLAG_HIDDEN);
+        }
         else lv_obj_add_flag(balanceLegendItem, LV_OBJ_FLAG_HIDDEN);
     }
     const bool relative =
@@ -279,7 +283,7 @@ void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
     data.utcOffsetMinutes = time_service::utcOffsetMinutes();
     if (!hardware_profile::kControllerIsPwm) {
         data.rangeSeries = rangeSeries;
-        data.rangeSeriesCount = 5;
+        data.rangeSeriesCount = showBalance ? 5 : 4;
         data.rangePointProvider = provideMpptRanges;
         data.rangePointContext = &chartStorage->mppt;
     }
@@ -406,6 +410,7 @@ lv_obj_t* addLegendItem(lv_obj_t* parent, lv_color_t color, const char* text)
 
 lv_obj_t* create(lv_obj_t* parent)
 {
+    showBalance = sensors::mapping::balanceVisible();
     lv_obj_t* screen = lv_obj_create(parent);
     screenObject = screen;
     // Usage is chart-first: compact controls leave the rest of the page for

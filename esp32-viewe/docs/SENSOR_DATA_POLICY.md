@@ -74,6 +74,13 @@ also retains raw ADC input and the unbounded converted observation.
 
 This raw visibility is important during calibration and on-site diagnosis.
 
+High-rate ADC observations are reduced into 500 ms readings. A window is valid
+when at least 80% of its observations are valid; rejected observations are
+excluded from the valid mean. Below that threshold the window remains
+ineligible, while finite out-of-range observations remain available as a
+diagnostic mean. This prevents a single electrical/scheduling spike from
+creating a chart gap without concealing sustained bad input.
+
 ## Calculation eligibility
 
 The initial inclusive calculation limits are:

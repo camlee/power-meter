@@ -89,3 +89,16 @@ test('inferred Battery subdivides history without claiming Balance', () => {
   assert.equal(Number.isNaN(flow.balanceSegment.from), true);
   assertTotals(flow);
 });
+
+test('hidden Balance preserves measured totals without conflict extensions', () => {
+  const flow = usageBreakdown(20, 6, 22, true, false);
+  assert.equal(flow.charge, 20);
+  assert.equal(flow.solarRemainder, 0);
+  assert.equal(flow.loadRemainder, 6);
+  assert.equal(flow.discharge, 0);
+  assert.equal(flow.conflict, false);
+  assert.deepEqual(flow.chargeSegment, { from: 0, to: 20 });
+  assert.deepEqual(flow.loadSegment, { from: 0, to: -6 });
+  assert.equal(Number.isNaN(flow.balanceSegment.from), true);
+  assertTotals(flow);
+});

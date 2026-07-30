@@ -19,7 +19,10 @@ export async function getSensorMapping() {
 }
 
 export async function saveSensorMapping(mapping) {
-  const body = { source: mapping.source };
+  const body = {
+    source: mapping.source,
+    balance_visible: mapping.balance_visible === true,
+  };
   for (const sensor of mapping.physical_sensors || []) {
     body[`${sensor.id}_role`] = sensor.role;
     body[`${sensor.id}_current_direction`] = sensor.current_direction;

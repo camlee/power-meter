@@ -103,6 +103,9 @@ void webStatus() {
     const bool hasIn = sensors::getLatest(sensors::SENSOR_SOLAR, in);
     const bool hasOut = sensors::getLatest(sensors::SENSOR_LOAD, out);
     sensors::getLatest(sensors::SENSOR_BATTERY, aux);
+    sensors::mapping::PhysicalSensorId batteryPhysical{};
+    const bool batteryMapped = sensors::mapping::physicalForLogical(
+        sensor_mode::get(), sensors::SENSOR_BATTERY, batteryPhysical);
     float net = NAN;
     sensors::getNetBatteryPower(net);
     time_service::Anchor anchor{};
@@ -145,7 +148,9 @@ void webStatus() {
              "\"device_id\":\"%s\",\"hostname\":\"%s\",\"uptime_ms\":%lu,"
              "\"time_source\":\"%s\",\"date\":\"%s\",\"time\":\"%s\","
              "\"build_version\":\"%s\",\"build_date\":\"%s\",\"build_time\":\"%s\","
-             "\"sensor_mode\":\"%s\",\"appearance\":{\"mode\":\"%s\",\"dark\":%s},"
+             "\"sensor_mode\":\"%s\",\"battery_mapped\":%s,"
+             "\"balance_visible\":%s,"
+             "\"appearance\":{\"mode\":\"%s\",\"dark\":%s},"
              "\"data_storage_percent\":%u,\"ws_connections\":%u,\"ws_connection_limit\":%u,"
              "\"in\":{\"voltage\":%s,\"current\":%s,\"power\":%s},"
              "\"out\":{\"voltage\":%s,\"current\":%s,\"power\":%s},"
@@ -161,7 +166,10 @@ void webStatus() {
              hardware_profile::kSupportsUart ? "true" : "false",
              device_identity::getDeviceId(), network_manager::getHostname(), static_cast<unsigned long>(millis()),
              timeSource, date, clock, BUILD_VERSION, BUILD_DATE, BUILD_TIME,
-             sensorModeName(sensor_mode::get()), display_web_api::appearanceModeName(),
+             sensorModeName(sensor_mode::get()),
+             batteryMapped ? "true" : "false",
+             sensors::mapping::balanceVisible() ? "true" : "false",
+             display_web_api::appearanceModeName(),
              display_web_api::isDark() ? "true" : "false", storagePercent,
              static_cast<unsigned>(live_websocket_service::clientCount()),
              static_cast<unsigned>(live_websocket_service::clientLimit()),
@@ -556,6 +564,25 @@ void appendPhysicalSensorJson(
     appendJsonFloat(json, hasReading ? reading.voltageInputV : NAN);
     json += ",\"input_current_v\":";
     appendJsonFloat(json, hasReading ? reading.currentInputV : NAN);
+    json += ",\"reduction\":";
+    sensors::AdcReductionDiagnostics diagnostics{};
+    if (sensors::getAdcReductionDiagnostics(index, diagnostics)) {
+        json += "{\"windows\":";
+        json += String(diagnostics.windows);
+        json += ",\"clean_windows\":";
+        json += String(diagnostics.cleanWindows);
+        json += ",\"tolerated_windows\":";
+        json += String(diagnostics.toleratedWindows);
+        json += ",\"rejected_windows\":";
+        json += String(diagnostics.rejectedWindows);
+        json += ",\"valid_samples\":";
+        json += String(diagnostics.validSamples);
+        json += ",\"rejected_samples\":";
+        json += String(diagnostics.rejectedSamples);
+        json += '}';
+    } else {
+        json += "null";
+    }
     json += ",\"calibration\":";
     sensors::calibration::Source calibrationSource{};
     if (calibrationSourceForMode(mode, calibrationSource)) {
@@ -578,7 +605,9 @@ void appendSensorMappingJson(String& json, sensor_mode::Mode mode) {
     const sensors::mapping::Profile profile = sensors::mapping::get(mode);
     json = "{\"api_version\":1,\"source\":\"";
     json += sensor_mode::name(mode);
-    json += "\",\"requires_restart\":true,\"physical_sensors\":[";
+    json += "\",\"requires_restart\":true,\"balance_visible\":";
+    json += sensors::mapping::balanceVisible() ? "true" : "false";
+    json += ",\"physical_sensors\":[";
     for (uint8_t index = 0; index < sensors::mapping::kPhysicalSensorCount;
          ++index) {
         if (index) json += ',';
@@ -603,11 +632,13 @@ void webSensorMapping() {
 
     const String body = server->arg("plain");
     String requestedSource;
+    bool balanceVisible = false;
     if (!http_utils::jsonString(body, "source", requestedSource) ||
-        requestedSource != sensor_mode::name(mode)) {
+        requestedSource != sensor_mode::name(mode) ||
+        !http_utils::jsonBool(body, "balance_visible", balanceVisible)) {
         server->send(
             409, "application/json",
-            "{\"error\":\"mapping source must match the active sensor source\"}");
+            "{\"error\":\"mapping source and display options must be valid\"}");
         return;
     }
 
@@ -640,7 +671,7 @@ void webSensorMapping() {
             "{\"error\":\"map Solar and Load exactly once; Battery at most once\"}");
         return;
     }
-    if (!sensors::mapping::set(mode, candidate)) {
+    if (!sensors::mapping::set(mode, candidate, balanceVisible)) {
         server->send(
             500, "application/json",
             "{\"error\":\"could not persist sensor mapping\"}");

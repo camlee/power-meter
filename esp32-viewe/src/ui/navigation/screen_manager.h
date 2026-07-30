@@ -21,6 +21,11 @@ public:
     // Build all the registered tabs
     void build();
 
+    // Selects a registered top-level screen. This is used by full-screen
+    // workflows that hand off to an existing editor rather than duplicating
+    // that editor inside an overlay.
+    void showScreen(size_t index);
+
 private:
     ScreenManager() = default;
 

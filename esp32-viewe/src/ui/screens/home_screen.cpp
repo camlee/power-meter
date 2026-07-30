@@ -2,6 +2,8 @@
 
 #include "../../sensors/sensors.h"
 #include "../display_brightness.h"
+#include "../home_axis.h"
+#include "../home_kpi.h"
 #include "../theme/ui_theme.h"
 
 #include <algorithm>
@@ -11,11 +13,9 @@
 namespace home_screen {
 namespace {
 
-constexpr uint32_t kRefreshMs = sensors::kSampleIntervalMs;
+constexpr uint32_t kRefreshMs = 500;
 constexpr size_t kPointCount = 60;
-constexpr float kSoftMinimum = -60.0f;
-constexpr float kSoftMaximum = 60.0f;
-constexpr float kThresholds[] = {-50.0f, -25.0f, 0.0f, 25.0f, 50.0f};
+constexpr float kIdleThresholdWatts = 0.5f;
 
 lv_obj_t* screenObject = nullptr;
 lv_obj_t* stateLabel = nullptr;
@@ -23,19 +23,24 @@ lv_obj_t* powerValue = nullptr;
 lv_obj_t* plot = nullptr;
 lv_obj_t* batteryVoltage = nullptr;
 lv_obj_t* brightnessSlider = nullptr;
+lv_obj_t* brightnessTitleLabel = nullptr;
 lv_obj_t* brightnessValueLabel = nullptr;
 float values[kPointCount]{};
 size_t valueCount = 0;
-float axisMinimum = kSoftMinimum;
-float axisMaximum = kSoftMaximum;
+float axisMinimum = -1.0f;
+float axisMaximum = 1.0f;
+float axisStep = 1.0f;
 sensors::Reading readings[sensors::SENSOR_COUNT][kPointCount]{};
+home_kpi::AdaptiveFilter powerKpi;
 
 lv_color_t bandColor(float watts) {
     if (watts < -50.0f) return lv_color_hex(ui_theme::isDark() ? 0xF07A70 : 0xC33B32);
     if (watts < -5.0f) return lv_color_hex(ui_theme::isDark() ? 0xE0A447 : 0xB86F00);
     if (watts < 5.0f) return ui_theme::mutedText();
-    if (watts <= 50.0f) return lv_color_hex(ui_theme::isDark() ? 0x55C982 : 0x168447);
-    return lv_color_hex(ui_theme::isDark() ? 0x5596E6 : 0x1464DF);
+    if (watts <= 50.0f) {
+        return lv_color_hex(ui_theme::isDark() ? 0x5596E6 : 0x1464DF);
+    }
+    return lv_color_hex(ui_theme::isDark() ? 0x55C982 : 0x168447);
 }
 
 int yFor(const lv_area_t& area, float value) {
@@ -72,16 +77,19 @@ void drawPlot(lv_event_t* event) {
     lv_draw_line_dsc_init(&grid);
     grid.color = ui_theme::border();
     grid.width = 1;
-    for (float threshold : kThresholds) {
-        if (threshold < axisMinimum || threshold > axisMaximum) continue;
-        const int y = yFor(area, threshold);
+    for (float tick = axisMinimum;
+         tick <= axisMaximum + axisStep * 0.01f;
+         tick += axisStep) {
+        const float value =
+            std::fabs(tick) < axisStep * 0.001f ? 0.0f : tick;
+        const int y = yFor(area, value);
         lv_point_t p1{static_cast<lv_coord_t>(left), static_cast<lv_coord_t>(y)};
         lv_point_t p2{static_cast<lv_coord_t>(right), static_cast<lv_coord_t>(y)};
-        grid.width = threshold == 0.0f ? 2 : 1;
+        grid.width = value == 0.0f ? 2 : 1;
         lv_draw_line(ctx, &grid, &p1, &p2);
-        if (threshold == 0.0f) continue;
         char text[12];
-        lv_snprintf(text, sizeof(text), "%d W", static_cast<int>(threshold));
+        lv_snprintf(text, sizeof(text), "%d W",
+                    static_cast<int>(lroundf(value)));
         drawLabel(ctx, text, area.x1, y - 7, ui_theme::mutedText());
     }
 
@@ -119,15 +127,33 @@ void drawPlot(lv_event_t* event) {
     }
 }
 
-bool eligibleVoltage(sensors::SensorId id, float& voltage) {
-    sensors::Reading reading{};
-    if (!sensors::getLatest(id, reading) || !sensors::isCalculationEligible(reading)) return false;
-    voltage = reading.voltage;
-    return std::isfinite(voltage);
+bool averageEligibleVoltage(sensors::SensorId id, float& voltage) {
+    sensors::Reading recent[4]{};
+    const size_t count = sensors::getRecent(id, recent, 4);
+    float total = 0.0f;
+    size_t eligible = 0;
+    for (size_t index = 0; index < count; ++index) {
+        if (sensors::isCalculationEligible(recent[index]) &&
+            std::isfinite(recent[index].voltage)) {
+            total += recent[index].voltage;
+            ++eligible;
+        }
+    }
+    if (eligible == 0) return false;
+    voltage = total / static_cast<float>(eligible);
+    return true;
 }
 
 void updateBrightnessLabel() {
-    if (!brightnessValueLabel) return;
+    if (!brightnessValueLabel || !brightnessTitleLabel) return;
+    if (!display_brightness::autoDayNight()) {
+        lv_label_set_text(brightnessTitleLabel, "Brightness");
+    } else {
+        lv_label_set_text(
+            brightnessTitleLabel,
+            display_brightness::usingNightBrightness()
+                ? "Brightness (night)" : "Brightness (day)");
+    }
     char text[8];
     lv_snprintf(text, sizeof(text), "%d%%", display_brightness::get());
     lv_label_set_text(brightnessValueLabel, text);
@@ -164,8 +190,8 @@ void update(lv_timer_t*) {
     valueCount = std::max(batteryCount, std::min(solarCount, loadCount));
     if (valueCount > kPointCount) valueCount = kPointCount;
 
-    float low = kSoftMinimum;
-    float high = kSoftMaximum;
+    float low = NAN;
+    float high = NAN;
     for (size_t i = 0; i < valueCount; ++i) {
         const size_t batteryOffset = valueCount > batteryCount ? valueCount - batteryCount : 0;
         const size_t flowOffset = valueCount > std::min(solarCount, loadCount)
@@ -184,41 +210,52 @@ void update(lv_timer_t*) {
         }
         values[i] = value;
         if (std::isfinite(value)) {
-            low = std::min(low, value);
-            high = std::max(high, value);
+            low = std::isfinite(low) ? std::min(low, value) : value;
+            high = std::isfinite(high) ? std::max(high, value) : value;
         }
     }
-    axisMinimum = std::min(kSoftMinimum, floorf(low / 20.0f) * 20.0f);
-    axisMaximum = std::max(kSoftMaximum, ceilf(high / 20.0f) * 20.0f);
+    const home_axis::Scale scale = home_axis::scale(low, high);
+    axisMinimum = scale.minimum;
+    axisMaximum = scale.maximum;
+    axisStep = scale.step;
 
-    float net = NAN;
-    if (sensors::getSystemNetPower(net)) {
+    float latestNet = NAN;
+    sensors::getSystemNetPower(latestNet);
+    const home_kpi::Result kpi =
+        powerKpi.add(lv_tick_get(), latestNet);
+    if (kpi.publish && kpi.available) {
+        const float net = kpi.value;
         char text[20];
         snprintf(text, sizeof(text), "%+.0f", static_cast<double>(net));
         lv_label_set_text(powerValue, text);
         lv_obj_set_style_text_color(powerValue, bandColor(net), 0);
-        lv_label_set_text(stateLabel, net > 0.0f ? "Charging" :
-                                      net < 0.0f ? "Discharging" : "Balanced");
+        lv_label_set_text(
+            stateLabel,
+            std::fabs(net) < kIdleThresholdWatts
+                ? "Idle" : net > 0.0f ? "Charging" : "Discharging");
         lv_obj_set_style_text_color(stateLabel, bandColor(net), 0);
-    } else {
+    } else if (kpi.publish) {
         lv_label_set_text(powerValue, "--");
         lv_obj_set_style_text_color(powerValue, ui_theme::mutedText(), 0);
-        lv_label_set_text(stateLabel, "Error - missing sensors");
+        lv_label_set_text(stateLabel, "Sensor readings unavailable");
         lv_obj_set_style_text_color(stateLabel, lv_color_hex(
             ui_theme::isDark() ? 0xF07A70 : 0xC33B32), 0);
     }
 
-    float voltage = NAN;
-    if (!eligibleVoltage(sensors::SENSOR_BATTERY, voltage)) {
-        eligibleVoltage(sensors::SENSOR_LOAD, voltage);
+    if (kpi.publish) {
+        float voltage = NAN;
+        if (!averageEligibleVoltage(sensors::SENSOR_BATTERY, voltage)) {
+            averageEligibleVoltage(sensors::SENSOR_LOAD, voltage);
+        }
+        char text[24];
+        if (std::isfinite(voltage)) {
+            snprintf(text, sizeof(text), "%.1f V",
+                     static_cast<double>(voltage));
+        } else {
+            snprintf(text, sizeof(text), "-- V");
+        }
+        lv_label_set_text(batteryVoltage, text);
     }
-    char text[24];
-    if (std::isfinite(voltage)) {
-        snprintf(text, sizeof(text), "%.1f V", static_cast<double>(voltage));
-    } else {
-        snprintf(text, sizeof(text), "-- V");
-    }
-    lv_label_set_text(batteryVoltage, text);
     lv_obj_invalidate(plot);
 }
 
@@ -244,7 +281,7 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_label_set_long_mode(stateLabel, LV_LABEL_LONG_DOT);
     lv_obj_set_style_text_align(stateLabel, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_style_text_font(stateLabel, &lv_font_montserrat_28, 0);
-    lv_label_set_text(stateLabel, "Error - missing sensors");
+    lv_label_set_text(stateLabel, "Starting sensors...");
 
     lv_obj_t* powerRow = lv_obj_create(summaryRow);
     lv_obj_remove_style_all(powerRow);
@@ -294,9 +331,10 @@ lv_obj_t* create(lv_obj_t* parent) {
     lv_obj_set_style_pad_right(brightnessRow, 2, 0);
     lv_obj_set_style_pad_column(brightnessRow, 10, 0);
 
-    lv_obj_t* brightnessLabel = lv_label_create(brightnessRow);
-    lv_label_set_text(brightnessLabel, "Brightness");
-    lv_obj_set_style_text_color(brightnessLabel, ui_theme::mutedText(), 0);
+    brightnessTitleLabel = lv_label_create(brightnessRow);
+    lv_label_set_text(brightnessTitleLabel, "Brightness");
+    lv_obj_set_style_text_color(
+        brightnessTitleLabel, ui_theme::mutedText(), 0);
 
     brightnessSlider = lv_slider_create(brightnessRow);
     lv_obj_set_height(brightnessSlider, 10);

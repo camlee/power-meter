@@ -78,6 +78,15 @@
     dispatch('cancel');
   }
 
+  function calibrate(sensor, measurement) {
+    if (busy || dirty || sensor.role === 'unmapped' ||
+        sensor.calibration?.editable !== true) return;
+    dispatch('calibrate', {
+      role: sensor.role,
+      measurement,
+    });
+  }
+
   async function save() {
     if (!valid || !dirty || busy) return;
     busy = true;
@@ -193,8 +202,24 @@
               title={statusLabel(sensor)} aria-label={statusLabel(sensor)}>
               {statusSymbol(sensor)}
             </span>
-            <span>{measurement(sensor.voltage, 'V')}</span>
-            <span>{measurement(sensor.current, 'A', 1, true)}</span>
+            <span class="editable-reading">
+              {measurement(sensor.voltage, 'V', 0)}
+              <button type="button" class="edit-reading"
+                disabled={busy || dirty || sensor.role === 'unmapped' ||
+                  sensor.calibration?.editable !== true}
+                aria-label={`Calibrate ${sensor.label} voltage`}
+                title="Calibrate voltage"
+                on:click={() => calibrate(sensor, 'voltage')}>✎</button>
+            </span>
+            <span class="editable-reading">
+              {measurement(sensor.current, 'A', 0, true)}
+              <button type="button" class="edit-reading"
+                disabled={busy || dirty || sensor.role === 'unmapped' ||
+                  sensor.calibration?.editable !== true}
+                aria-label={`Calibrate ${sensor.label} current`}
+                title="Calibrate current"
+                on:click={() => calibrate(sensor, 'current')}>✎</button>
+            </span>
             <span>{measurement(sensor.power, 'W', powerDigits, true)}</span>
           </div>
           <p class:warning={sensor.interpretation.warning}
@@ -217,6 +242,15 @@
       </div>
       <strong>{measurement(balance.value, 'W', powerDigits, true)}</strong>
     </section>
+    <label class="balance-visibility">
+      <input type="checkbox" checked={draft.balance_visible === true}
+        disabled={busy}
+        on:change={(event) => draft = {
+          ...draft, balance_visible: event.currentTarget.checked,
+        }} />
+      Show Balance in graphs
+      <small>Usage and Power graphs</small>
+    </label>
 
     <div class="mapping-actions">
       <button type="button" class="secondary" disabled={busy} on:click={cancel}>
@@ -444,6 +478,26 @@
   .sensor-readings span { white-space: nowrap; }
   .sensor-readings span:not(.sensor-state) { text-align: right; }
 
+  .editable-reading {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.25rem;
+  }
+
+  .edit-reading {
+    width: 1.5rem;
+    height: 1.5rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 0.95rem;
+  }
+
+  .edit-reading:hover:not(:disabled),
+  .edit-reading:focus-visible { color: var(--text); }
+
   .interpretation {
     grid-column: 1 / -1;
     min-height: 1rem;
@@ -469,6 +523,25 @@
     white-space: nowrap;
     font-variant-numeric: tabular-nums;
     font-size: 1.35rem;
+  }
+
+  .balance-visibility {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    align-items: center;
+    gap: 0.15rem 0.45rem;
+    margin-top: 0.75rem;
+    font-size: 0.88rem;
+  }
+
+  .balance-visibility input {
+    grid-row: 1 / 3;
+    accent-color: var(--accent);
+  }
+
+  .balance-visibility small {
+    color: var(--muted);
+    font-size: 0.72rem;
   }
 
   .mapping-actions {

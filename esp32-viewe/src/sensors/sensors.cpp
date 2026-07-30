@@ -8,6 +8,7 @@
 #include "sensor_mode.h"
 #include "sensor_calibration.h"
 #include "sensor_mapping.h"
+#include "adc_window_reducer.h"
 #include "memory/heap_policy.h"
 #include <algorithm>
 #include <cmath>
@@ -25,6 +26,7 @@ size_t writeIndex[SENSOR_COUNT] = {0, 0, 0};
 size_t count[SENSOR_COUNT] = {0, 0, 0};
 Reading physicalLatest[mapping::kPhysicalSensorCount];
 bool hasPhysicalLatest[mapping::kPhysicalSensorCount] = {false, false, false};
+AdcReductionDiagnostics reductionDiagnostics[mapping::kPhysicalSensorCount];
 SemaphoreHandle_t mutex = nullptr; // one mutex guards all 3 buffers; they're small
 SemaphoreHandle_t captureMutex = nullptr;
 mapping::Profile activeMapping{};
@@ -41,99 +43,6 @@ uint32_t acquisitionIntervalMs(sensor_mode::Mode mode) {
     return mode == sensor_mode::Mode::Ads1115
         ? kAds1115AcquisitionIntervalMs : kEsp32AdcAcquisitionIntervalMs;
 }
-
-struct AdcWindowAccumulator {
-    uint16_t sampleCount = 0;
-    uint16_t eligibleCount = 0;
-    uint16_t observedCount = 0;
-    bool configured = false;
-    bool rejected = false;
-    ReadingState rejectedState = ReadingState::Invalid;
-    float voltageInputSum = 0.0f;
-    float currentInputSum = 0.0f;
-    float voltageSum = 0.0f;
-    float currentSum = 0.0f;
-    float powerSum = 0.0f;
-    float absolutePowerSum = 0.0f;
-    float highestAbsolutePower = 0.0f;
-    float secondHighestAbsolutePower = 0.0f;
-
-    void add(const Reading& reading) {
-        ++sampleCount;
-        configured |= reading.configured;
-        const bool observed = reading.state == ReadingState::Valid ||
-                              reading.state == ReadingState::OutOfRange;
-        if (observed && std::isfinite(reading.voltage) &&
-            std::isfinite(reading.current) && std::isfinite(reading.power)) {
-            ++observedCount;
-            voltageInputSum += reading.voltageInputV;
-            currentInputSum += reading.currentInputV;
-            voltageSum += reading.voltage;
-            currentSum += reading.current;
-            powerSum += reading.power;
-        }
-        if (reading.state == ReadingState::Valid) {
-            ++eligibleCount;
-            const float magnitude = std::fabs(reading.power);
-            absolutePowerSum += magnitude;
-            if (magnitude >= highestAbsolutePower) {
-                secondHighestAbsolutePower = highestAbsolutePower;
-                highestAbsolutePower = magnitude;
-            } else if (magnitude > secondHighestAbsolutePower) {
-                secondHighestAbsolutePower = magnitude;
-            }
-        } else {
-            rejected = true;
-            if (reading.state == ReadingState::OutOfRange) {
-                rejectedState = ReadingState::OutOfRange;
-            } else if (rejectedState != ReadingState::OutOfRange) {
-                rejectedState = reading.state;
-            }
-        }
-    }
-
-    Reading finish(uint32_t now) const {
-        Reading result;
-        result.timestamp_ms = now;
-        result.configured = configured;
-        if (!configured) {
-            result.state = ReadingState::NotConfigured;
-            return result;
-        }
-        if (observedCount == 0) {
-            result.state = rejected ? rejectedState : ReadingState::Waiting;
-            return result;
-        }
-
-        const float observedDivisor = static_cast<float>(observedCount);
-        result.voltageInputV = voltageInputSum / observedDivisor;
-        result.currentInputV = currentInputSum / observedDivisor;
-        result.voltage = voltageSum / observedDivisor;
-        result.current = currentSum / observedDivisor;
-        // Average the instantaneous products. This intentionally differs from
-        // multiplying the independently averaged voltage and current when PWM
-        // makes the two signals correlated.
-        result.power = powerSum / observedDivisor;
-        result.state = (!rejected && eligibleCount == sampleCount)
-            ? ReadingState::Valid : rejectedState;
-
-        if (result.state == ReadingState::Valid && eligibleCount > 0) {
-            const float meanMagnitude = absolutePowerSum / static_cast<float>(eligibleCount);
-            const float nearPeak = eligibleCount > 1
-                ? secondHighestAbsolutePower : highestAbsolutePower;
-            result.dutyState = DutyState::Valid;
-            if (meanMagnitude < kMinPowerForDutyWatts ||
-                nearPeak < kMinPowerForDutyWatts) {
-                result.dutyCycle = 1.0f;
-            } else {
-                result.dutyCycle = std::max(0.0f, std::min(1.0f, meanMagnitude / nearPeak));
-            }
-        }
-        return result;
-    }
-
-    void reset() { *this = AdcWindowAccumulator{}; }
-};
 
 AdcCaptureState captureState = AdcCaptureState::Idle;
 AdcCaptureResult* captureResult = nullptr;
@@ -185,7 +94,8 @@ uint32_t allocateCaptureIdLocked() {
 
 void publishReadings(
     const Reading logicalReadings[SENSOR_COUNT],
-    const Reading physicalReadings[mapping::kPhysicalSensorCount]) {
+    const Reading physicalReadings[mapping::kPhysicalSensorCount],
+    const AdcWindowQuality* qualities = nullptr) {
     xSemaphoreTake(mutex, portMAX_DELAY);
     for (uint8_t i = 0; i < SENSOR_COUNT; i++) {
         buffer[i][writeIndex[i]] = logicalReadings[i];
@@ -195,6 +105,19 @@ void publishReadings(
     for (uint8_t i = 0; i < mapping::kPhysicalSensorCount; ++i) {
         physicalLatest[i] = physicalReadings[i];
         hasPhysicalLatest[i] = true;
+        if (qualities) {
+            AdcReductionDiagnostics& diagnostics = reductionDiagnostics[i];
+            ++diagnostics.windows;
+            diagnostics.validSamples += qualities[i].validSampleCount;
+            diagnostics.rejectedSamples += qualities[i].rejectedSampleCount;
+            if (physicalReadings[i].state != ReadingState::Valid) {
+                ++diagnostics.rejectedWindows;
+            } else if (qualities[i].toleratedRejections) {
+                ++diagnostics.toleratedWindows;
+            } else {
+                ++diagnostics.cleanWindows;
+            }
+        }
     }
     xSemaphoreGive(mutex);
 }
@@ -426,7 +349,7 @@ void highRateTaskFn(void*) {
     uint32_t windowStartedMs = millis();
     const uint32_t intervalMs = acquisitionIntervalMs(sensor_mode::get());
     const TickType_t intervalTicks = pdMS_TO_TICKS(intervalMs);
-    AdcWindowAccumulator accumulators[mapping::kPhysicalSensorCount];
+    AdcWindowReducer accumulators[mapping::kPhysicalSensorCount];
 
     for (;;) {
         const TickType_t loopStartedTicks = xTaskGetTickCount();
@@ -467,13 +390,15 @@ void highRateTaskFn(void*) {
         if (nowMs - windowStartedMs >= kSampleIntervalMs) {
             const uint32_t boundaryUs = micros();
             Reading physicalReduced[mapping::kPhysicalSensorCount];
+            AdcWindowQuality qualities[mapping::kPhysicalSensorCount];
             for (uint8_t i = 0; i < mapping::kPhysicalSensorCount; ++i) {
-                physicalReduced[i] = accumulators[i].finish(nowMs);
+                physicalReduced[i] =
+                    accumulators[i].finish(nowMs, &qualities[i]);
                 accumulators[i].reset();
             }
             Reading logicalReduced[SENSOR_COUNT];
             mapPhysicalReadings(nowMs, physicalReduced, logicalReduced);
-            publishReadings(logicalReduced, physicalReduced);
+            publishReadings(logicalReduced, physicalReduced, qualities);
             finishCaptureWindow(boundaryUs, logicalReduced);
             armCaptureAtWindowBoundary(boundaryUs);
             windowStartedMs = nowMs;
@@ -641,6 +566,18 @@ bool getLatestPhysical(uint8_t physicalSensor, Reading& out) {
     if (available) out = physicalLatest[physicalSensor];
     xSemaphoreGive(mutex);
     return available;
+}
+
+bool getAdcReductionDiagnostics(
+    uint8_t physicalSensor, AdcReductionDiagnostics& out) {
+    if (!mutex || physicalSensor >= mapping::kPhysicalSensorCount ||
+        !usesHighRateAcquisition(sensor_mode::get())) {
+        return false;
+    }
+    xSemaphoreTake(mutex, portMAX_DELAY);
+    out = reductionDiagnostics[physicalSensor];
+    xSemaphoreGive(mutex);
+    return true;
 }
 
 bool isConfigured(const Reading& reading) {

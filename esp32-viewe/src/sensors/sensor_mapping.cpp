@@ -13,13 +13,15 @@ namespace {
 constexpr char kPreferencesNamespace[] = "sensor_map";
 constexpr char kProfileKey[] = "map_v1";
 constexpr uint32_t kMagic = 0x4D415031; // "MAP1"
-constexpr uint16_t kVersion = 1;
+constexpr uint16_t kVersion = 2;
+constexpr uint16_t kLegacyVersion = 1;
 constexpr uint8_t kModeCount = 4;
 
 struct StoredProfiles {
     uint32_t magic;
     uint16_t version;
-    uint16_t reserved;
+    uint8_t balanceVisible;
+    uint8_t reserved;
     Profile profiles[kModeCount];
 };
 
@@ -43,6 +45,7 @@ void reset(StoredProfiles& value) {
     value = {};
     value.magic = kMagic;
     value.version = kVersion;
+    value.balanceVisible = 0;
     for (uint8_t mode = 0; mode < kModeCount; ++mode) {
         value.profiles[mode] = defaults(static_cast<sensor_mode::Mode>(mode));
     }
@@ -58,13 +61,20 @@ void loadIfNeeded() {
     reset(candidate);
     Preferences preferences;
     const bool opened = preferences.begin(kPreferencesNamespace, true);
-    const bool valid =
+    const bool read =
         opened && preferences.getBytesLength(kProfileKey) == sizeof(candidate) &&
         preferences.getBytes(kProfileKey, &candidate, sizeof(candidate)) ==
-            sizeof(candidate) &&
-        validStored(candidate);
+            sizeof(candidate);
     if (opened) preferences.end();
-    if (!valid) reset(candidate);
+    if (read && candidate.magic == kMagic &&
+        candidate.version == kLegacyVersion) {
+        // V1 used these two bytes as a zero-initialized reserved field. The
+        // unchanged record size makes this a lossless in-place migration.
+        candidate.version = kVersion;
+        candidate.balanceVisible = 0;
+        candidate.reserved = 0;
+    }
+    if (!read || !validStored(candidate)) reset(candidate);
 
     portENTER_CRITICAL(&mappingMux);
     if (!loaded) {
@@ -88,7 +98,8 @@ Profile get(sensor_mode::Mode mode) {
     return result;
 }
 
-bool set(sensor_mode::Mode mode, const Profile& profile) {
+bool set(sensor_mode::Mode mode, const Profile& profile,
+         bool balanceIsVisible) {
     loadIfNeeded();
     const uint8_t index = modeIndex(mode);
     if (index >= kModeCount || !isValid(profile)) return false;
@@ -98,6 +109,7 @@ bool set(sensor_mode::Mode mode, const Profile& profile) {
     candidate = stored;
     portEXIT_CRITICAL(&mappingMux);
     candidate.profiles[index] = profile;
+    candidate.balanceVisible = balanceIsVisible ? 1 : 0;
 
     Preferences preferences;
     if (!preferences.begin(kPreferencesNamespace, false)) return false;
@@ -120,6 +132,18 @@ bool set(sensor_mode::Mode mode, const Profile& profile) {
     portEXIT_CRITICAL(&mappingMux);
     device_state::changed(device_state::Domain::SensorMapping);
     return true;
+}
+
+bool set(sensor_mode::Mode mode, const Profile& profile) {
+    return set(mode, profile, balanceVisible());
+}
+
+bool balanceVisible() {
+    loadIfNeeded();
+    portENTER_CRITICAL(&mappingMux);
+    const bool result = stored.balanceVisible != 0;
+    portEXIT_CRITICAL(&mappingMux);
+    return result;
 }
 
 bool physicalForLogical(sensor_mode::Mode mode, SensorId logical,

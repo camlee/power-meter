@@ -5,6 +5,8 @@
   export let points = [];
   export let sessionId = null;
   export let active = true;
+  export let batteryMapped = true;
+  export let showBalance = false;
 
   const WINDOW_OPTIONS = [
     { seconds: 30, tickSeconds: 10, label: '30 seconds' },
@@ -138,8 +140,14 @@
   }
 
   function computeYAxis(visiblePoints) {
+    const thirdField = batteryMapped ? 'battery' : 'net';
     const values = visiblePoints
-      .flatMap((point) => [point.solar, point.load, point.battery, point.balance])
+      .flatMap((point) => [
+        point.solar,
+        point.load,
+        point[thirdField],
+        showBalance ? point.balance : Number.NaN,
+      ])
       .filter(Number.isFinite);
     const low = Math.min(0, ...values);
     const high = Math.max(1, ...values);
@@ -352,10 +360,13 @@
     drawMarkers(ctx, drawPoints, 'solar', chartColors.panel, scaleX, scaleY);
     drawSeries(ctx, drawPoints, 'load', chartColors.load, scaleX, scaleY);
     drawMarkers(ctx, drawPoints, 'load', chartColors.load, scaleX, scaleY);
-    drawSeries(ctx, drawPoints, 'battery', chartColors.battery, scaleX, scaleY);
-    drawMarkers(ctx, drawPoints, 'battery', chartColors.battery, scaleX, scaleY);
-    drawSeries(ctx, drawPoints, 'balance', chartColors.balance, scaleX, scaleY);
-    drawMarkers(ctx, drawPoints, 'balance', chartColors.balance, scaleX, scaleY);
+    const thirdField = batteryMapped ? 'battery' : 'net';
+    drawSeries(ctx, drawPoints, thirdField, chartColors.battery, scaleX, scaleY);
+    drawMarkers(ctx, drawPoints, thirdField, chartColors.battery, scaleX, scaleY);
+    if (showBalance && batteryMapped) {
+      drawSeries(ctx, drawPoints, 'balance', chartColors.balance, scaleX, scaleY);
+      drawMarkers(ctx, drawPoints, 'balance', chartColors.balance, scaleX, scaleY);
+    }
     ctx.restore();
   }
 
@@ -370,7 +381,8 @@
     }
   }
 
-  $: sortedPoints, sessionId, active, windowOption, draw();
+  $: sortedPoints, sessionId, active, windowOption, batteryMapped,
+    showBalance, draw();
   $: if (active) ensureLoopRunning();
 
   onMount(() => {
@@ -412,7 +424,10 @@
       {/each}
     </select>
   </div>
-  <canvas bind:this={canvas} aria-label="Live Solar, Load, Battery, and Balance power graph with watt and time axes"></canvas>
+  <canvas bind:this={canvas}
+    aria-label={`Live Solar, Load, ${batteryMapped ? 'Battery' : 'Net'}${
+      showBalance && batteryMapped ? ', and Balance' : ''
+    } power graph with watt and time axes`}></canvas>
 </div>
 
 <style>

@@ -129,6 +129,8 @@ constexpr int8_t currentMultiplier(const Profile& profile,
 void init();
 Profile get(sensor_mode::Mode mode);
 bool set(sensor_mode::Mode mode, const Profile& profile);
+bool set(sensor_mode::Mode mode, const Profile& profile, bool balanceVisible);
+bool balanceVisible();
 
 bool physicalForLogical(sensor_mode::Mode mode, SensorId logical,
                         PhysicalSensorId& physical);

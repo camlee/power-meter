@@ -1,4 +1,5 @@
 #include "sensors_screen.h"
+#include "sensor_calibration_overlay.h"
 #include "../../sensors/sensors.h"
 #include "../../sensors/sensor_calibration.h"
 #include "../../sensors/sensor_mapping.h"
@@ -1002,15 +1003,25 @@ void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measu
 void openVoltageCalibrationCb(lv_event_t* event) {
     auto* tab = static_cast<SensorTab*>(lv_event_get_user_data(event));
     if (!tab) return;
-    const uint8_t sensor = static_cast<uint8_t>(tab - sensorTabs);
-    openCalibration(*tab, sensor, sensors::calibration::Measurement::Voltage);
+    const auto logical = static_cast<sensors::SensorId>(tab - sensorTabs);
+    sensors::mapping::PhysicalSensorId physical{};
+    if (sensors::mapping::physicalForLogical(
+            sensor_mode::get(), logical, physical)) {
+        sensor_calibration_overlay::show(
+            physical, sensors::calibration::Measurement::Voltage);
+    }
 }
 
 void openCurrentCalibrationCb(lv_event_t* event) {
     auto* tab = static_cast<SensorTab*>(lv_event_get_user_data(event));
     if (!tab) return;
-    const uint8_t sensor = static_cast<uint8_t>(tab - sensorTabs);
-    openCalibration(*tab, sensor, sensors::calibration::Measurement::Current);
+    const auto logical = static_cast<sensors::SensorId>(tab - sensorTabs);
+    sensors::mapping::PhysicalSensorId physical{};
+    if (sensors::mapping::physicalForLogical(
+            sensor_mode::get(), logical, physical)) {
+        sensor_calibration_overlay::show(
+            physical, sensors::calibration::Measurement::Current);
+    }
 }
 
 const char* sensorName(uint8_t sensor) {
@@ -1492,74 +1503,6 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
         lv_obj_add_flag(t.dutyRow, LV_OBJ_FLAG_HIDDEN); // hidden until it's seen below threshold
     }
 
-    t.calibrationHeader = lv_obj_create(tab);
-    lv_obj_remove_style_all(t.calibrationHeader);
-    lv_obj_set_size(t.calibrationHeader, lv_pct(100), 30);
-    lv_obj_set_flex_flow(t.calibrationHeader, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_left(t.calibrationHeader, 6, 0);
-    lv_obj_set_style_pad_column(t.calibrationHeader, 3, 0);
-    lv_obj_set_flex_align(t.calibrationHeader, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-    CalibrationControl& backControl = calibrationControls[sensorIndex][0];
-    backControl = {&t, sensorIndex, CalibrationAction::Back};
-    lv_obj_t* back = lv_label_create(t.calibrationHeader);
-    lv_label_set_text(back, LV_SYMBOL_LEFT);
-    lv_obj_set_size(back, 28, 30);
-    lv_obj_set_style_text_font(back, &lv_font_montserrat_20, 0);
-    lv_obj_set_style_text_align(back, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_style_pad_top(back, 4, 0);
-    lv_obj_set_style_text_color(back, ui_theme::text(), 0);
-    lv_obj_add_flag(back, LV_OBJ_FLAG_CLICKABLE);
-    lv_obj_add_event_cb(back, calibrationControlCb, LV_EVENT_CLICKED, &backControl);
-    lv_obj_t* title = lv_label_create(t.calibrationHeader);
-    lv_obj_set_width(title, 91);
-    lv_obj_set_style_text_font(title, &lv_font_montserrat_16, 0);
-    lv_label_set_text(title, "Calibration");
-    t.oldLegend = lv_label_create(t.calibrationHeader);
-    lv_label_set_text(t.oldLegend, "Old");
-    lv_obj_set_width(t.oldLegend, 26);
-    lv_label_set_long_mode(t.oldLegend, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_color(t.oldLegend, lv_palette_main(LV_PALETTE_BLUE), 0);
-    lv_obj_set_style_text_font(t.oldLegend, &lv_font_montserrat_14, 0);
-    t.oldValueLabel = lv_label_create(t.calibrationHeader);
-    lv_obj_set_width(t.oldValueLabel, 32);
-    lv_obj_set_style_text_align(t.oldValueLabel, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_style_text_color(t.oldValueLabel, lv_palette_main(LV_PALETTE_BLUE), 0);
-    lv_obj_set_style_text_font(t.oldValueLabel, &lv_font_montserrat_14, 0);
-    lv_label_set_text(t.oldValueLabel, "--.-");
-    t.oldUnitLabel = lv_label_create(t.calibrationHeader);
-    lv_obj_set_width(t.oldUnitLabel, 12);
-    lv_obj_set_style_text_color(t.oldUnitLabel, lv_palette_main(LV_PALETTE_BLUE), 0);
-    lv_obj_set_style_text_font(t.oldUnitLabel, &lv_font_montserrat_14, 0);
-    lv_label_set_text(t.oldUnitLabel, "V");
-    t.newLegend = lv_label_create(t.calibrationHeader);
-    lv_label_set_text(t.newLegend, "New");
-    lv_obj_set_width(t.newLegend, 34);
-    lv_label_set_long_mode(t.newLegend, LV_LABEL_LONG_CLIP);
-    lv_obj_set_style_text_color(t.newLegend, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    lv_obj_set_style_text_font(t.newLegend, &lv_font_montserrat_14, 0);
-    t.newValueLabel = lv_label_create(t.calibrationHeader);
-    lv_obj_set_width(t.newValueLabel, 32);
-    lv_obj_set_style_text_align(t.newValueLabel, LV_TEXT_ALIGN_RIGHT, 0);
-    lv_obj_set_style_text_color(t.newValueLabel, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    lv_obj_set_style_text_font(t.newValueLabel, &lv_font_montserrat_14, 0);
-    lv_label_set_text(t.newValueLabel, "--.-");
-    t.newValueInput = lv_textarea_create(t.calibrationHeader);
-    styleCalibrationInput(t.newValueInput);
-    lv_obj_set_size(t.newValueInput, 47, 28);
-    lv_obj_set_style_text_font(t.newValueInput, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_color(t.newValueInput, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    lv_obj_set_style_border_color(t.newValueInput, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    lv_obj_set_style_border_color(t.newValueInput, lv_palette_main(LV_PALETTE_ORANGE), LV_STATE_FOCUSED);
-    lv_obj_set_style_pad_top(t.newValueInput, 4, 0);
-    lv_obj_set_style_pad_bottom(t.newValueInput, 3, 0);
-    lv_obj_add_flag(t.newValueInput, LV_OBJ_FLAG_HIDDEN);
-    t.newUnitLabel = lv_label_create(t.calibrationHeader);
-    lv_obj_set_width(t.newUnitLabel, 12);
-    lv_obj_set_style_text_color(t.newUnitLabel, lv_palette_main(LV_PALETTE_ORANGE), 0);
-    lv_obj_set_style_text_font(t.newUnitLabel, &lv_font_montserrat_14, 0);
-    lv_label_set_text(t.newUnitLabel, "V");
-    lv_obj_add_flag(t.calibrationHeader, LV_OBJ_FLAG_HIDDEN);
-
     // --- Voltage + current charts, stacked, sharing remaining space --------
     t.chartsColumn = lv_obj_create(tab);
     styleFlatContainer(t.chartsColumn);
@@ -1582,11 +1525,6 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
                                  &t.iValueLabel, &t.iEditIcon, &t.iFrame,
                                  &kCurrentAxisScale, &t.iSeries, &t,
                                  sensors::calibration::Measurement::Current);
-    t.vPreviewSeries = lv_chart_add_series(t.vChart, lv_palette_main(LV_PALETTE_ORANGE), LV_CHART_AXIS_PRIMARY_Y);
-    t.iPreviewSeries = lv_chart_add_series(t.iChart, lv_palette_main(LV_PALETTE_ORANGE), LV_CHART_AXIS_PRIMARY_Y);
-    lv_chart_hide_series(t.vChart, t.vPreviewSeries, true);
-    lv_chart_hide_series(t.iChart, t.iPreviewSeries, true);
-
     lv_chart_set_range(t.vChart, LV_CHART_AXIS_PRIMARY_Y,
                         (lv_coord_t)(kVoltageDefaultMin * kVoltageAxisScale),
                         (lv_coord_t)(kVoltageDefaultMax * kVoltageAxisScale));

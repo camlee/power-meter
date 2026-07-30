@@ -25,6 +25,7 @@ bool save();
 // level for the currently active period.
 bool setAutoDayNight(bool enabled);
 bool autoDayNight();
+bool usingNightBrightness();
 
 // Applies a day/night transition when trustworthy local time becomes
 // available or crosses 06:00/22:00. Returns true when the level changed.

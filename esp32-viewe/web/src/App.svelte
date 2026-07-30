@@ -44,6 +44,7 @@
     calculatedGain,
   } from './lib/calibrationMath.js';
   import { powerBalance } from './lib/powerFlow.js';
+  import { AdaptiveHomeKpi } from './lib/homeKpi.js';
 
   // ---------------------------------------------------------------------
   // Constants
@@ -136,6 +137,8 @@
   $: hasTouchDisplay = status?.capabilities?.touch_display !== false;
   $: hasStatusDisplay = status?.capabilities?.status_display === true;
   $: pwmUiEnabled = status?.capabilities?.pwm_ui === true;
+  $: batteryMapped = status?.battery_mapped !== false;
+  $: balanceVisible = status?.balance_visible === true;
   $: webThemeOptions = hasTouchDisplay
     ? ['light', 'dark', 'auto', 'device']
     : ['light', 'dark', 'auto'];
@@ -265,11 +268,18 @@
 
   // Live chart data.
   let points = [];
+  const homeKpiFilter = new AdaptiveHomeKpi();
+  let homeKpiLoaded = false;
+  let homeNet = Number.NaN;
+  let homeVoltage = Number.NaN;
   $: latestPoint = points.length ? points[points.length - 1] : null;
-  $: homeNet = latestPoint?.net;
-  $: homeState = Number.isFinite(homeNet)
-    ? (homeNet > 0 ? 'Charging' : homeNet < 0 ? 'Discharging' : 'Balanced')
-    : 'Error - missing sensors';
+  $: homeState = !homeKpiLoaded
+    ? 'Loading readings…'
+    : Number.isFinite(homeNet)
+      ? (Math.abs(homeNet) < 0.5
+        ? 'Idle' : homeNet > 0 ? 'Charging' : 'Discharging')
+      : 'Sensor readings unavailable';
+  $: homeStateBand = !homeKpiLoaded ? 'neutral' : homeBand(homeNet);
   let lastRevision = 0;
   let lastSessionId = null;
   let lastSequence = 0;
@@ -1078,8 +1088,8 @@
     if (value < -50) return 'red';
     if (value < -5) return 'orange';
     if (value < 5) return 'neutral';
-    if (value <= 50) return 'green';
-    return 'blue';
+    if (value <= 50) return 'blue';
+    return 'green';
   }
 
   async function refreshUpdates() {
@@ -1195,6 +1205,10 @@
       lastSequence = 0;
       points = [];
       livePhysicalSensors = null;
+      homeKpiFilter.reset();
+      homeKpiLoaded = false;
+      homeNet = Number.NaN;
+      homeVoltage = Number.NaN;
     }
 
     if (frame.sequence <= lastSequence) return; // duplicate or out-of-order frame
@@ -1243,6 +1257,21 @@
         },
       },
     ].slice(-MAX_LIVE_POINTS);
+
+    const kpi = homeKpiFilter.add(
+      receivedMonotonicAt,
+      netPower,
+    );
+    if (kpi.publish) {
+      homeKpiLoaded = true;
+      homeNet = kpi.available ? kpi.value : Number.NaN;
+      const voltages = points.slice(-4)
+        .map((point) => point.batteryVoltage)
+        .filter(Number.isFinite);
+      homeVoltage = voltages.length
+        ? voltages.reduce((total, value) => total + value, 0) / voltages.length
+        : Number.NaN;
+    }
 
     if (frame.stateRevision !== lastRevision) {
       lastRevision = frame.stateRevision;
@@ -1900,6 +1929,16 @@
             sourceLabel={sensorStatus?.source?.label || 'Active source'}
             {livePhysicalSensors}
             on:cancel={() => sensorMappingOpen = false}
+            on:calibrate={(event) => {
+              const logical = {
+                solar: 'in', load: 'out', battery: 'aux',
+              }[event.detail.role];
+              sensorMappingOpen = false;
+              if (logical) {
+                navigate('sensors');
+                openCalibration(logical, event.detail.measurement);
+              }
+            }}
             on:restarting={sensorMappingRestarting}
           />
         {/if}
@@ -2314,7 +2353,7 @@
           <span class="panel-color"></span>Solar In
           <span class="load"></span>Solar Usage
           <span class="battery"></span>Battery Usage
-          {#if historyHasMeasuredBattery}
+          {#if balanceVisible && historyHasMeasuredBattery}
             <span class="balance-color"></span>Balance
           {/if}
         {/if}
@@ -2328,6 +2367,7 @@
           endTimeMs={history.endTimeMs}
           tickMinutes={historyRange.tickMinutes}
           {pwmUiEnabled}
+          showBalance={balanceVisible}
         />
         {#if history.flags & 1}
           <p class="note">Some intervals have incomplete coverage.</p>
@@ -2341,15 +2381,18 @@
       <p class="chart-legend">
         <span class="panel-color"></span>Solar
         <span class="load"></span>Load
-        <span class="battery"></span>Battery
-        <span class="balance-color"></span>Balance
+        <span class="battery"></span>{batteryMapped ? 'Battery' : 'Net'}
+        {#if balanceVisible && batteryMapped}
+          <span class="balance-color"></span>Balance
+        {/if}
       </p>
-      <LiveChart {points} sessionId={lastSessionId} active={!livePaused} />
+      <LiveChart {points} sessionId={lastSessionId} active={!livePaused}
+        {batteryMapped} showBalance={balanceVisible} />
     </section>
   {:else}
     <section class="home-view">
-      <h2 class={homeBand(homeNet)}>{homeState}</h2>
-      <div class="home-power {homeBand(homeNet)}">
+      <h2 class={homeStateBand}>{homeState}</h2>
+      <div class="home-power {homeStateBand}">
         <strong>{Number.isFinite(homeNet) ? `${homeNet >= 0 ? '+' : ''}${Math.round(homeNet)}` : '—'}</strong>
         <span>W</span>
       </div>
@@ -2357,8 +2400,7 @@
         <HomeChart {points} sessionId={lastSessionId} active={!livePaused} />
       </div>
       <p class="home-voltage">Battery
-        {Number.isFinite(latestPoint?.batteryVoltage) ? `${latestPoint.batteryVoltage.toFixed(1)} V` : '— V'}
-        {latestPoint?.batteryVoltageFallback ? ' (Load)' : ''}
+        {Number.isFinite(homeVoltage) ? `${homeVoltage.toFixed(1)} V` : '— V'}
       </p>
     </section>
   {/if}

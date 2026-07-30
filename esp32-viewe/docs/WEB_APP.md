@@ -182,7 +182,9 @@ last-valid age, advertised channel mask, sequence and producer uptime, parser
 error, and bounded frame/error counters. ADS1115 mode distinguishes initialization
 from recent conversion health and reports success age, consecutive failures,
 bus errors, and lock timeouts. Physical ADC modes also expose raw input volts
-and the active source's gain/offset/defaults. Calibration writes use
+and the active source's gain/offset/defaults. Their physical mapping response
+also includes reducer window/sample counters for clean, tolerated, and rejected
+input. Calibration writes use
 `POST /api/v1/sensors/calibration`; unwired channels and non-calibrated sources
 are rejected. Demo reports `transport: null` rather than inventing connection
 semantics.

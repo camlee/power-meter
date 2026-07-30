@@ -1,5 +1,6 @@
 <script>
   import { onMount } from 'svelte';
+  import { homeAxis } from './homeAxis.js';
   import { projectLiveNow } from './liveTime.js';
 
   export let points = [];
@@ -9,7 +10,6 @@
   const WINDOW_MS = 30_000;
   const GAP_MS = 3_000;
   const PADDING = { left: 48, right: 8, top: 16, bottom: 28 };
-  const THRESHOLDS = [-50, -25, 0, 25, 50];
 
   let canvas;
   let width = 0;
@@ -45,8 +45,8 @@
     if (value < -50) return currentColors.red;
     if (value < -5) return currentColors.orange;
     if (value < 5) return currentColors.neutral;
-    if (value <= 50) return currentColors.green;
-    return currentColors.blue;
+    if (value <= 50) return currentColors.blue;
+    return currentColors.green;
   }
 
   function virtualNow() {
@@ -65,12 +65,7 @@
 
   function axisFor(visible) {
     const finite = visible.map((point) => point.net).filter(Number.isFinite);
-    const low = Math.min(-60, ...finite);
-    const high = Math.max(60, ...finite);
-    return {
-      low: Math.min(-60, Math.floor(low / 20) * 20),
-      high: Math.max(60, Math.ceil(high / 20) * 20),
-    };
+    return homeAxis(Math.min(...finite), Math.max(...finite));
   }
 
   function extendedPoints(start, end) {
@@ -113,17 +108,17 @@
 
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    THRESHOLDS.forEach((threshold) => {
-      if (threshold < axis.low || threshold > axis.high) return;
-      const py = y(threshold);
-      ctx.strokeStyle = threshold === 0 ? currentColors.zero : currentColors.grid;
-      ctx.lineWidth = threshold === 0 ? 1.5 : 1;
+    for (let tick = axis.low;
+      tick <= axis.high + axis.step * 0.01;
+      tick += axis.step) {
+      const value = Math.abs(tick) < axis.step * 0.001 ? 0 : tick;
+      const py = y(value);
+      ctx.strokeStyle = value === 0 ? currentColors.zero : currentColors.grid;
+      ctx.lineWidth = value === 0 ? 1.5 : 1;
       ctx.beginPath(); ctx.moveTo(plot.left, py); ctx.lineTo(plot.left + plot.width, py); ctx.stroke();
-      if (threshold !== 0) {
-        ctx.fillStyle = currentColors.muted;
-        ctx.fillText(`${threshold} W`, plot.left - 5, py);
-      }
-    });
+      ctx.fillStyle = currentColors.muted;
+      ctx.fillText(`${Math.round(value)} W`, plot.left - 5, py);
+    }
 
     ctx.textAlign = 'center';
     ctx.textBaseline = 'top';

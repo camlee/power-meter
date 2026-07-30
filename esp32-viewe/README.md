@@ -270,7 +270,11 @@ source's full-screen mapping editor with live physical V/A/W readings and
 draft-aware Balance. Web Setup provides the same editor as a responsive inline
 panel: beside Setup on desktop and stacked below the sensor summary on phones.
 It loads the persisted profile once, then receives physical diagnostics from
-the shared live WebSocket rather than polling HTTP.
+the shared live WebSocket rather than polling HTTP. Balance is hidden from
+Usage and Power by default and can be enabled in either mapping editor. The
+V/A edit icons open one shared full-screen calibration workflow for the exact
+physical sensor and measurement; its subtitle includes both the mapped role
+and `Voltage` or `Current`.
 
 The WROOM build keeps Demo as the fresh-device default but exposes ADS1115 in
 Setup. Its SSD1306 (address `0x3c`) and ADS1115 (`0x48`) share GPIO 5 SDA / GPIO
@@ -294,6 +298,9 @@ Physical ADC sources acquire calibrated voltage/current pairs continuously and
 reduce those observations into the normal 500 ms reading stream. The ESP32 ADC
 targets 5 ms; the four-conversion WROOM ADS1115 path targets 15 ms. These are
 scheduler targets, and every diagnostic capture reports its measured interval.
+An isolated rejected observation no longer invalidates its entire reducer
+window: at least 80% valid coverage produces a valid mean from valid samples
+only. Sustained out-of-range input remains visible for diagnosis.
 
 Raw observations are retained only for an on-demand capture. In the browser,
 select **View Raw** beside a configured channel on Sensors. On the VIEWE

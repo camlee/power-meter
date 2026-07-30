@@ -29,7 +29,10 @@ export function mappingIsValid(mapping) {
 }
 
 export function mappingsEqual(left, right) {
-  if (!left || !right || left.source !== right.source) return false;
+  if (!left || !right || left.source !== right.source ||
+      (left.balance_visible === true) !== (right.balance_visible === true)) {
+    return false;
+  }
   const leftSensors = left.physical_sensors || [];
   const rightSensors = right.physical_sensors || [];
   return leftSensors.length === rightSensors.length &&

@@ -38,4 +38,8 @@ void build() {
     screens.build();
 }
 
+void showSensors() {
+    ScreenManager::instance().showScreen(3);
+}
+
 } // namespace ui_navigation

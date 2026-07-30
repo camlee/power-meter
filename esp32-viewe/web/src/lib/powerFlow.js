@@ -4,7 +4,9 @@ export function powerBalance(solar, load, battery) {
     : Number.NaN;
 }
 
-export function usageBreakdown(solar, load, battery, batteryMeasured = true) {
+export function usageBreakdown(
+  solar, load, battery, batteryMeasured = true, showBalance = true,
+) {
   const unavailableRange = () => ({ from: Number.NaN, to: Number.NaN });
   const segment = (from, to) => {
     if (!Number.isFinite(from) || !Number.isFinite(to) ||
@@ -38,6 +40,17 @@ export function usageBreakdown(solar, load, battery, batteryMeasured = true) {
 
   result.charge = Math.max(battery, 0);
   result.discharge = Math.max(-battery, 0);
+  if (!batteryMeasured || !showBalance) {
+    result.charge = Math.min(result.charge, solarTotal);
+    result.discharge = Math.min(result.discharge, loadTotal);
+    result.solarRemainder = solarTotal - result.charge;
+    result.loadRemainder = loadTotal - result.discharge;
+    result.chargeSegment = segment(0, result.charge);
+    result.solarSegment = segment(result.charge, solarTotal);
+    result.dischargeSegment = segment(0, -result.discharge);
+    result.loadSegment = segment(-result.discharge, -loadTotal);
+    return result;
+  }
   const balanceIn = batteryMeasured ? Math.max(result.balance, 0) : 0;
   const balanceOut = batteryMeasured ? Math.max(-result.balance, 0) : 0;
   const solarDirect = solarTotal - result.charge - balanceIn;
