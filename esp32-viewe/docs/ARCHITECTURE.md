@@ -279,7 +279,9 @@ well-defined non-UI owner; UI screens issue commands and display state.
 The implemented local service layer includes:
 
 - a shared asynchronous energy-cycle summary model used by LVGL and Web;
-- realtime power/history plus raw sensor-diagnostic browser APIs;
+- realtime power/history plus raw sensor-diagnostic browser APIs. Current V5
+  WebSocket frames append physical Sensor 1/2/3 diagnostics for configuration,
+  while the 30-second replay remains on the compact logical-only V4 layout;
 - an embedded web application with Power, Usage, Cycle, Sensors, Setup, Wi-Fi,
   diagnostics, and capability-gated remote-display views;
 - browser time contribution;
@@ -301,9 +303,11 @@ values, per-source physical-to-logical mapping/current directions, device
 identity, and Wi-Fi/AP settings. Mapping lives in the `sensor_map` namespace;
 calibration remains in `sensor_cal` and follows its physical sensor when roles
 change. The mapping API is `GET/PUT /api/v1/sensors/mapping`; phase (d) exposes
-the contract, and the LVGL Setup editor applies that same contract for the
-active source. It previews physical V/A/W readings, direction changes, and
-Balance before saving; the Web editor remains future work. Applying a mapping
+the contract, and the LVGL and responsive Web Setup editors apply that same
+contract for the active source. Both preview physical V/A/W readings, direction
+changes, and Balance before saving. Web loads mapping configuration once and
+uses the application's existing live socket for subsequent physical readings;
+it does not open another socket or poll mapping diagnostics. Applying a mapping
 restarts acquisition so logical history cannot mix roles. Source-advertised
 presence already flows through the runtime model. No alpha source-mode
 compatibility is required. Future peer/service settings are out of the current

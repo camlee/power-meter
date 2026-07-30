@@ -257,6 +257,84 @@ export async function sendRemotePointer(x, y, pressed) {
   if (!response.ok) throw new Error(`remote control ${response.status}`);
 }
 
+const LIVE_READING_STATES = [
+  'not_configured', 'waiting', 'valid', 'out_of_range', 'invalid', 'stale',
+];
+
+export function parseLiveFrame(buffer) {
+  if (!(buffer instanceof ArrayBuffer)) return null;
+  const view = new DataView(buffer);
+  const version = view.byteLength >= 5 ? view.getUint8(4) : 0;
+  const v2 = view.byteLength === 64 &&
+    view.getUint32(0, true) === 0x324d5056 && version === 2;
+  const v3 = view.byteLength === 72 &&
+    view.getUint32(0, true) === 0x334d5056 && version === 3;
+  const v4 = view.byteLength === 84 &&
+    view.getUint32(0, true) === 0x344d5056 && version === 4;
+  const v5 = view.byteLength === 128 &&
+    view.getUint32(0, true) === 0x354d5056 && version === 5;
+  if ((!v2 && !v3 && !v4 && !v5) ||
+      view.getUint8(5) !== 1 || view.getUint32(20, true) === 0) return null;
+
+  const flags = view.getUint16(6, true);
+  const hasAux = v3 || v4 || v5;
+  const hasDuty = v4 || v5;
+  const duty = (offset) => hasDuty
+    ? view.getFloat32(offset, true) : Number.NaN;
+  let physicalSensors = null;
+  if (v5) {
+    const physicalFlags = view.getUint16(84, true);
+    physicalSensors = ['sensor1', 'sensor2', 'sensor3'].map((id, index) => ({
+      id,
+      configured: !!(physicalFlags & (1 << index)),
+      eligible: !!(physicalFlags & (1 << (3 + index))),
+      observed: !!(physicalFlags & (1 << (6 + index))),
+      state: LIVE_READING_STATES[view.getUint8(86 + index)] || 'invalid',
+      voltage: view.getFloat32(92 + index * 4, true),
+      current: view.getFloat32(104 + index * 4, true),
+      power: view.getFloat32(116 + index * 4, true),
+    }));
+  }
+  return {
+    version,
+    sequence: view.getUint32(8, true),
+    stateRevision: view.getUint32(12, true),
+    uptimeMs: view.getUint32(16, true),
+    sessionId: view.getUint32(20, true),
+    unixMs: view.getFloat64(24, true),
+    configuredMask: (flags >> 1) & 0x07,
+    eligibleMask: (flags >> 4) & 0x07,
+    observedMask: hasAux ? (flags >> 7) & 0x07 : (flags >> 4) & 0x07,
+    in: {
+      voltage: view.getFloat32(32, true),
+      current: view.getFloat32(36, true),
+      power: view.getFloat32(40, true),
+      duty: duty(72),
+    },
+    out: {
+      voltage: view.getFloat32(44, true),
+      current: view.getFloat32(48, true),
+      power: view.getFloat32(52, true),
+      duty: duty(76),
+    },
+    aux: hasAux
+      ? {
+        voltage: view.getFloat32(56, true),
+        current: view.getFloat32(60, true),
+        power: view.getFloat32(64, true),
+        duty: duty(80),
+      }
+      : {
+        voltage: Number.NaN,
+        current: Number.NaN,
+        power: view.getFloat32(56, true),
+        duty: Number.NaN,
+      },
+    netBatteryPower: view.getFloat32(hasAux ? 68 : 60, true),
+    physicalSensors,
+  };
+}
+
 export function openLiveSocket(onFrame, onState) {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const socket = new WebSocket(`${protocol}//${location.hostname}:81/api/v1/live`);
@@ -270,31 +348,8 @@ export function openLiveSocket(onFrame, onState) {
       if (match) { connectionLimit = Number(match[1]); onState?.('limited', connectionLimit); }
       return;
     }
-    if (!(event.data instanceof ArrayBuffer)) return;
-    const view = new DataView(event.data);
-    const version = view.byteLength >= 5 ? view.getUint8(4) : 0;
-    const v2 = view.byteLength === 64 && view.getUint32(0, true) === 0x324d5056 && version === 2;
-    const v3 = view.byteLength === 72 && view.getUint32(0, true) === 0x334d5056 && version === 3;
-    const v4 = view.byteLength === 84 && view.getUint32(0, true) === 0x344d5056 && version === 4;
-    if ((!v2 && !v3 && !v4) || view.getUint8(5) !== 1 || view.getUint32(20, true) === 0) return;
-    const flags = view.getUint16(6, true);
-    const duty = (offset) => v4 ? view.getFloat32(offset, true) : Number.NaN;
-    onFrame({
-      sequence: view.getUint32(8, true),
-      stateRevision: view.getUint32(12, true),
-      uptimeMs: view.getUint32(16, true),
-      sessionId: view.getUint32(20, true),
-      unixMs: view.getFloat64(24, true),
-      configuredMask: (flags >> 1) & 0x07,
-      eligibleMask: (flags >> 4) & 0x07,
-      observedMask: (v3 || v4) ? (flags >> 7) & 0x07 : (flags >> 4) & 0x07,
-      in: { voltage: view.getFloat32(32, true), current: view.getFloat32(36, true), power: view.getFloat32(40, true), duty: duty(72) },
-      out: { voltage: view.getFloat32(44, true), current: view.getFloat32(48, true), power: view.getFloat32(52, true), duty: duty(76) },
-      aux: (v3 || v4)
-        ? { voltage: view.getFloat32(56, true), current: view.getFloat32(60, true), power: view.getFloat32(64, true), duty: duty(80) }
-        : { voltage: Number.NaN, current: Number.NaN, power: view.getFloat32(56, true) },
-      netBatteryPower: view.getFloat32((v3 || v4) ? 68 : 60, true)
-    });
+    const frame = parseLiveFrame(event.data);
+    if (frame) onFrame(frame);
   };
   socket.onclose = () => onState?.(connectionLimit ? 'limited' : 'offline', connectionLimit);
   return socket;

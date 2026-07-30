@@ -31,7 +31,7 @@ verified, and flashed to `meter2` before the next phase begins.
 - [x] **(d) Separate physical sensors from logical roles**
   - Preserve feature parity and formally support an unmapped Battery.
 - [x] **(e) Add LVGL sensor-mapping UI**
-- [ ] **(f) Add Web sensor-mapping UI**
+- [x] **(f) Add Web sensor-mapping UI**
 - [ ] **(g) Final UI refinements**
   - Balance visibility controls and final interaction/presentation cleanup.
 
@@ -251,3 +251,48 @@ sets the embedded version explicitly.
 - Native tests passed: 44/44. Web tests passed: 20/20. The protected Demo
   fixture and VIEWE firmware build passed. Firmware version `0.2.3-e.13` was
   flashed to `meter2` over USB, and esptool verified every written image.
+
+### Phase (f) verification — 2026-07-30
+
+- Web Setup now mirrors the LVGL sensor summary below source selection and
+  opens mapping as a responsive inline panel: right of Setup on desktop and
+  directly below the summary on phones.
+- Each physical sensor has a role selector, `+ / -` current-direction control,
+  state, aligned V/A/W diagnostics, and draft-aware interpretation. Balance,
+  validation, Cancel, and Save & Reboot follow the same contract as LVGL.
+- Mapping configuration is fetched once when the editor opens. Physical
+  readings arrive at 2 Hz through the application's existing WebSocket; role
+  or direction edits recalculate readings and Balance immediately without
+  polling or opening another connection.
+- Live protocol V5 appends physical diagnostics to the current frame. The
+  60-frame replay remains logical-only V4, limiting the firmware's additional
+  internal static RAM to 40 bytes instead of widening the 5.04 KiB ring.
+- Native tests passed: 44/44. Web tests passed: 29/29, including V4/V5 parsing,
+  mapping validation, polarity preview, interpretation, and Balance. The Web
+  asset check, protected Demo fixture, and both VIEWE and WROOM builds passed.
+  WROOM remains within its application partition at 96.3% flash use.
+- Firmware version `0.2.3-f.1` was flashed to `meter2` over USB, and esptool
+  verified every written image. The running device reported the matching
+  version/Web build and emitted 60 compact V4 replay frames followed by a
+  128-byte V5 frame with valid physical Sensor 1/2/3 readings.
+- Web mapping consistently presents physical sensors as rows at every
+  breakpoint. Setup enters mapping through a labeled `Remap` button, and its
+  primary action now says `Save & Reboot`, matching the mapping editor and
+  touchscreen terminology.
+- Web tests passed: 29/29 and the embedded asset check passed. Firmware version
+  `0.2.3-f.2` was flashed to `meter2` over USB; esptool verified every image,
+  and the running device reported the matching version and Web build.
+- Web sensor rows now place the physical name, role dropdown, and `+ / -`
+  direction control together on one line. The redundant mapping-reboot helper
+  sentence was removed; the `Save & Reboot` action remains explicit.
+- Web tests passed: 29/29 and the embedded asset check passed. Firmware version
+  `0.2.3-f.3` was flashed to `meter2` over USB; esptool verified every image,
+  and the running device reported the matching version and Web build.
+- Web mapping now follows the LVGL row hierarchy on phone and desktop: a shared
+  Sensor/Role/Current direction heading, a non-wrapping control row, then
+  validity plus aligned V/A/W readings and the logical interpretation.
+- Removed the web-only border, background, and padding around the full mapping
+  panel while retaining the individual sensor-row grouping used by LVGL.
+- Web tests passed: 29/29 and the embedded asset check passed. Firmware version
+  `0.2.3-f.4` was flashed to `meter2` over USB; esptool verified every image,
+  and the running device reported the matching version and Web build.

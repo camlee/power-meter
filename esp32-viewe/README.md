@@ -267,7 +267,10 @@ for validation.
 `PUT /api/v1/sensors/mapping` persists a complete active-source profile and
 restarts the meter. On the touchscreen, Setup's edit button opens the active
 source's full-screen mapping editor with live physical V/A/W readings and
-draft-aware Balance. The Web editor is added in the next phase.
+draft-aware Balance. Web Setup provides the same editor as a responsive inline
+panel: beside Setup on desktop and stacked below the sensor summary on phones.
+It loads the persisted profile once, then receives physical diagnostics from
+the shared live WebSocket rather than polling HTTP.
 
 The WROOM build keeps Demo as the fresh-device default but exposes ADS1115 in
 Setup. Its SSD1306 (address `0x3c`) and ADS1115 (`0x48`) share GPIO 5 SDA / GPIO

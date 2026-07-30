@@ -5,6 +5,7 @@
   import SensorChart from './lib/SensorChart.svelte';
   import AdcCaptureChart from './lib/AdcCaptureChart.svelte';
   import HistoryChart from './lib/HistoryChart.svelte';
+  import SensorMappingEditor from './lib/SensorMappingEditor.svelte';
   import {
     anchorTime,
     getAdcCaptureData,
@@ -200,12 +201,15 @@
   let setupError = '';
   let setupMessage = '';
   let setupBusy = false;
+  let sensorMappingOpen = false;
   $: setupIsDirty = !!setup && (
     setupHostname !== setup.hostname || setupSensorMode !== setup.sensor_mode ||
     setupAppearance !== setup.appearance ||
     setupStatusDisplayMode !== (setup.status_display_mode || 'summary') || resetSetup || resetWifi ||
     resetCalibration || resetUsage
   );
+  $: sensorMappingCanOpen = !!setup && !setupIsDirty &&
+    setupSensorMode === sensorStatus?.source?.mode;
 
   // Wi-Fi commands are applied immediately by the shared network manager.
   // Poll while this page is visible because scans and connections finish
@@ -251,6 +255,7 @@
 
   // Live socket (WebSocket).
   let socket = null;
+  let livePhysicalSensors = null;
   let connection = 'connecting'; // connecting | reconnecting | live | failed | limited | paused
   let connectionLimit = 5;
   let reconnectAttempts = 0;
@@ -645,6 +650,20 @@
     }
   }
 
+  function sensorSummarySymbol(channel) {
+    if (!channel?.physical_sensor) return '—';
+    if (channel.state === 'valid') return '✓';
+    if (['out_of_range', 'invalid', 'stale'].includes(channel.state)) return '!';
+    return '○';
+  }
+
+  function sensorSummaryClass(channel) {
+    if (!channel?.physical_sensor) return 'unmapped';
+    if (channel.state === 'valid') return 'good';
+    if (['out_of_range', 'invalid', 'stale'].includes(channel.state)) return 'warning';
+    return 'waiting';
+  }
+
   function wifiStationLabel(station) {
     if (!station) return 'Loading…';
     if (station.state === 'connected_internet') return 'Connected · Internet available';
@@ -699,6 +718,7 @@
 
   function enterRoute(next) {
     route = next;
+    if (next !== 'setup') sensorMappingOpen = false;
     clearTimeout(historyRefreshTimer);
     clearTimeout(cycleRefreshTimer);
     clearInterval(wifiPollTimer);
@@ -1007,6 +1027,13 @@
     }
   }
 
+  function sensorMappingRestarting() {
+    sensorMappingOpen = false;
+    setupError = '';
+    setupMessage = 'Sensor mapping saved. The device is restarting…';
+    setup = null;
+  }
+
   async function refreshDebug() {
     try {
       debugStatus = await getDebug();
@@ -1167,10 +1194,12 @@
       lastSessionId = frame.sessionId;
       lastSequence = 0;
       points = [];
+      livePhysicalSensors = null;
     }
 
     if (frame.sequence <= lastSequence) return; // duplicate or out-of-order frame
     lastSequence = frame.sequence;
+    if (frame.physicalSensors) livePhysicalSensors = frame.physicalSensors;
 
     const timestamp = Number.isFinite(frame.unixMs) ? frame.unixMs : frame.uptimeMs;
     const receivedAt = Date.now();
@@ -1780,21 +1809,45 @@
       </div>
     </section>
   {:else if route === 'setup'}
-    <section class="setup-view">
+    <section class="setup-view" class:editor-open={sensorMappingOpen}>
       {#if setupError}<p class="error" role="alert">{setupError}</p>{/if}
       {#if setupMessage}<p class="success" role="status">{setupMessage}</p>{/if}
       {#if sensorStatusError}<p class="error" role="alert">{sensorStatusError}</p>{/if}
-      {#if setup}
-        <form on:submit|preventDefault={submitSetup}>
-          <fieldset disabled={setupBusy}>
+      <div class="setup-workspace" class:editor-open={sensorMappingOpen}>
+        {#if setup}
+        <form class="setup-form" on:submit|preventDefault={submitSetup}>
+          <fieldset disabled={setupBusy || sensorMappingOpen}>
             <legend>Sensor mode</legend>
             <div class="form-segments">
               {#each sensorModeOptions as option}
                 <button type="button" class:active={setupSensorMode === option[0]} aria-pressed={setupSensorMode === option[0]} on:click={() => setupSensorMode = option[0]}>{option[1]}</button>
               {/each}
             </div>
-            <p class="field-note">Active: {sensorStatus?.source?.label || '—'} · {sourceStateLabel(sensorStatus?.source)}</p>
+            <div class="sensor-summary-row">
+              <div class="sensor-summary-source">
+                <strong>{sensorStatus?.source?.label || '—'}</strong>
+                <small>{sourceStateLabel(sensorStatus?.source)}</small>
+              </div>
+              <div class="sensor-summary-channels" aria-label="Logical sensor status">
+                {#each sensorStatus?.channels || [] as channel}
+                  <span class={sensorSummaryClass(channel)}
+                    title={`${channel.label}: ${stateLabel(channel.state)}`}>
+                    {channel.label} {sensorSummarySymbol(channel)}
+                  </span>
+                {/each}
+              </div>
+              <button type="button" class="mapping-edit"
+                disabled={!sensorMappingCanOpen || setupBusy}
+                aria-label="Edit sensor mapping"
+                title={sensorMappingCanOpen
+                  ? 'Edit sensor mapping'
+                  : setupIsDirty
+                    ? 'Save or discard Setup changes before editing the mapping'
+                    : 'Apply the selected sensor mode before editing its mapping'}
+                on:click={() => sensorMappingOpen = true}>Remap</button>
+            </div>
 
+            <div class="setup-other-fields">
             {#if hasTouchDisplay}
               <div class="field-label">Device appearance</div>
               <div class="form-segments">
@@ -1824,17 +1877,33 @@
               <label><input type="checkbox" bind:checked={resetCalibration} /> Sensor Calibration</label>
               <label><input type="checkbox" bind:checked={resetUsage} /> Usage Data</label>
             </div>
+            </div>
           </fieldset>
 
           <p class="save-warning">Saving applies all selected changes and restarts the device.</p>
           <div class="form-actions">
-            <button type="button" class="secondary" disabled={!setupIsDirty || setupBusy} on:click={() => loadSetupDraft(setup)}>Discard</button>
-            <button type="submit" class="primary" disabled={!setupIsDirty || setupBusy}>{setupBusy ? 'Applying…' : 'Save'}</button>
+            <button type="button" class="secondary"
+              disabled={!setupIsDirty || setupBusy || sensorMappingOpen}
+              on:click={() => loadSetupDraft(setup)}>Discard</button>
+            <button type="submit" class="primary"
+              disabled={!setupIsDirty || setupBusy || sensorMappingOpen}>
+              {setupBusy ? 'Applying…' : 'Save & Reboot'}
+            </button>
           </div>
         </form>
-      {:else if !setupMessage}
-        <p class="empty">Loading setup…</p>
-      {/if}
+        {:else if !setupMessage}
+          <p class="empty">Loading setup…</p>
+        {/if}
+
+        {#if sensorMappingOpen}
+          <SensorMappingEditor
+            sourceLabel={sensorStatus?.source?.label || 'Active source'}
+            {livePhysicalSensors}
+            on:cancel={() => sensorMappingOpen = false}
+            on:restarting={sensorMappingRestarting}
+          />
+        {/if}
+      </div>
     </section>
   {:else if route === 'info'}
     <section class="table-view info-view">
@@ -2810,6 +2879,10 @@
     max-width: 36rem;
   }
 
+  .setup-view.editor-open { max-width: 86rem; }
+  .setup-workspace,
+  .setup-form { min-width: 0; }
+
   .wifi-view { max-width: 68rem; }
 
   .wifi-grid {
@@ -3064,6 +3137,63 @@
     color: var(--muted);
     font-size: 0.78rem;
   }
+
+  .sensor-summary-row {
+    display: grid;
+    grid-template-columns: minmax(7rem, 1fr) auto auto;
+    align-items: center;
+    gap: 0.65rem;
+    margin-top: 0.55rem;
+    padding: 0.55rem 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: 0.35rem;
+    background: var(--surface);
+  }
+
+  .sensor-summary-source {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+  }
+
+  .sensor-summary-source strong {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sensor-summary-source small,
+  .sensor-summary-channels {
+    color: var(--muted);
+    font-size: 0.72rem;
+  }
+
+  .sensor-summary-channels {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: center;
+    gap: 0.25rem 0.55rem;
+  }
+
+  .sensor-summary-channels span { white-space: nowrap; }
+  .sensor-summary-channels .good { color: var(--charge); }
+  .sensor-summary-channels .warning { color: var(--warning); }
+  .sensor-summary-channels .unmapped,
+  .sensor-summary-channels .waiting { color: var(--muted); }
+
+  .mapping-edit {
+    min-width: 4.6rem;
+    height: 2.5rem;
+    padding: 0 0.65rem;
+    border: 1px solid var(--border);
+    border-radius: 0.3rem;
+    color: var(--muted);
+    font-size: 0.8rem;
+    line-height: 1;
+  }
+
+  .mapping-edit:hover:not(:disabled),
+  .mapping-edit:focus-visible { color: var(--accent); }
 
   #hostname {
     width: 100%;
@@ -3454,6 +3584,13 @@
   }
 
   @media (min-width: 64rem) {
+    .setup-workspace.editor-open {
+      display: grid;
+      grid-template-columns: minmax(22rem, 30rem) minmax(36rem, 1fr);
+      align-items: start;
+      gap: 1rem;
+    }
+
     .sensors-view { max-width: none; }
     .sensor-tabs { display: none; }
     .sensor-grid {
@@ -3492,6 +3629,23 @@
     }
 
     .sensor-charts { grid-template-columns: 1fr; }
+    .sensor-summary-row {
+      grid-template-columns: minmax(0, 1fr) auto;
+    }
+    .sensor-summary-channels {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      justify-content: flex-start;
+    }
+    .mapping-edit {
+      grid-column: 2;
+      grid-row: 1;
+    }
+    .setup-view.editor-open .setup-other-fields,
+    .setup-view.editor-open .setup-form > .save-warning,
+    .setup-view.editor-open .setup-form > .form-actions {
+      display: none;
+    }
     .sensor-heading { align-items: flex-start; }
     .adc-capture-heading { display: block; }
     .adc-capture-toolbar {
