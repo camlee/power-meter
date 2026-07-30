@@ -1,51 +1,53 @@
 #include "sensor_source_sim.h"
+#include "demo_scenarios.h"
 #include <cmath>
 #include <Arduino.h>
 
-SimulatedSensorSource::SimulatedSensorSource(float voltageBaseline, float currentBaseline, uint32_t seedOffset,
-                                             float minimumDuty, float maximumDuty)
-    : voltageBaseline_(voltageBaseline), currentBaseline_(currentBaseline), seedOffset_(seedOffset),
-      minimumDuty_(minimumDuty), maximumDuty_(maximumDuty) {}
+namespace {
+
+size_t lastLoggedScenario = demo_scenarios::kScenarioCount;
+
+constexpr float kTwoPi = 6.28318530718f;
+
+} // namespace
+
+SimulatedSensorSource::SimulatedSensorSource(uint8_t channel) : channel_(channel) {}
 
 bool SimulatedSensorSource::init() {
-    startMs_ = millis();
-    lastDutyChangeMs_ = startMs_;
-    return true;
+    return channel_ < demo_scenarios::kChannelCount;
 }
 
 SensorSample SimulatedSensorSource::read() {
-    float t = (millis() - startMs_) / 1000.0f;
+    // millis() and history storage share the device's boot-monotonic clock.
+    // Using it directly makes transitions occur on exact minute boundaries,
+    // matching the finest persisted Usage bucket.
+    const uint32_t elapsedMs = millis();
+    const size_t scenarioIndex = demo_scenarios::scenarioIndex(elapsedMs);
+    const demo_scenarios::Scenario& scenario = demo_scenarios::kScenarios[scenarioIndex];
+    const demo_scenarios::ChannelPoint& point = scenario.channels[channel_];
 
-    // Slow drift, phase-shifted per instance via seedOffset_ so the 3
-    // simulated sensors don't look identical on the combined chart.
-    float phase = (float)seedOffset_;
-    float vDrift = 0.05f * voltageBaseline_ * sinf(t * 0.03f + phase);
-    float iDrift = 0.15f * currentBaseline_ * sinf(t * 0.07f + phase * 1.7f);
+    if (channel_ == 0 && scenarioIndex != lastLoggedScenario) {
+        lastLoggedScenario = scenarioIndex;
+        Serial.printf(
+            "demo: scenario=%s solar=%.1fW load=%.1fW battery=%+.1fW balance=%+.1fW\n",
+            scenario.name, scenario.channels[0].power, scenario.channels[1].power,
+            scenario.channels[2].power, scenario.expectedBalanceW);
+    }
 
-    float vNoise = ((float)random(-1000, 1001) / 1000.0f) * 0.02f * voltageBaseline_;
-    float iNoise = ((float)random(-1000, 1001) / 1000.0f) * 0.03f * currentBaseline_;
+    // A small shared ripple makes live charts visibly active without random
+    // noise or inter-channel energy disagreement. Replaying the same elapsed
+    // time always produces the same observation.
+    const float withinScenario =
+        static_cast<float>(elapsedMs % demo_scenarios::kScenarioDurationMs);
+    const float ripplePhase = kTwoPi * withinScenario / 15000.0f;
+    const float voltageScale = 1.0f + 0.002f * sinf(ripplePhase);
+    const float powerScale = 1.0f + 0.015f * sinf(ripplePhase);
 
     SensorSample s;
     s.state = SensorSampleState::Observed;
     s.configured = true;
-    s.voltage = voltageBaseline_ + vDrift + vNoise;
-    s.current = currentBaseline_ + iDrift + iNoise;
-    if (s.current < 0) s.current = 0; // current shouldn't go negative in this sim
-
-    // Model a 20 ms PWM period, far below the 500 ms acquisition cadence.
-    // Each returned current is therefore the average of many on/off pulses,
-    // not an instantaneous high/low sample that would draw square waves.
-    if (maximumDuty_ < 1.0f) {
-        const uint32_t now = millis();
-        if (currentDuty_ >= 1.0f || now - lastDutyChangeMs_ >= 1000) {
-            const long minimumPermille = lroundf(minimumDuty_ * 1000.0f);
-            const long maximumPermille = lroundf(maximumDuty_ * 1000.0f);
-            currentDuty_ = random(minimumPermille, maximumPermille + 1) / 1000.0f;
-            lastDutyChangeMs_ = now;
-        }
-        s.current *= currentDuty_;
-        s.hasDutyCycle = true;
-        s.dutyCycle = currentDuty_;
-    }
+    s.voltage = point.voltage * voltageScale;
+    const float power = point.power * powerScale;
+    s.current = std::fabs(s.voltage) > 0.001f ? power / s.voltage : 0.0f;
     return s;
 }

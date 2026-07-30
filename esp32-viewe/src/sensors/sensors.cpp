@@ -255,13 +255,7 @@ SensorSource* makeSource(SensorId id) {
     if (id >= SENSOR_COUNT) return nullptr;
     switch (sensor_mode::get()) {
         case sensor_mode::Mode::Demo:
-            switch (id) {
-                case SENSOR_IN: return new SimulatedSensorSource(/*V*/ 18.0f, /*A*/ 2.0f, /*phase*/ 0,
-                                                                 /*duty*/ 0.5f, 0.8f);
-                case SENSOR_OUT: return new SimulatedSensorSource(/*V*/ 13.0f, /*A*/ 1.5f, /*phase*/ 1);
-                case SENSOR_AUX: return new SimulatedSensorSource(/*V*/ 5.0f, /*A*/ 0.4f, /*phase*/ 2);
-                default: return nullptr;
-            }
+            return new SimulatedSensorSource(static_cast<uint8_t>(id));
         case sensor_mode::Mode::Uart:
             return new UartPm1SensorSource(static_cast<uint8_t>(id));
         case sensor_mode::Mode::Adc: {

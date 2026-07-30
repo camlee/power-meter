@@ -681,7 +681,10 @@ void webHistoryQuery() {
         uint32_t lookbackMinutes = 0;
         uint16_t defaultBucketMinutes = 30;
         const String rangeArg = server->arg("range");
-        if (rangeArg == "last1hour") {
+        if (rangeArg == "last20minutes") {
+            kind = history_query_service::UsageQueryKind::Rolling;
+            lookbackMinutes = 20; defaultBucketMinutes = 1;
+        } else if (rangeArg == "last1hour") {
             kind = history_query_service::UsageQueryKind::Rolling;
             lookbackMinutes = 60; defaultBucketMinutes = 2;
         } else if (rangeArg == "last6hours") {

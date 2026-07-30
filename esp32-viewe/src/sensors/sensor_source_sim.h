@@ -1,25 +1,17 @@
 #pragma once
 #include "sensor_source.h"
+#include <cstdint>
 
-// Fake sensor: slow sine-wave drift on both voltage and current, plus small
-// jitter, so it behaves roughly like a real power rail under a slowly
-// changing load. seedOffset gives each of the 3 instances a different phase
-// so they don't all move in lockstep on screen.
+// One channel of the shared deterministic Demo scenario schedule. All three
+// instances use the same clock so Solar, Load, and Battery remain physically
+// coherent while each scenario is active.
 class SimulatedSensorSource : public SensorSource {
 public:
-    SimulatedSensorSource(float voltageBaseline, float currentBaseline, uint32_t seedOffset,
-                          float minimumDuty = 1.0f, float maximumDuty = 1.0f);
+    explicit SimulatedSensorSource(uint8_t channel);
 
     bool init() override;
     SensorSample read() override;
 
 private:
-    float voltageBaseline_;
-    float currentBaseline_;
-    uint32_t seedOffset_;
-    uint32_t startMs_ = 0;
-    float minimumDuty_;
-    float maximumDuty_;
-    float currentDuty_ = 1.0f;
-    uint32_t lastDutyChangeMs_ = 0;
+    uint8_t channel_;
 };

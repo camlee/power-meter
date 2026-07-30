@@ -75,6 +75,7 @@
   // The all-history bucket is selected by the firmware and learned from the
   // response. Yesterday is complete and therefore manual-refresh only.
   const rollingHistoryRanges = [
+    { id: 'last20minutes', label: 'Last 20 Minutes', minutes: 1, tickMinutes: 5, refreshMs: 60_000 },
     { id: 'last1hour', label: 'Last 1 Hour', minutes: 2, tickMinutes: 15, refreshMs: 2 * 60_000 },
     { id: 'last6hours', label: 'Last 6 Hours', minutes: 15, tickMinutes: 60, refreshMs: 15 * 60_000 },
     { id: 'last24hours', label: 'Last 24 Hours', minutes: 30, tickMinutes: 180, refreshMs: 30 * 60_000 },
@@ -267,7 +268,7 @@
   let history = null;
   let historyError = '';
   let historyBusy = false;
-  let historyRange = historyRanges[0];
+  let historyRange = historyRanges.find((range) => range.id === 'last1hour');
   let historyFetchedAt = 0;
   let historyRefreshTimer;
   let historyRequestGeneration = 0;

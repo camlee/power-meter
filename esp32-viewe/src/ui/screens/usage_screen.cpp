@@ -31,6 +31,8 @@ struct Range {
 };
 
 constexpr Range kRanges[] = {
+    {"Last 20 Minutes", history_query_service::UsageQueryKind::Rolling,
+     20, 1, 5, historical_storage::CalendarRange::Today},
     {"Last 1 Hour", history_query_service::UsageQueryKind::Rolling,
      60, 2, 15, historical_storage::CalendarRange::Today},
     {"Last 6 Hours", history_query_service::UsageQueryKind::Rolling,
@@ -50,10 +52,11 @@ constexpr Range kRanges[] = {
     {"Since Boot", history_query_service::UsageQueryKind::SinceBoot,
      0, 0, 0, historical_storage::CalendarRange::Today},
 };
-constexpr uint8_t kRollingRangeCount = 5;
-constexpr uint8_t kTodayRange = 5;
-constexpr uint8_t kAllHistoryRange = 7;
-constexpr uint8_t kSinceBootRange = 8;
+constexpr uint8_t kRollingRangeCount = 6;
+constexpr uint8_t kTodayRange = 6;
+constexpr uint8_t kAllHistoryRange = 8;
+constexpr uint8_t kSinceBootRange = 9;
+constexpr uint8_t kDefaultRange = 1;
 
 lv_obj_t* chart = nullptr;
 float chartValues[6][kMaxPoints] = {};
@@ -70,7 +73,7 @@ lv_obj_t* statusBadge = nullptr;
 lv_obj_t* statusIcon = nullptr;
 lv_obj_t* statusText = nullptr;
 lv_obj_t* progress = nullptr;
-uint8_t selectedRange = 0;
+uint8_t selectedRange = kDefaultRange;
 uint8_t visibleRanges[sizeof(kRanges) / sizeof(kRanges[0])] = {};
 uint8_t visibleRangeCount = 0;
 bool rangeOptionsHaveTime = false;
