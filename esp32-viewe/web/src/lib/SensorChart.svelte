@@ -1,6 +1,11 @@
 <script>
   import { onMount } from 'svelte';
   import { projectLiveNow } from './liveTime.js';
+  import {
+    calibrationAxis,
+    fixedSensorAxis,
+    sensorAxis,
+  } from './sensorAxis.js';
 
   export let points = [];
   export let field = 'voltage';
@@ -13,6 +18,8 @@
   export let emptyMessage = 'Waiting for readings…';
   export let yMin = null;
   export let yMax = null;
+  export let axisMode = 'sensor';
+  export let topRightLabel = '';
 
   const WINDOW_MS = 30_000;
   const GAP_MS = 3_000;
@@ -34,12 +41,6 @@
     const magnitude = Math.abs(value);
     const digits = magnitude >= 100 ? 0 : magnitude >= 10 ? 1 : 2;
     return `${value.toFixed(digits)} ${unit}`;
-  }
-
-  function niceStep(span) {
-    const power = 10 ** Math.floor(Math.log10(Math.max(span, 0.001)));
-    const normalized = span / power;
-    return (normalized <= 1.5 ? 1 : normalized <= 3 ? 2 : normalized <= 7 ? 5 : 10) * power;
   }
 
   function scheduleDraw() {
@@ -97,42 +98,27 @@
       ctx.fillText(emptyMessage, width / 2, height / 2);
       return;
     }
-    let low = Math.min(...values), high = Math.max(...values);
     const fixedDomain = Number.isFinite(yMin) && Number.isFinite(yMax) && yMax > yMin;
-    let tickValues;
-    if (fixedDomain) {
-      low = yMin;
-      high = yMax;
-      tickValues = Array.from({ length: 4 }, (_, index) =>
-        low + (high - low) * index / 3);
-    } else {
-      const minimumSpan = field === 'voltage' ? 1 : 0.5;
-      if (high - low < minimumSpan) {
-        const middle = (high + low) / 2;
-        low = middle - minimumSpan / 2;
-        high = middle + minimumSpan / 2;
-      }
-      const tick = niceStep((high - low) / 4);
-      low = Math.floor(low / tick) * tick;
-      high = Math.ceil(high / tick) * tick;
-      if (high <= low) high = low + tick;
-      tickValues = [];
-      for (let value = low; value <= high + tick * 0.01; value += tick) {
-        tickValues.push(value);
-      }
-    }
+    const axis = fixedDomain
+      ? fixedSensorAxis(yMin, yMax)
+      : axisMode === 'calibration'
+        ? calibrationAxis(values, field)
+        : sensorAxis(field, values);
+    const { low, high } = axis;
+    const tickValues = axis.ticks ?? Array.from(
+      { length: Math.round((high - low) / axis.step) + 1 },
+      (_, index) => low + axis.step * index,
+    );
     const x = (timestamp) => plot.left + plot.width * (timestamp - start) / WINDOW_MS;
     const y = (value) => plot.top + plot.height * (high - value) / (high - low);
     ctx.textAlign = 'right';
     ctx.textBaseline = 'middle';
-    const tickStep = tickValues.length > 1 ? tickValues[1] - tickValues[0] : high - low;
-    const tickDigits = fixedDomain ? 1 : (Math.abs(tickStep) < 1 ? 1 : 0);
     for (const value of tickValues) {
       const py = y(value);
       ctx.strokeStyle = colors.grid;
       ctx.beginPath(); ctx.moveTo(plot.left, py); ctx.lineTo(plot.left + plot.width, py); ctx.stroke();
       ctx.fillStyle = colors.muted;
-      ctx.fillText(`${value.toFixed(tickDigits)} ${unit}`, plot.left - 5, py);
+      ctx.fillText(`${Math.round(value)} ${unit}`, plot.left - 5, py);
     }
     for (let seconds = 0; seconds <= 30; seconds += 10) {
       const px = x(start + seconds * 1000);
@@ -193,6 +179,8 @@
         <span><i class="legend-line old" style={`--legend-color: var(${colorVariable})`}></i>Old {formatLatest(latestOldValue)}</span>
         <span><i class="legend-line new"></i>New {formatLatest(latestNewValue)}</span>
       </div>
+    {:else if topRightLabel}
+      <span class="chart-corner-label">{topRightLabel}</span>
     {/if}
   </div>
   <canvas bind:this={canvas} aria-label={`${title}, last 30 seconds`}></canvas>
@@ -203,6 +191,12 @@
   .chart-heading { display: flex; align-items: center; justify-content: space-between; gap: 0.7rem; margin-bottom: 0.2rem; }
   h4 { margin: 0; color: var(--muted); font-size: 0.85rem; font-weight: 500; }
   .chart-legend { display: flex; align-items: center; gap: 0.75rem; color: var(--muted); font-size: 0.75rem; }
+  .chart-corner-label {
+    color: var(--muted);
+    font-size: 0.8rem;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
   .chart-legend span { display: inline-flex; align-items: center; gap: 0.3rem; }
   .legend-line { display: inline-block; width: 1.25rem; border-top: 2px solid; }
   .legend-line.old { border-color: var(--legend-color); }

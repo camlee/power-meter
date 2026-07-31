@@ -3,7 +3,9 @@
   import { getSensorMapping, saveSensorMapping } from './api.js';
   import {
     cloneSensorMapping,
+    currentDirectionIsDirty,
     mappingBalance,
+    mappingCalibrationAvailable,
     mappingIsValid,
     mappingsEqual,
     previewSensorMapping,
@@ -78,10 +80,15 @@
     dispatch('cancel');
   }
 
+  function calibrationDisabled(sensor, measurement) {
+    return busy ||
+      !mappingCalibrationAvailable(saved, sensor, measurement);
+  }
+
   function calibrate(sensor, measurement) {
-    if (busy || dirty || sensor.role === 'unmapped' ||
-        sensor.calibration?.editable !== true) return;
+    if (calibrationDisabled(sensor, measurement)) return;
     dispatch('calibrate', {
+      sensor: sensor.id,
       role: sensor.role,
       measurement,
     });
@@ -205,20 +212,20 @@
             <span class="editable-reading">
               {measurement(sensor.voltage, 'V', 0)}
               <button type="button" class="edit-reading"
-                disabled={busy || dirty || sensor.role === 'unmapped' ||
-                  sensor.calibration?.editable !== true}
+                disabled={calibrationDisabled(sensor, 'voltage')}
                 aria-label={`Calibrate ${sensor.label} voltage`}
                 title="Calibrate voltage"
-                on:click={() => calibrate(sensor, 'voltage')}>✎</button>
+                on:click={() => calibrate(sensor, 'voltage')}>Calibrate</button>
             </span>
             <span class="editable-reading">
               {measurement(sensor.current, 'A', 0, true)}
               <button type="button" class="edit-reading"
-                disabled={busy || dirty || sensor.role === 'unmapped' ||
-                  sensor.calibration?.editable !== true}
+                disabled={calibrationDisabled(sensor, 'current')}
                 aria-label={`Calibrate ${sensor.label} current`}
-                title="Calibrate current"
-                on:click={() => calibrate(sensor, 'current')}>✎</button>
+                title={currentDirectionIsDirty(saved, sensor)
+                  ? 'Save the new current direction before calibrating current'
+                  : 'Calibrate current'}
+                on:click={() => calibrate(sensor, 'current')}>Calibrate</button>
             </span>
             <span>{measurement(sensor.power, 'W', powerDigits, true)}</span>
           </div>
@@ -260,7 +267,7 @@
           calibration_controls_visible: event.currentTarget.checked,
         }} />
       Show calibration controls
-      <small>Sensors page edit icons</small>
+      <small>Sensors page calibration buttons</small>
     </label>
 
     <div class="mapping-actions">
@@ -478,8 +485,8 @@
     display: grid;
     grid-column: 1 / -1;
     grid-template-columns: 1.4rem repeat(3, minmax(0, 1fr));
-    align-items: center;
-    gap: 0.25rem;
+    align-items: start;
+    gap: 0.65rem;
     margin-top: 0.75rem;
     font-variant-numeric: tabular-nums;
     font-size: 1.05rem;
@@ -491,19 +498,21 @@
 
   .editable-reading {
     display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 0.25rem;
+    flex-direction: column;
+    align-items: flex-end;
+    justify-content: flex-start;
+    justify-self: end;
+    gap: 0.2rem;
   }
 
   .edit-reading {
-    width: 1.5rem;
-    height: 1.5rem;
-    padding: 0;
-    border: 0;
-    background: transparent;
+    min-height: 1.75rem;
+    padding: 0.2rem 0.4rem;
+    border: 1px solid var(--border);
+    border-radius: 0.25rem;
+    background: var(--background);
     color: var(--muted);
-    font-size: 0.95rem;
+    font-size: 0.7rem;
   }
 
   .edit-reading:hover:not(:disabled),

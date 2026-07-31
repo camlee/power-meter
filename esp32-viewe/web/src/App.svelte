@@ -43,6 +43,8 @@
     calibrationValidationMessage,
     calibratedPreview,
     calculatedGain,
+    gainToMillivoltsPerUnit,
+    millivoltsPerUnitToGain,
     validateCalibration,
   } from './lib/calibrationMath.js';
   import { powerBalance } from './lib/powerFlow.js';
@@ -160,6 +162,9 @@
   let selectedSensor = 'in';
   let calibrationEditor = null;
   let calibrationReference = '';
+  let calibrationOffsetText = '';
+  let calibrationGainText = '';
+  let reopenSensorMappingAfterCalibration = false;
   let calibrationBusy = false;
   let calibrationError = '';
   let calibrationMessage = '';
@@ -540,19 +545,56 @@
     }
   }
 
-  function openCalibration(sensor, measurement) {
-    const channel = sensorStatus?.channels?.find((candidate) => candidate.id === sensor);
+  function openCalibration(sensor, measurement, returnTarget = 'sensors') {
+    const channel = sensorStatus?.channels?.find((candidate) =>
+      candidate.id === sensor || candidate.physical_sensor === sensor);
     const value = channel?.calibration?.[measurement];
     if (!value) return;
-    selectSensor(sensor);
+    selectSensor(channel.id);
     calibrationEditor = {
-      sensor, measurement,
+      sensor, channelId: channel.id, measurement,
       gain: value.gain, offset: value.offset_input_v,
       defaultGain: value.default_gain, defaultOffset: value.default_offset_input_v,
       chartUnits: 'engineering',
+      returnTarget,
     };
+    syncCalibrationFieldText();
     calibrationReference = '';
     calibrationError = calibrationMessage = '';
+  }
+
+  function syncCalibrationFieldText() {
+    calibrationOffsetText = Number.isFinite(calibrationEditor?.offset)
+      ? Number(calibrationEditor.offset).toFixed(1) : '';
+    const millivoltsPerUnit = gainToMillivoltsPerUnit(
+      calibrationEditor?.gain,
+    );
+    calibrationGainText = Number.isFinite(millivoltsPerUnit)
+      ? millivoltsPerUnit.toFixed(1) : '';
+  }
+
+  function updateCalibrationField(field, value) {
+    if (!calibrationEditor) return;
+    const number = value === '' ? Number.NaN : Number(value);
+    if (field === 'offset') {
+      calibrationEditor = { ...calibrationEditor, offset: number };
+      calibrationOffsetText = value;
+    } else {
+      calibrationEditor = {
+        ...calibrationEditor,
+        gain: millivoltsPerUnitToGain(number),
+      };
+      calibrationGainText = value;
+    }
+  }
+
+  function closeCalibration() {
+    if (!calibrationEditor) return;
+    const returnTarget = calibrationEditor.returnTarget;
+    reopenSensorMappingAfterCalibration = returnTarget === 'mapping';
+    calibrationEditor = null;
+    calibrationError = '';
+    if (returnTarget === 'mapping') window.history.back();
   }
 
   function calibrationMultiplier(editor, channel) {
@@ -562,7 +604,7 @@
   }
 
   function rawCalibrationPoints(editor, sensor, channel, sensorReadings) {
-    if (!editor || editor.sensor !== sensor) return [];
+    if (!editor || (editor.channelId || editor.sensor) !== sensor) return [];
     const saved = channel?.calibration?.[editor.measurement];
     const multiplier = calibrationMultiplier(editor, channel);
     return sensorReadings.map((point) => ({
@@ -574,7 +616,7 @@
   }
 
   function previewCalibrationPoints(editor, sensor, channel, sensorReadings) {
-    if (!editor || editor.sensor !== sensor) return [];
+    if (!editor || (editor.channelId || editor.sensor) !== sensor) return [];
     const saved = channel?.calibration?.[editor.measurement];
     if (!saved || !Number.isFinite(editor.gain) || editor.gain <= 0) return [];
     const multiplier = calibrationMultiplier(editor, channel);
@@ -604,6 +646,7 @@
         return;
       }
       calibrationEditor = candidate;
+      syncCalibrationFieldText();
       calibrationError = '';
     }
   }
@@ -632,6 +675,7 @@
       return;
     }
     calibrationEditor = candidate;
+    syncCalibrationFieldText();
     calibrationError = '';
   }
 
@@ -641,6 +685,7 @@
       gain: calibrationEditor.defaultGain,
       offset: calibrationEditor.defaultOffset,
     };
+    syncCalibrationFieldText();
   }
 
   async function submitCalibration() {
@@ -666,10 +711,10 @@
         offset_input_v: Number(calibrationEditor.offset),
       });
       calibrationMessage = 'Calibration saved.';
-      calibrationEditor = null;
       // Retained observations were calculated with the previous coefficients;
       // do not reinterpret that mixed window if calibration is reopened.
       points = [];
+      closeCalibration();
     } catch (err) {
       calibrationError = describeError(err, 'save calibration');
     } finally {
@@ -758,8 +803,12 @@
   }
 
   function enterRoute(next) {
+    const reopenSensorMapping = next === 'setup' &&
+      (reopenSensorMappingAfterCalibration ||
+        calibrationEditor?.returnTarget === 'mapping');
     route = next;
     if (next !== 'setup') sensorMappingOpen = false;
+    if (next !== 'sensors') calibrationEditor = null;
     clearTimeout(historyRefreshTimer);
     clearTimeout(cycleRefreshTimer);
     clearInterval(wifiPollTimer);
@@ -821,6 +870,10 @@
       clearInterval(sensorPollTimer);
     }
     if (next === 'raw') resumeAdcCapture();
+    if (reopenSensorMapping) {
+      sensorMappingOpen = true;
+      reopenSensorMappingAfterCalibration = false;
+    }
   }
 
   function navigate(next) {
@@ -1883,29 +1936,31 @@
                 <button type="button" class:active={setupSensorMode === option[0]} aria-pressed={setupSensorMode === option[0]} on:click={() => setupSensorMode = option[0]}>{option[1]}</button>
               {/each}
             </div>
-            <div class="sensor-summary-row">
-              <div class="sensor-summary-source">
-                <strong>{sensorStatus?.source?.label || '—'}</strong>
-                <small>{sourceStateLabel(sensorStatus?.source)}</small>
+            {#if !sensorMappingOpen}
+              <div class="sensor-summary-row">
+                <div class="sensor-summary-source">
+                  <strong>{sensorStatus?.source?.label || '—'}</strong>
+                  <small>{sourceStateLabel(sensorStatus?.source)}</small>
+                </div>
+                <div class="sensor-summary-channels" aria-label="Logical sensor status">
+                  {#each sensorStatus?.channels || [] as channel}
+                    <span class={sensorSummaryClass(channel)}
+                      title={`${channel.label}: ${stateLabel(channel.state)}`}>
+                      {channel.label} {sensorSummarySymbol(channel)}
+                    </span>
+                  {/each}
+                </div>
+                <button type="button" class="mapping-edit"
+                  disabled={!sensorMappingCanOpen || setupBusy}
+                  aria-label="Edit sensor mapping"
+                  title={sensorMappingCanOpen
+                    ? 'Edit sensor mapping'
+                    : setupIsDirty
+                      ? 'Save or discard Setup changes before editing the mapping'
+                      : 'Apply the selected sensor mode before editing its mapping'}
+                  on:click={() => sensorMappingOpen = true}>Remap</button>
               </div>
-              <div class="sensor-summary-channels" aria-label="Logical sensor status">
-                {#each sensorStatus?.channels || [] as channel}
-                  <span class={sensorSummaryClass(channel)}
-                    title={`${channel.label}: ${stateLabel(channel.state)}`}>
-                    {channel.label} {sensorSummarySymbol(channel)}
-                  </span>
-                {/each}
-              </div>
-              <button type="button" class="mapping-edit"
-                disabled={!sensorMappingCanOpen || setupBusy}
-                aria-label="Edit sensor mapping"
-                title={sensorMappingCanOpen
-                  ? 'Edit sensor mapping'
-                  : setupIsDirty
-                    ? 'Save or discard Setup changes before editing the mapping'
-                    : 'Apply the selected sensor mode before editing its mapping'}
-                on:click={() => sensorMappingOpen = true}>Remap</button>
-            </div>
+            {/if}
 
             <div class="setup-other-fields">
             {#if hasTouchDisplay}
@@ -1961,14 +2016,13 @@
             {livePhysicalSensors}
             on:cancel={() => sensorMappingOpen = false}
             on:calibrate={(event) => {
-              const logical = {
-                solar: 'in', load: 'out', battery: 'aux',
-              }[event.detail.role];
               sensorMappingOpen = false;
-              if (logical) {
-                navigate('sensors');
-                openCalibration(logical, event.detail.measurement);
-              }
+              navigate('sensors');
+              openCalibration(
+                event.detail.sensor,
+                event.detail.measurement,
+                'mapping',
+              );
             }}
             on:restarting={sensorMappingRestarting}
           />
@@ -2163,44 +2217,65 @@
   {:else if route === 'sensors'}
     <section class="sensors-view" aria-live="polite">
       {#if sensorStatusError}<p class="error" role="alert">{sensorStatusError}</p>{/if}
-      <div class="sensor-heading">
-        <div>
-          <h2>Live sensors</h2>
-          <p>{sensorStatus?.source?.label || '—'} source · {sourceStateLabel(sensorStatus?.source)}</p>
+      {#if !calibrationEditor}
+        <div class="sensor-heading">
+          <div>
+            <h2>Live sensors</h2>
+            <p>{sensorStatus?.source?.label || '—'} source · {sourceStateLabel(sensorStatus?.source)}</p>
+          </div>
         </div>
-      </div>
-      <div class="sensor-tabs" role="tablist" aria-label="Sensor channel">
-        {#each sensorStatus?.channels || [] as channel}
-          <button type="button" role="tab" class:active={selectedSensor === channel.id}
-            aria-selected={selectedSensor === channel.id} on:click={() => selectSensor(channel.id)}>
-            {channel.label}
-          </button>
-        {/each}
-      </div>
+        <div class="sensor-tabs" role="tablist" aria-label="Sensor channel">
+          {#each sensorStatus?.channels || [] as channel}
+            <button type="button" role="tab" class:active={selectedSensor === channel.id}
+              aria-selected={selectedSensor === channel.id} on:click={() => selectSensor(channel.id)}>
+              {channel.label}
+            </button>
+          {/each}
+        </div>
+      {/if}
       {#if sensorStatus?.channels?.length}
         <div class="sensor-grid" class:calibrating={!!calibrationEditor}>
+          {#if calibrationEditor}
+            <div class="calibration-page-header">
+              <button type="button" class="calibration-back"
+                aria-label="Back from calibration" title="Back"
+                on:click={closeCalibration}>‹</button>
+              <h2>Calibrate {selectedChannel.label} {calibrationEditor.measurement}</h2>
+            </div>
+          {/if}
           {#each sensorStatus.channels as channel}
-            {#if !calibrationEditor || calibrationEditor.sensor === channel.id}
+            {#if !calibrationEditor ||
+              (calibrationEditor.channelId || calibrationEditor.sensor) === channel.id}
               <section class="sensor-panel" class:active={selectedSensor === channel.id}>
-                {#if calibrationEditor?.sensor !== channel.id}
+                {#if (calibrationEditor?.channelId || calibrationEditor?.sensor) !== channel.id}
                   <article class="sensor-card" class:warning={channel.state === 'out_of_range'}
                     class:bad={channel.state === 'invalid' || channel.state === 'stale'}>
                     <header>
                       <h3>{channel.label}</h3>
-                      <div class="sensor-card-status">
-                        <span class="state" class:good={channel.state === 'valid'}
-                          class:warning={channel.state === 'out_of_range'}
-                          class:bad={channel.state === 'invalid' || channel.state === 'stale'}>{stateLabel(channel.state)}</span>
+                      <span class="state" class:good={channel.state === 'valid'}
+                        class:warning={channel.state === 'out_of_range'}
+                        class:bad={channel.state === 'invalid' || channel.state === 'stale'}>{stateLabel(channel.state)}</span>
+                    </header>
+                    {#if channel.calibration?.editable ||
+                      (channel.configured &&
+                        ['adc', 'ads1115'].includes(sensorStatus?.source?.mode))}
+                      <div class="sensor-kpi-actions">
+                        {#if channel.calibration?.editable}
+                          <button class="compact secondary" type="button"
+                            on:click={() => openCalibration(channel.id, 'voltage')}>Calibrate Voltage</button>
+                          <button class="compact secondary" type="button"
+                            on:click={() => openCalibration(channel.id, 'current')}>Calibrate Current</button>
+                        {/if}
                         {#if channel.configured &&
                           ['adc', 'ads1115'].includes(sensorStatus?.source?.mode)}
                           <button class="compact secondary" type="button"
                             on:click={() => startAdcCapture(channel.id)}>View Raw</button>
                         {/if}
                       </div>
-                    </header>
+                    {/if}
                     <dl class="measurements kpis">
-                      <dt>Voltage</dt><dd>{formatMeasurement(channel.voltage, 'V')}</dd>
-                      <dt>Current</dt><dd>{formatMeasurement(channel.current, 'A')}</dd>
+                      <dt>Voltage</dt><dd>{formatMeasurement(channel.voltage, 'V', 1)}</dd>
+                      <dt>Current</dt><dd>{formatMeasurement(channel.current, 'A', 1)}</dd>
                       <dt>Power</dt><dd>{formatMeasurement(channel.power, 'W')}</dd>
                       {#if pwmUiEnabled}
                         <dt>Duty</dt><dd>{channel.duty?.state === 'valid' ? formatPercent(channel.duty.value) : '—'}</dd>
@@ -2211,7 +2286,7 @@
                 {/if}
 
                 <div class="sensor-charts">
-                  {#if calibrationEditor?.sensor === channel.id}
+                  {#if (calibrationEditor?.channelId || calibrationEditor?.sensor) === channel.id}
                     <div class="calibration-unit-toggle">
                       <span>Chart units</span>
                       <div role="group" aria-label="Calibration chart units">
@@ -2241,6 +2316,10 @@
                       active={!livePaused && selectedSensor === channel.id}
                       yMin={calibrationEditor.chartUnits === 'raw' ? 0 : null}
                       yMax={calibrationEditor.chartUnits === 'raw' ? 3.3 : null}
+                      axisMode={calibrationEditor.chartUnits === 'raw'
+                        ? 'sensor' : 'calibration'}
+                      topRightLabel={calibrationEditor.chartUnits === 'raw'
+                        ? formatMeasurement(calibrationInput, 'V ADC', 4) : ''}
                       previewPoints={calibrationEditor.chartUnits === 'raw'
                         ? [] : calibrationPreviewPoints}
                       showPreviewLegend={calibrationEditor.chartUnits !== 'raw'} />
@@ -2259,27 +2338,29 @@
                   {/if}
                 </div>
 
-                {#if channel.calibration?.editable && calibrationEditor?.sensor !== channel.id}
-                  <div class="calibration-actions">
-                    <button type="button" on:click={() => openCalibration(channel.id, 'voltage')}>Calibrate voltage</button>
-                    <button type="button" on:click={() => openCalibration(channel.id, 'current')}>Calibrate current</button>
-                  </div>
-                {/if}
               </section>
             {/if}
           {/each}
 
           {#if calibrationEditor}
             <form class="calibration-editor" on:submit|preventDefault={submitCalibration}>
-              <h3>Calibrate {selectedChannel.label} {calibrationEditor.measurement}</h3>
-              <label>ADC offset / zero (V)
-                <input type="number" step="0.0001" min="0" max="3.3" bind:value={calibrationEditor.offset} />
-              </label>
-              <label>Gain ({calibrationEditor.measurement === 'voltage' ? 'V' : 'A'} per ADC V)
-                <input type="number" step="0.001" min="0.001" max="10000" bind:value={calibrationEditor.gain} />
-              </label>
-              <div class="calibration-reference">
-                <label>Trusted reference ({calibrationEditor.measurement === 'voltage' ? 'V' : 'A'})
+              <div class="calibration-field-row offset-row">
+                <label>ADC offset / zero (V)
+                  <input type="number" step="0.1" min="0" max="3.3" required
+                    value={calibrationOffsetText}
+                    on:input={(event) => updateCalibrationField('offset', event.currentTarget.value)} />
+                </label>
+                <button type="button" on:click={zeroCalibration}>Zero</button>
+              </div>
+              <div class="calibration-field-row gain-row">
+                <label>
+                  <span class="calibration-field-label">Gain ({calibrationEditor.measurement === 'voltage' ? 'mV/V' : 'mV/A'})</span>
+                  <input type="number" step="0.1" min="0.1" max="10000" required
+                    value={calibrationGainText}
+                    on:input={(event) => updateCalibrationField('gain', event.currentTarget.value)} />
+                </label>
+                <label>
+                  <span class="calibration-field-label">Trusted Reference&nbsp;({calibrationEditor.measurement === 'voltage' ? 'V' : 'A'})</span>
                   <input type="number" step="0.001"
                     min={calibrationEditor.measurement === 'voltage' ? 0.001 : -150}
                     max={calibrationEditor.measurement === 'voltage' ? 250 : 150}
@@ -2287,13 +2368,11 @@
                 </label>
                 <button type="button" on:click={calculateCalibration}>Calculate</button>
               </div>
-              <p class="field-note">Raw ADC values are measured before offset and gain.
-                Latest input: {formatMeasurement(calibrationInput, 'V ADC', 4)}</p>
+              <p class="field-note">Raw ADC values are measured before offset and gain.</p>
               {#if calibrationError}<p class="error" role="alert">{calibrationError}</p>{/if}
               <div class="calibration-editor-actions">
-                <button type="button" on:click={zeroCalibration}>Use latest as zero</button>
                 <button type="button" on:click={resetCalibrationEditor}>Defaults</button>
-                <button type="button" on:click={() => calibrationEditor = null}>Cancel</button>
+                <button type="button" on:click={closeCalibration}>Cancel</button>
                 <button class="primary" type="submit" disabled={calibrationBusy}>{calibrationBusy ? 'Saving…' : 'Save'}</button>
               </div>
             </form>
@@ -3469,10 +3548,19 @@
 
   .adc-capture-heading span { white-space: nowrap; }
 
-  .sensor-card-status {
+  .sensor-kpi-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 0.55rem;
+    justify-content: flex-start;
+    gap: 0.4rem;
+    margin-bottom: 0.65rem;
+  }
+
+  .sensor-kpi-actions button {
+    padding-right: 0.4rem;
+    padding-left: 0.4rem;
+    font-size: 0.68rem;
   }
 
   .adc-window-table-wrap {
@@ -3525,12 +3613,37 @@
   .sensor-panel { display: none; min-width: 0; }
   .sensor-panel.active { display: block; }
 
+  .calibration-page-header {
+    display: grid;
+    grid-template-columns: 2.3rem minmax(0, 1fr);
+    grid-column: 1 / -1;
+    align-items: center;
+    gap: 0.55rem;
+    margin-bottom: 0.2rem;
+  }
+
+  .calibration-page-header h2 { margin: 0; }
+
+  .calibration-back {
+    width: 2.3rem;
+    height: 2.3rem;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font-size: 2rem;
+    line-height: 1;
+  }
+
+  .calibration-back:hover,
+  .calibration-back:focus-visible { color: var(--text); }
+
   .sensor-card header {
     display: flex;
     align-items: baseline;
     justify-content: space-between;
     gap: 0.6rem;
-    margin-bottom: 0.65rem;
+    margin-bottom: 0.5rem;
   }
 
   .measurements {
@@ -3582,7 +3695,6 @@
   .calibration-unit-toggle button:first-child { border-left: 0; }
   .calibration-unit-toggle button.active { color: white; background: var(--accent); }
 
-  .calibration-actions,
   .calibration-editor-actions {
     display: flex;
     flex-wrap: wrap;
@@ -3591,9 +3703,8 @@
     margin-top: 0.65rem;
   }
 
-  .calibration-actions button,
   .calibration-editor-actions button,
-  .calibration-reference button {
+  .calibration-field-row button {
     min-height: 2.2rem;
     padding: 0.4rem 0.65rem;
     border-color: var(--border);
@@ -3609,14 +3720,15 @@
     background: var(--surface);
   }
 
-  .calibration-editor > label,
-  .calibration-reference label {
+  .calibration-field-row label {
     display: grid;
+    min-width: 0;
     gap: 0.25rem;
-    margin-top: 0.6rem;
     color: var(--muted);
     font-size: 0.8rem;
   }
+
+  .calibration-field-label { white-space: nowrap; }
 
   .calibration-editor input {
     width: 100%;
@@ -3628,11 +3740,17 @@
     font: inherit;
   }
 
-  .calibration-reference {
+  .calibration-field-row {
     display: grid;
     grid-template-columns: minmax(0, 1fr) auto;
     align-items: end;
     gap: 0.5rem;
+  }
+
+  .calibration-field-row + .calibration-field-row { margin-top: 0.65rem; }
+
+  .calibration-field-row.gain-row {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
   }
 
   dl {

@@ -6,10 +6,19 @@ import {
   calibrationValidationMessage,
   calibratedPreview,
   calculatedGain,
+  gainToMillivoltsPerUnit,
+  millivoltsPerUnitToGain,
   validateCalibration,
 } from '../src/lib/calibrationMath.js';
 
 const calibration = { gain: 40, offset_input_v: 1.667 };
+
+test('web gain fields use the same millivolts-per-unit representation as LVGL', () => {
+  assert.equal(gainToMillivoltsPerUnit(40), 25);
+  assert.equal(millivoltsPerUnitToGain(25), 40);
+  assert.equal(Number.isNaN(gainToMillivoltsPerUnit(0)), true);
+  assert.equal(Number.isNaN(millivoltsPerUnitToGain(0)), true);
+});
 
 test('normal current calibration retains the existing conversion', () => {
   assert.equal(calibratedPreview(1.917, 40, 1.667), 10);

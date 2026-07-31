@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   cloneSensorMapping,
+  currentDirectionIsDirty,
   mappingBalance,
+  mappingCalibrationAvailable,
   mappingIsValid,
   mappingsEqual,
   previewSensorMapping,
@@ -72,6 +74,29 @@ test('draft polarity immediately reverses effective current and power', () => {
   assert.equal(preview[0].power, -40);
   assert.equal(preview[0].interpretation.warning, true);
   assert.match(preview[0].interpretation.text, /Solar: Consuming/);
+});
+
+test('a draft current-direction change only blocks current calibration', () => {
+  const saved = mapping();
+  saved.physical_sensors.forEach((sensor) => {
+    sensor.calibration = { editable: true };
+  });
+  const draft = cloneSensorMapping(saved);
+  draft.physical_sensors[0].current_direction = 'reversed';
+
+  assert.equal(currentDirectionIsDirty(saved, draft.physical_sensors[0]), true);
+  assert.equal(
+    mappingCalibrationAvailable(saved, draft.physical_sensors[0], 'voltage'),
+    true,
+  );
+  assert.equal(
+    mappingCalibrationAvailable(saved, draft.physical_sensors[0], 'current'),
+    false,
+  );
+  assert.equal(
+    mappingCalibrationAvailable(saved, draft.physical_sensors[1], 'current'),
+    true,
+  );
 });
 
 test('role changes immediately change the interpretation', () => {

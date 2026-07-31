@@ -44,6 +44,22 @@ export function mappingsEqual(left, right) {
       sensor.current_direction === rightSensors[index]?.current_direction);
 }
 
+export function currentDirectionIsDirty(savedMapping, sensor) {
+  const savedSensor = savedMapping?.physical_sensors?.find(
+    (candidate) => candidate.id === sensor?.id,
+  );
+  return !!savedSensor &&
+    savedSensor.current_direction !== sensor.current_direction;
+}
+
+export function mappingCalibrationAvailable(
+  savedMapping, sensor, measurement,
+) {
+  return sensor?.calibration?.editable === true &&
+    (measurement !== 'current' ||
+      !currentDirectionIsDirty(savedMapping, sensor));
+}
+
 export function directionMultiplier(direction) {
   return direction === 'reversed' ? -1 : 1;
 }

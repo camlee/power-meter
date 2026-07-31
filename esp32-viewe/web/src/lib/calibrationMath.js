@@ -8,6 +8,14 @@ export const MAX_STORED_GAIN_PER_INPUT_V = 10000;
 export const MAX_VOLTAGE_V = 250;
 export const MAX_CURRENT_A = 150;
 
+export function gainToMillivoltsPerUnit(gain) {
+  return Number.isFinite(gain) && gain > 0 ? 1000 / gain : Number.NaN;
+}
+
+export function millivoltsPerUnitToGain(value) {
+  return Number.isFinite(value) && value > 0 ? 1000 / value : Number.NaN;
+}
+
 export function validateCalibration(measurement, gain, offset) {
   const result = {
     valid: false,
