@@ -28,6 +28,7 @@ STABLE_SEMVER = re.compile(
     r"^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$"
 )
 BOARDS = ("meter-viewe", "meter-wroom")
+MINIMUM_NODE_MAJOR = 20
 
 
 class ReleaseError(RuntimeError):
@@ -86,6 +87,21 @@ def configured_release_repo():
 def require_program(name):
     if shutil.which(name) is None:
         raise ReleaseError("{} was not found on PATH.".format(name))
+
+
+def require_node_version():
+    version = capture(["node", "--version"])
+    match = re.fullmatch(r"v?([0-9]+)(?:\.[0-9]+){0,2}", version)
+    if not match:
+        raise ReleaseError(
+            "Could not determine the Node.js version from: {!r}".format(version)
+        )
+    if int(match.group(1)) < MINIMUM_NODE_MAJOR:
+        raise ReleaseError(
+            "Node.js {}+ is required for the web tests and build (found {}). "
+            "Upgrade Node.js and ensure node and npm on PATH use the new "
+            "installation.".format(MINIMUM_NODE_MAJOR, version)
+        )
 
 
 def require_clean_source():
@@ -354,8 +370,9 @@ def main():
                 print("Warning: {}".format(warning))
         else:
             require_clean_source()
-        for program in ("git", "pio", "openssl", "npm", "gh"):
+        for program in ("git", "pio", "openssl", "node", "npm", "gh"):
             require_program(program)
+        require_node_version()
         if not args.private_key.is_file():
             raise ReleaseError(
                 "OTA signing key not found: {}".format(args.private_key)
