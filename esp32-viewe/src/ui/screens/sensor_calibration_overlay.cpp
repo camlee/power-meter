@@ -52,6 +52,7 @@ lv_obj_t* gainRow = nullptr;
 lv_obj_t* offsetInput = nullptr;
 lv_obj_t* gainInput = nullptr;
 lv_obj_t* statusLabel = nullptr;
+lv_obj_t* calibrationWarningLabel = nullptr;
 lv_obj_t* actionRow = nullptr;
 lv_obj_t* keyboard = nullptr;
 lv_obj_t* activeInput = nullptr;
@@ -260,14 +261,159 @@ void refreshInputs() {
     if (!offsetInput || !gainInput) return;
     refreshingInputs = true;
     char text[24];
-    snprintf(text, sizeof(text), "%.4f",
+    snprintf(text, sizeof(text), "%.2f",
              static_cast<double>(stagedValue.offsetInputV));
     lv_textarea_set_text(offsetInput, text);
-    snprintf(text, sizeof(text), "%.3f",
+    snprintf(text, sizeof(text), "%.2f",
              static_cast<double>(1000.0f / stagedValue.gain));
     lv_textarea_set_text(gainInput, text);
     if (gainReadOnlyLabel) lv_label_set_text(gainReadOnlyLabel, text);
     refreshingInputs = false;
+}
+
+void hideCalibrationWarning() {
+    if (!calibrationWarningLabel) return;
+    lv_label_set_text(calibrationWarningLabel, "");
+    lv_obj_add_flag(calibrationWarningLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
+void showCalibrationWarning(const char* text) {
+    if (!calibrationWarningLabel) return;
+    lv_label_set_text(calibrationWarningLabel, text ? text : "");
+    lv_obj_clear_flag(calibrationWarningLabel, LV_OBJ_FLAG_HIDDEN);
+}
+
+enum class ValidationSubject : uint8_t {
+    Calibration,
+    Gain,
+    Offset,
+    Zero,
+};
+
+const char* validationSubjectName(ValidationSubject subject) {
+    switch (subject) {
+        case ValidationSubject::Gain: return "Gain";
+        case ValidationSubject::Offset: return "Offset";
+        case ValidationSubject::Zero: return "Zero";
+        case ValidationSubject::Calibration: return "Calibration";
+    }
+    return "Calibration";
+}
+
+bool renderCandidateValidation(
+    const sensors::calibration::ValidationResult& validation,
+    sensors::calibration::Value candidate,
+    ValidationSubject subject) {
+    using sensors::calibration::ValidationIssue;
+    if (validation.accepted()) {
+        hideCalibrationWarning();
+        return false;
+    }
+
+    char text[72];
+    switch (validation.issue) {
+        case ValidationIssue::GainNotFinite:
+            snprintf(
+                text, sizeof(text),
+                LV_SYMBOL_WARNING " Gain must be a finite number");
+            break;
+        case ValidationIssue::GainNotPositive:
+            snprintf(
+                text, sizeof(text),
+                LV_SYMBOL_WARNING " Gain must be greater than zero");
+            break;
+        case ValidationIssue::GainExceedsStorageLimit:
+        case ValidationIssue::OutputNotFinite:
+            snprintf(
+                text, sizeof(text),
+                LV_SYMBOL_WARNING " %s implied a non-finite value",
+                validationSubjectName(subject));
+            break;
+        case ValidationIssue::OffsetNotFinite:
+            snprintf(
+                text, sizeof(text),
+                LV_SYMBOL_WARNING " Offset must be a finite number");
+            break;
+        case ValidationIssue::OffsetBelowAdcRange:
+        case ValidationIssue::OffsetAboveAdcRange:
+            snprintf(
+                text, sizeof(text),
+                LV_SYMBOL_WARNING " Offset %.5g V %s %.5g V ADC limit",
+                static_cast<double>(candidate.offsetInputV),
+                validation.issue == ValidationIssue::OffsetBelowAdcRange
+                    ? "<" : ">",
+                static_cast<double>(validation.limit));
+            break;
+        case ValidationIssue::OutputBelowSanityLimit:
+        case ValidationIssue::OutputAboveSanityLimit:
+            snprintf(
+                text, sizeof(text),
+                LV_SYMBOL_WARNING " %s implied %.5g %s %s %.5g %s sanity limit",
+                validationSubjectName(subject),
+                static_cast<double>(validation.impliedOutput),
+                measurementUnit(),
+                validation.issue == ValidationIssue::OutputBelowSanityLimit
+                    ? "<" : ">",
+                static_cast<double>(validation.limit), measurementUnit());
+            break;
+        case ValidationIssue::None:
+            hideCalibrationWarning();
+            return false;
+    }
+    showCalibrationWarning(text);
+    return true;
+}
+
+bool renderGainCalculation(
+    const sensors::calibration::GainCalculationResult& calculation) {
+    using sensors::calibration::GainCalculationIssue;
+    char text[72];
+    switch (calculation.issue) {
+        case GainCalculationIssue::None:
+            hideCalibrationWarning();
+            return false;
+        case GainCalculationIssue::ReferenceNotFinite:
+            hideCalibrationWarning();
+            return true;
+        case GainCalculationIssue::ReferenceMustBePositive:
+            showCalibrationWarning(
+                LV_SYMBOL_WARNING " Voltage reference must be greater than zero");
+            return true;
+        case GainCalculationIssue::ReferenceMustBeNonZero:
+            showCalibrationWarning(
+                LV_SYMBOL_WARNING " Current reference must be non-zero");
+            return true;
+        case GainCalculationIssue::ReferenceBelowSanityLimit:
+        case GainCalculationIssue::ReferenceAboveSanityLimit:
+            snprintf(
+                text, sizeof(text),
+                LV_SYMBOL_WARNING " Reference %.5g %s %s %.5g %s sanity limit",
+                static_cast<double>(calculation.reference), measurementUnit(),
+                calculation.issue ==
+                        GainCalculationIssue::ReferenceBelowSanityLimit
+                    ? "<" : ">",
+                static_cast<double>(calculation.referenceLimit),
+                measurementUnit());
+            showCalibrationWarning(text);
+            return true;
+        case GainCalculationIssue::InputNotFinite:
+            showCalibrationWarning(
+                LV_SYMBOL_WARNING " No finite sensor reading is available");
+            return true;
+        case GainCalculationIssue::DenominatorTooSmall:
+            showCalibrationWarning(
+                LV_SYMBOL_WARNING " Reading is too close to zero to calculate gain");
+            return true;
+        case GainCalculationIssue::ReferenceSignMismatch:
+            showCalibrationWarning(
+                LV_SYMBOL_WARNING " Reference sign does not match the reading");
+            return true;
+        case GainCalculationIssue::CandidateInvalid:
+            return renderCandidateValidation(
+                calculation.validation, calculation.candidate,
+                ValidationSubject::Gain);
+    }
+    return true;
 }
 
 void updateChartRange(float oldValue, float newValue) {
@@ -384,6 +530,7 @@ void closeKeyboard(bool accept) {
     activeInput = nullptr;
     calculatingGain = false;
     restoreNormalLayout();
+    hideCalibrationWarning();
     refreshLatest(false);
 }
 
@@ -425,6 +572,7 @@ void showKeyboard(lv_obj_t* input) {
     refreshingInputs = true;
     lv_textarea_set_text(input, "");
     refreshingInputs = false;
+    hideCalibrationWarning();
     setDoneEnabled(false);
 
     keyboard = lv_keyboard_create(overlay);
@@ -448,6 +596,7 @@ void inputChangedCb(lv_event_t* event) {
     const float value = strtof(valueText, &end);
     if (!end || end == valueText || *end != '\0' || !std::isfinite(value)) {
         activeInputValid = false;
+        hideCalibrationWarning();
         setDoneEnabled(false);
         return;
     }
@@ -458,17 +607,27 @@ void inputChangedCb(lv_event_t* event) {
         candidate.gain = 1000.0f / value;
     } else {
         activeInputValid = false;
+        showCalibrationWarning(
+            LV_SYMBOL_WARNING " Gain must be greater than zero");
         setDoneEnabled(false);
         return;
     }
-    activeInputValid =
-        sensors::calibration::isValid(activeMeasurement, candidate);
-    setDoneEnabled(activeInputValid);
-    if (!activeInputValid) {
+    const sensors::calibration::ValidationResult validation =
+        sensors::calibration::validate(activeMeasurement, candidate);
+    if (!validation.accepted()) {
+        activeInputValid = false;
+        renderCandidateValidation(
+            validation, candidate,
+            target == offsetInput ? ValidationSubject::Offset
+                                  : ValidationSubject::Gain);
+        setDoneEnabled(false);
         return;
     }
     stagedValue = candidate;
+    hideCalibrationWarning();
     refreshLatest(false);
+    activeInputValid = true;
+    setDoneEnabled(activeInputValid);
 }
 
 void referenceChangedCb(lv_event_t*) {
@@ -505,8 +664,11 @@ void zeroCb(lv_event_t*) {
     }
     sensors::calibration::Value candidate = stagedValue;
     candidate.offsetInputV = latestInput(reading);
-    if (!sensors::calibration::isValid(activeMeasurement, candidate)) {
-        showStatusMessage("Zero is outside the allowed range", true);
+    const sensors::calibration::ValidationResult validation =
+        sensors::calibration::validate(activeMeasurement, candidate);
+    if (renderCandidateValidation(
+            validation, candidate, ValidationSubject::Zero)) {
+        showStatusMessage("Zero would exceed a calibration sanity limit", true);
         return;
     }
     stagedValue = candidate;
@@ -518,32 +680,29 @@ bool updateCalculatedGain() {
     char* end = nullptr;
     const char* referenceText = lv_textarea_get_text(newValueInput);
     const float reference = strtof(referenceText, &end);
-    const float maximum =
-        activeMeasurement == sensors::calibration::Measurement::Voltage
-            ? sensors::calibration::kVoltageMaxV
-            : sensors::calibration::kCurrentMaxA;
+    const bool parsed =
+        end && end != referenceText && *end == '\0' &&
+        std::isfinite(reference);
+    if (!parsed) {
+        hideCalibrationWarning();
+        return false;
+    }
     sensors::Reading reading{};
-    if (!end || end == referenceText || *end != '\0' ||
-        !std::isfinite(reference) || reference <= 0.0f ||
-        reference > maximum ||
-        !sensors::getLatestPhysical(
-            static_cast<uint8_t>(activePhysical), reading)) {
+    const float input =
+        sensors::getLatestPhysical(
+            static_cast<uint8_t>(activePhysical), reading)
+            ? latestInput(reading)
+            : NAN;
+    const sensors::calibration::GainCalculationResult calculation =
+        sensors::calibration::calculateGain(
+            activeMeasurement, stagedValue, reference, input,
+            currentMultiplier());
+    if (!calculation.accepted()) {
+        renderGainCalculation(calculation);
         return false;
     }
-    const float denominator =
-        (latestInput(reading) - stagedValue.offsetInputV) *
-        (activeMeasurement == sensors::calibration::Measurement::Current
-             ? static_cast<float>(currentMultiplier())
-             : 1.0f);
-    if (!std::isfinite(denominator) || std::fabs(denominator) < 0.005f) {
-        return false;
-    }
-    sensors::calibration::Value candidate = stagedValue;
-    candidate.gain = reference / denominator;
-    if (!sensors::calibration::isValid(activeMeasurement, candidate)) {
-        return false;
-    }
-    stagedValue = candidate;
+    hideCalibrationWarning();
+    stagedValue = calculation.candidate;
     refreshInputs();
     refreshLatest(false);
     return true;
@@ -559,6 +718,7 @@ void closeCalculation(bool accept) {
     }
     activeInput = nullptr;
     restoreNormalLayout();
+    hideCalibrationWarning();
     refreshInputs();
     refreshLatest(false);
     setStatus("");
@@ -584,6 +744,7 @@ void calculateCb(lv_event_t*) {
     configureRowActions(gainActions, true);
     activeDoneButton = gainActions.done;
     activeInputValid = false;
+    hideCalibrationWarning();
     setDoneEnabled(false);
 
     keyboard = lv_keyboard_create(overlay);
@@ -600,15 +761,19 @@ void resetCb(lv_event_t*) {
     stagedValue = sensors::calibration::defaults(
         activeSource, static_cast<uint8_t>(activePhysical),
         activeMeasurement);
+    hideCalibrationWarning();
     refreshInputs();
     refreshLatest(false);
     showStatusMessage("Factory calibration staged");
 }
 
 void saveCb(lv_event_t*) {
-    if (!sensors::calibration::isValid(activeMeasurement, stagedValue)) {
+    const sensors::calibration::ValidationResult validation =
+        sensors::calibration::validate(activeMeasurement, stagedValue);
+    if (renderCandidateValidation(
+            validation, stagedValue, ValidationSubject::Calibration)) {
         showStatusMessage(
-            "Calibration values are outside the allowed range", true);
+            "Calibration exceeds a sanity limit", true);
         return;
     }
     if (demoCalibration) {
@@ -790,6 +955,18 @@ void createOverlay() {
         newValueInput, referenceChangedCb, LV_EVENT_VALUE_CHANGED, nullptr);
     lv_obj_add_flag(newValueInput, LV_OBJ_FLAG_HIDDEN);
 
+    calibrationWarningLabel = lv_label_create(overlay);
+    lv_obj_set_size(calibrationWarningLabel, lv_pct(100), 22);
+    lv_label_set_long_mode(calibrationWarningLabel, LV_LABEL_LONG_CLIP);
+    lv_obj_set_style_text_align(
+        calibrationWarningLabel, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_font(
+        calibrationWarningLabel, &lv_font_montserrat_12, 0);
+    lv_obj_set_style_text_color(
+        calibrationWarningLabel,
+        lv_color_hex(ui_theme::isDark() ? 0xF2A65A : 0xA65A00), 0);
+    lv_obj_add_flag(calibrationWarningLabel, LV_OBJ_FLAG_HIDDEN);
+
     chartBlock = lv_obj_create(overlay);
     ui_theme::styleCard(chartBlock, 4);
     lv_obj_set_size(chartBlock, lv_pct(100), 0);
@@ -904,6 +1081,18 @@ void show(
     sensors::mapping::PhysicalSensorId physical,
     sensors::calibration::Measurement measurement) {
     const sensor_mode::Mode mode = sensor_mode::get();
+    const sensors::mapping::Profile profile =
+        sensors::mapping::get(mode);
+    show(
+        physical, measurement,
+        profile.physical[static_cast<uint8_t>(physical)].role);
+}
+
+void show(
+    sensors::mapping::PhysicalSensorId physical,
+    sensors::calibration::Measurement measurement,
+    sensors::mapping::LogicalRole displayRole) {
+    const sensor_mode::Mode mode = sensor_mode::get();
     if (!sensor_mode::usesCalibration(mode) &&
         mode != sensor_mode::Mode::Demo) {
         return;
@@ -933,14 +1122,11 @@ void show(
     rangeStep = 1.0f;
     createOverlay();
 
-    const sensors::mapping::Profile profile =
-        sensors::mapping::get(mode);
-    const auto role =
-        profile.physical[static_cast<uint8_t>(activePhysical)].role;
     char subtitle[64];
     snprintf(
         subtitle, sizeof(subtitle), "%s (%s) - %s",
-        sensors::mapping::physicalLabel(activePhysical), roleLabel(role),
+        sensors::mapping::physicalLabel(activePhysical),
+        roleLabel(displayRole),
         measurementName());
     lv_label_set_text(subtitleLabel, subtitle);
     lv_label_set_text(

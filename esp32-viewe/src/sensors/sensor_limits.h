@@ -8,9 +8,9 @@ namespace sensors {
 // broader than expected operating values: they reject impossible energy
 // inputs without hiding unusual but physically possible observations.
 constexpr float kMinimumVoltageV = 0.0f;
-constexpr float kMaximumVoltageV = 120.0f;
-constexpr float kMinimumCurrentA = -50.0f;
-constexpr float kMaximumCurrentA = 50.0f;
+constexpr float kMaximumVoltageV = 250.0f;
+constexpr float kMinimumCurrentA = -150.0f;
+constexpr float kMaximumCurrentA = 150.0f;
 constexpr float kMinimumDutyCycle = 0.0f;
 constexpr float kMaximumDutyCycle = 1.0f;
 

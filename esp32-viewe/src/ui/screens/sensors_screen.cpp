@@ -153,8 +153,8 @@ struct SensorTab {
     lv_obj_t* chartsColumn = nullptr;
     lv_obj_t* vBlock = nullptr;
     lv_obj_t* iBlock = nullptr;
-    lv_obj_t* vEditIcon = nullptr;
-    lv_obj_t* iEditIcon = nullptr;
+    lv_obj_t* vEditTarget = nullptr;
+    lv_obj_t* iEditTarget = nullptr;
     lv_obj_t* oldLegend = nullptr;
     lv_obj_t* oldValueLabel = nullptr;
     lv_obj_t* newLegend = nullptr;
@@ -236,6 +236,15 @@ SensorTab sensorTabs[sensors::SENSOR_COUNT];
 
 lv_timer_t* updateTimer = nullptr;
 lv_timer_t* captureUpdateTimer = nullptr;
+
+void setCalibrationEditTargetVisible(lv_obj_t* target, bool visible) {
+    if (!target) return;
+    if (visible) {
+        lv_obj_clear_flag(target, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(target, LV_OBJ_FLAG_HIDDEN);
+    }
+}
 
 enum class CalibrationAction : uint8_t {
     Back, OffsetDown, OffsetUp, GainDown, GainUp, AutoZero, CalculateGain,
@@ -344,21 +353,20 @@ bool calculateCalibrationGain(SensorTab::CalibrationEditor& editor) {
     char* end = nullptr;
     const char* text = lv_textarea_get_text(sensorTabs[editor.sensor].newValueInput);
     const float reference = strtof(text, &end);
-    const float max = editor.measurement == sensors::calibration::Measurement::Voltage
-        ? sensors::calibration::kVoltageMaxV : sensors::calibration::kCurrentMaxA;
     float input = NAN;
-    if (!end || end == text || *end != '\0' || !std::isfinite(reference) || reference <= 0.0f ||
-        reference > max || !latestCalibrationInput(editor, input)) return false;
-    const float sourceDenominator = input - editor.staged.offsetInputV;
-    const float denominator =
+    if (!end || end == text || *end != '\0') return false;
+    latestCalibrationInput(editor, input);
+    const int multiplier =
         editor.measurement == sensors::calibration::Measurement::Current
-            ? applyLogicalCurrentDirection(editor.sensor, sourceDenominator)
-            : sourceDenominator;
-    if (fabsf(denominator) < 0.005f) return false;
-    sensors::calibration::Value candidate = editor.staged;
-    candidate.gain = reference / denominator;
-    if (!sensors::calibration::isValid(editor.measurement, candidate)) return false;
-    editor.staged = candidate;
+            ? sensors::mapping::currentMultiplierForLogical(
+                  sensor_mode::get(),
+                  static_cast<sensors::SensorId>(editor.sensor))
+            : 1;
+    const sensors::calibration::GainCalculationResult calculation =
+        sensors::calibration::calculateGain(
+            editor.measurement, editor.staged, reference, input, multiplier);
+    if (!calculation.accepted()) return false;
+    editor.staged = calculation.candidate;
     return true;
 }
 
@@ -449,23 +457,44 @@ void calibrationControlCb(lv_event_t* event) {
         finishCalibrationKeyboard(editor, false);
         return;
     }
-    if (control->action == CalibrationAction::OffsetDown) editor.staged.offsetInputV -= 0.001f;
-    if (control->action == CalibrationAction::OffsetUp) editor.staged.offsetInputV += 0.001f;
+    sensors::calibration::Value adjusted = editor.staged;
+    bool adjustedCalibration = false;
+    if (control->action == CalibrationAction::OffsetDown) {
+        adjusted.offsetInputV -= 0.001f;
+        adjustedCalibration = true;
+    }
+    if (control->action == CalibrationAction::OffsetUp) {
+        adjusted.offsetInputV += 0.001f;
+        adjustedCalibration = true;
+    }
     // Match the Arduino UI's 0.001-per-press adjustment. Gain is presented
     // here as inverse sensitivity (mV per engineering unit), so adjust that
     // displayed value and convert it back to the stored multiplier.
     if (control->action == CalibrationAction::GainDown) {
-        editor.staged.gain = 1000.0f / std::max(0.001f, 1000.0f / editor.staged.gain - 0.001f);
+        adjusted.gain =
+            1000.0f /
+            std::max(0.001f, 1000.0f / adjusted.gain - 0.001f);
+        adjustedCalibration = true;
     }
     if (control->action == CalibrationAction::GainUp) {
-        editor.staged.gain = 1000.0f / (1000.0f / editor.staged.gain + 0.001f);
+        adjusted.gain =
+            1000.0f / (1000.0f / adjusted.gain + 0.001f);
+        adjustedCalibration = true;
+    }
+    if (adjustedCalibration &&
+        sensors::calibration::validate(
+            editor.measurement, adjusted).accepted()) {
+        editor.staged = adjusted;
     }
     if (control->action == CalibrationAction::AutoZero) {
         float input = NAN;
         if (latestCalibrationInput(editor, input)) {
             sensors::calibration::Value candidate = editor.staged;
             candidate.offsetInputV = input;
-            if (sensors::calibration::isValid(editor.measurement, candidate)) editor.staged = candidate;
+            if (sensors::calibration::validate(
+                    editor.measurement, candidate).accepted()) {
+                editor.staged = candidate;
+            }
         }
     }
     if (control->action == CalibrationAction::CalculateGain) {
@@ -487,6 +516,8 @@ void calibrationControlCb(lv_event_t* event) {
         uint8_t physicalSensor = 0;
         if (!sensor_mode::usesCalibration(sensor_mode::get()) ||
             (calibrationPhysicalSensor(sensor, physicalSensor) &&
+             sensors::calibration::validate(
+                 editor.measurement, editor.staged).accepted() &&
              sensors::calibration::set(
                  activeCalibrationSource(), physicalSensor,
                  editor.measurement, editor.staged))) {
@@ -524,10 +555,12 @@ void closeCalibration(SensorTab& tab) {
     lv_obj_add_flag(tab.calibrationHeader, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(tab.vBlock, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(tab.iBlock, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(tab.vEditIcon, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_clear_flag(tab.iEditIcon, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_text_opa(tab.vEditIcon, LV_OPA_COVER, 0);
-    lv_obj_set_style_text_opa(tab.iEditIcon, LV_OPA_COVER, 0);
+    const bool showCalibrationControls =
+        sensors::mapping::calibrationControlsVisible();
+    setCalibrationEditTargetVisible(
+        tab.vEditTarget, showCalibrationControls);
+    setCalibrationEditTargetVisible(
+        tab.iEditTarget, showCalibrationControls);
     lv_obj_del(editor.root);
     editor.root = nullptr;
     editor.offsetRow = nullptr;
@@ -682,7 +715,7 @@ void addTimeAxisLabels(lv_obj_t* parent) {
 // created series into *seriesOut.
 lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, const char* unit,
                             lv_color_t color, lv_obj_t** blockOut,
-                            lv_obj_t** valueLabelOut, lv_obj_t** editIconOut,
+                            lv_obj_t** valueLabelOut, lv_obj_t** editTargetOut,
                             SensorChartFrame* frame, const float* axisScale,
                             lv_chart_series_t** seriesOut,
                             SensorTab* tab = nullptr, sensors::calibration::Measurement measurement = sensors::calibration::Measurement::Voltage) {
@@ -737,6 +770,9 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, const char* unit
             lv_obj_add_event_cb(editTarget,
                 measurement == sensors::calibration::Measurement::Voltage ? openVoltageCalibrationCb : openCurrentCalibrationCb,
                 LV_EVENT_CLICKED, tab);
+            setCalibrationEditTargetVisible(
+                editTarget,
+                sensors::mapping::calibrationControlsVisible());
 
             lv_obj_t* calibrate = lv_label_create(editTarget);
             lv_obj_set_size(calibrate, 28, 22);
@@ -744,7 +780,7 @@ lv_obj_t* createChartBlock(lv_obj_t* parent, const char* title, const char* unit
             lv_obj_set_style_text_color(calibrate, ui_theme::mutedText(), 0);
             lv_label_set_text(calibrate, LV_SYMBOL_EDIT);
             lv_obj_align(calibrate, LV_ALIGN_BOTTOM_RIGHT, 0, 2);
-            if (editIconOut) *editIconOut = calibrate;
+            if (editTargetOut) *editTargetOut = editTarget;
         }
     }
 
@@ -966,9 +1002,9 @@ void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measu
     lv_obj_add_flag(voltage ? tab.iBlock : tab.vBlock, LV_OBJ_FLAG_HIDDEN);
     lv_obj_clear_flag(editor.activeBlock, LV_OBJ_FLAG_HIDDEN);
     if (editor.activeTitleRow) lv_obj_add_flag(editor.activeTitleRow, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_t* activeEditIcon = voltage ? tab.vEditIcon : tab.iEditIcon;
-    lv_obj_add_flag(activeEditIcon, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_text_opa(activeEditIcon, LV_OPA_TRANSP, 0);
+    lv_obj_t* activeEditTarget =
+        voltage ? tab.vEditTarget : tab.iEditTarget;
+    lv_obj_add_flag(activeEditTarget, LV_OBJ_FLAG_HIDDEN);
     refreshCalibrationInputs(editor);
     // Units are tied to the selected engineering measurement, while gain is
     // shown as ADC millivolts per engineering unit.
@@ -1001,6 +1037,7 @@ void openCalibration(SensorTab& tab, uint8_t sensor, sensors::calibration::Measu
 }
 
 void openVoltageCalibrationCb(lv_event_t* event) {
+    if (!sensors::mapping::calibrationControlsVisible()) return;
     auto* tab = static_cast<SensorTab*>(lv_event_get_user_data(event));
     if (!tab) return;
     const auto logical = static_cast<sensors::SensorId>(tab - sensorTabs);
@@ -1013,6 +1050,7 @@ void openVoltageCalibrationCb(lv_event_t* event) {
 }
 
 void openCurrentCalibrationCb(lv_event_t* event) {
+    if (!sensors::mapping::calibrationControlsVisible()) return;
     auto* tab = static_cast<SensorTab*>(lv_event_get_user_data(event));
     if (!tab) return;
     const auto logical = static_cast<sensors::SensorId>(tab - sensorTabs);
@@ -1517,12 +1555,12 @@ lv_obj_t* createSensorTab(lv_obj_t* tabParent, uint8_t sensorIndex) {
     t.iFrame.range = &t.iRange;
     t.vChart = createChartBlock(t.chartsColumn, "Voltage", "V",
                                  lv_palette_main(LV_PALETTE_BLUE), &t.vBlock,
-                                 &t.vValueLabel, &t.vEditIcon, &t.vFrame,
+                                 &t.vValueLabel, &t.vEditTarget, &t.vFrame,
                                  &kVoltageAxisScale, &t.vSeries, &t,
                                  sensors::calibration::Measurement::Voltage);
     t.iChart = createChartBlock(t.chartsColumn, "Current", "A",
                                  lv_palette_main(LV_PALETTE_ORANGE), &t.iBlock,
-                                 &t.iValueLabel, &t.iEditIcon, &t.iFrame,
+                                 &t.iValueLabel, &t.iEditTarget, &t.iFrame,
                                  &kCurrentAxisScale, &t.iSeries, &t,
                                  sensors::calibration::Measurement::Current);
     lv_chart_set_range(t.vChart, LV_CHART_AXIS_PRIMARY_Y,

@@ -73,8 +73,14 @@ bool validProfile(const Profile& value) {
     if (value.magic != kMagic || value.version != kVersion) return false;
     for (uint8_t source = 0; source < kSourceCount; ++source) {
         for (uint8_t sensor = 0; sensor < mapping::kPhysicalSensorCount; ++sensor) {
-            if (!isValid(Measurement::Voltage, value.values[source][sensor][0]) ||
-                !isValid(Measurement::Current, value.values[source][sensor][1])) return false;
+            if (!validate(
+                     Measurement::Voltage, value.values[source][sensor][0],
+                     ValidationPolicy::StoredProfile).accepted() ||
+                !validate(
+                     Measurement::Current, value.values[source][sensor][1],
+                     ValidationPolicy::StoredProfile).accepted()) {
+                return false;
+            }
         }
     }
     return true;
@@ -83,8 +89,14 @@ bool validProfile(const Profile& value) {
 bool validLegacyProfile(const LegacyProfile& value) {
     if (value.magic != kLegacyMagic || value.version != kLegacyVersion) return false;
     for (uint8_t sensor = 0; sensor < mapping::kPhysicalSensorCount; ++sensor) {
-        if (!isValid(Measurement::Voltage, value.values[sensor][0]) ||
-            !isValid(Measurement::Current, value.values[sensor][1])) return false;
+        if (!validate(
+                 Measurement::Voltage, value.values[sensor][0],
+                 ValidationPolicy::StoredProfile).accepted() ||
+            !validate(
+                 Measurement::Current, value.values[sensor][1],
+                 ValidationPolicy::StoredProfile).accepted()) {
+            return false;
+        }
     }
     return true;
 }
@@ -132,16 +144,6 @@ Value defaults(Source source, uint8_t sensor, Measurement measurement) {
     return defaultValue(source, sensor, measurement);
 }
 
-bool isValid(Measurement measurement, Value value) {
-    if (!std::isfinite(value.gain) || !std::isfinite(value.offsetInputV)) return false;
-    // Broad coefficient bounds catch corrupt NVS/input while allowing normal
-    // component tolerance around the present divider and current sensor.
-    if (value.gain <= 0.0f || value.gain > 100.0f) return false;
-    if (value.offsetInputV < kAdcMinInputV || value.offsetInputV > kAdcMaxInputV) return false;
-    (void)measurement;
-    return true;
-}
-
 Value get(Source source, uint8_t sensor, Measurement measurement) {
     loadIfNeeded();
     const uint8_t sourceIndex = static_cast<uint8_t>(source);
@@ -161,7 +163,11 @@ bool set(Source source, uint8_t sensor, Measurement measurement, Value value) {
     const uint8_t sourceIndex = static_cast<uint8_t>(source);
     if (sourceIndex >= kSourceCount ||
         sensor >= mapping::kPhysicalSensorCount ||
-        !isValid(measurement, value)) return false;
+        !validate(
+            measurement, value,
+            ValidationPolicy::CommitCandidate).accepted()) {
+        return false;
+    }
 
     Profile candidate;
     portENTER_CRITICAL(&profileMux);

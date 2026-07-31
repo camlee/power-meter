@@ -607,6 +607,9 @@ void appendSensorMappingJson(String& json, sensor_mode::Mode mode) {
     json += sensor_mode::name(mode);
     json += "\",\"requires_restart\":true,\"balance_visible\":";
     json += sensors::mapping::balanceVisible() ? "true" : "false";
+    json += ",\"calibration_controls_visible\":";
+    json += sensors::mapping::calibrationControlsVisible()
+        ? "true" : "false";
     json += ",\"physical_sensors\":[";
     for (uint8_t index = 0; index < sensors::mapping::kPhysicalSensorCount;
          ++index) {
@@ -633,9 +636,20 @@ void webSensorMapping() {
     const String body = server->arg("plain");
     String requestedSource;
     bool balanceVisible = false;
+    bool calibrationControlsVisible =
+        sensors::mapping::calibrationControlsVisible();
     if (!http_utils::jsonString(body, "source", requestedSource) ||
         requestedSource != sensor_mode::name(mode) ||
         !http_utils::jsonBool(body, "balance_visible", balanceVisible)) {
+        server->send(
+            409, "application/json",
+            "{\"error\":\"mapping source and display options must be valid\"}");
+        return;
+    }
+    if (body.indexOf("\"calibration_controls_visible\"") >= 0 &&
+        !http_utils::jsonBool(
+            body, "calibration_controls_visible",
+            calibrationControlsVisible)) {
         server->send(
             409, "application/json",
             "{\"error\":\"mapping source and display options must be valid\"}");
@@ -671,7 +685,9 @@ void webSensorMapping() {
             "{\"error\":\"map Solar and Load exactly once; Battery at most once\"}");
         return;
     }
-    if (!sensors::mapping::set(mode, candidate, balanceVisible)) {
+    if (!sensors::mapping::set(
+            mode, candidate, balanceVisible,
+            calibrationControlsVisible)) {
         server->send(
             500, "application/json",
             "{\"error\":\"could not persist sensor mapping\"}");
@@ -864,8 +880,10 @@ void webSensorCalibration() {
         return;
     }
     const sensors::calibration::Value value{gain, offset};
+    const sensors::calibration::ValidationResult validation =
+        sensors::calibration::validate(measurement, value);
     if (physicalSensor >= sensors::mapping::kPhysicalSensorCount ||
-        !sensors::calibration::isValid(measurement, value)) {
+        !validation.accepted()) {
         server->send(400, "application/json", "{\"error\":\"calibration value is outside allowed limits\"}");
         return;
     }

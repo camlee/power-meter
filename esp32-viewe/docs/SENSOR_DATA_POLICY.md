@@ -63,7 +63,7 @@ observation even when it is outside calculation limits. It must mark the value
 and channel state clearly rather than silently clipping it. Calibration preview
 also retains raw ADC input and the unbounded converted observation.
 
-- A finite negative voltage or 150 V observation may be shown on Sensors as
+- A finite negative voltage or 300 V observation may be shown on Sensors as
   observed, with `Out of range` state.
 - Non-finite values are shown as `Invalid`, not formatted as a number or added
   to charts.
@@ -83,12 +83,12 @@ creating a chart gap without concealing sustained bad input.
 
 ## Calculation eligibility
 
-The initial inclusive calculation limits are:
+The inclusive calculation limits are:
 
 | Measurement | Minimum | Maximum |
 | --- | ---: | ---: |
-| Voltage | 0 V | 120 V |
-| Current | -50 A | 50 A |
+| Voltage | 0 V | 250 V |
+| Current | -150 A | 150 A |
 | Direct duty | 0 | 1 |
 
 Values inside these bounds include expected 12–14 V and 20–40 V systems, zero
@@ -103,7 +103,7 @@ Power is calculated only when voltage and current are both eligible:
 power_W = voltage_V * current_A
 ```
 
-The resulting initial power range is therefore -6,000 W to 6,000 W. Values are
+The resulting power range is therefore -37,500 W to 37,500 W. Values are
 never clamped to those boundaries: clamping would fabricate power and energy.
 An out-of-range input makes calculated power unavailable until a valid sample
 arrives.
@@ -160,6 +160,10 @@ equipment, and acceptance tolerances.
 Until then:
 
 - ADC observations expose raw millivolts and calibrated engineering values;
+- calibration candidates validate the complete theoretical `0–3.3 V` ADC
+  input range against the `±250 V` / `±150 A` calibration sanity envelopes;
+  incidental live readings update the preview but never determine whether a
+  candidate can be committed;
 - UART observations are treated as already calibrated by the source producer;
 - source provenance and calibration state remain visible in diagnostics;
 - development history can be wiped without migration before candidate V1 is

@@ -98,8 +98,8 @@ outside calculation limits, clearly marked. Power and Usage consume only fresh,
 finite values within the bounds in
 [SENSOR_DATA_POLICY.md](SENSOR_DATA_POLICY.md):
 
-- voltage 0–120 V inclusive;
-- current -50–50 A inclusive;
+- voltage 0–250 V inclusive;
+- current -150–150 A inclusive;
 - direct duty 0–1 inclusive.
 
 Values are rejected from calculation, never clamped. History keeps valid energy

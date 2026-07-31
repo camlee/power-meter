@@ -22,6 +22,8 @@ export async function saveSensorMapping(mapping) {
   const body = {
     source: mapping.source,
     balance_visible: mapping.balance_visible === true,
+    calibration_controls_visible:
+      mapping.calibration_controls_visible !== false,
   };
   for (const sensor of mapping.physical_sensors || []) {
     body[`${sensor.id}_role`] = sensor.role;

@@ -16,6 +16,7 @@ function mapping(entries = [
   return {
     source: 'adc',
     balance_visible: false,
+    calibration_controls_visible: true,
     physical_sensors: entries.map(([id, role, direction], index) => ({
       id,
       label: `Sensor ${index + 1}`,
@@ -56,6 +57,9 @@ test('clone and equality compare only persisted mapping choices', () => {
   assert.equal(saved.physical_sensors[0].role, 'solar');
   draft.physical_sensors[0].role = 'solar';
   draft.balance_visible = true;
+  assert.equal(mappingsEqual(saved, draft), false);
+  draft.balance_visible = false;
+  draft.calibration_controls_visible = false;
   assert.equal(mappingsEqual(saved, draft), false);
 });
 

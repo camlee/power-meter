@@ -239,7 +239,7 @@ Acceptance requires focused tests for partial channel configurations, source
 startup, malformed values, timeout/recovery, mode migration, derived metrics,
 and history gaps.
 
-The initial calculation limits are 0–120 V, -50–50 A, and 0–1 direct duty.
+The calculation limits are 0–250 V, -150–150 A, and 0–1 direct duty.
 Sensors shows finite observations outside those limits with a warning; Power
 and history reject rather than clamp them. See
 [SENSOR_DATA_POLICY.md](SENSOR_DATA_POLICY.md).

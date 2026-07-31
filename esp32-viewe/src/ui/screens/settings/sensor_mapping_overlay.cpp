@@ -40,6 +40,7 @@ lv_obj_t* validationLabel = nullptr;
 lv_obj_t* balanceValueLabel = nullptr;
 lv_obj_t* balanceHelpLabel = nullptr;
 lv_obj_t* balanceVisibleCheckbox = nullptr;
+lv_obj_t* calibrationControlsVisibleCheckbox = nullptr;
 lv_obj_t* cancelButton = nullptr;
 lv_obj_t* saveButton = nullptr;
 lv_obj_t* saveButtonLabel = nullptr;
@@ -51,6 +52,8 @@ sensors::mapping::Profile savedProfile{};
 sensors::mapping::Profile draftProfile{};
 bool savedBalanceVisible = false;
 bool draftBalanceVisible = false;
+bool savedCalibrationControlsVisible = true;
+bool draftCalibrationControlsVisible = true;
 sensor_mode::Mode profileMode = sensor_mode::Mode::Demo;
 
 constexpr lv_coord_t kSensorNameWidth = 83;
@@ -68,7 +71,15 @@ bool profilesEqual(const sensors::mapping::Profile& left,
 
 bool mappingDirty() {
     return !profilesEqual(savedProfile, draftProfile) ||
-           savedBalanceVisible != draftBalanceVisible;
+           savedBalanceVisible != draftBalanceVisible ||
+           savedCalibrationControlsVisible !=
+               draftCalibrationControlsVisible;
+}
+
+bool currentDirectionDirty(uint8_t physical) {
+    return physical >= sensors::mapping::kPhysicalSensorCount ||
+           savedProfile.physical[physical].currentDirection !=
+               draftProfile.physical[physical].currentDirection;
 }
 
 uint16_t dropdownIndex(sensors::mapping::LogicalRole role) {
@@ -226,17 +237,27 @@ void updateValidation() {
         lv_obj_set_style_text_color(
             saveButtonLabel, ui_theme::mutedText(), 0);
     }
+    const bool calibrationAvailable =
+        sensor_mode::usesCalibration(profileMode) ||
+        profileMode == sensor_mode::Mode::Demo;
     for (SensorRow& row : rows) {
-        lv_obj_t* editButtons[] = {row.voltageEdit, row.currentEdit};
-        for (lv_obj_t* button : editButtons) {
-            if (!button) continue;
-            const bool calibrationAvailable =
-                sensor_mode::usesCalibration(profileMode) ||
-                profileMode == sensor_mode::Mode::Demo;
-            if (!dirty && calibrationAvailable) {
-                lv_obj_clear_state(button, LV_STATE_DISABLED);
+        if (row.voltageEdit) {
+            if (calibrationAvailable) {
+                lv_obj_clear_state(
+                    row.voltageEdit, LV_STATE_DISABLED);
             } else {
-                lv_obj_add_state(button, LV_STATE_DISABLED);
+                lv_obj_add_state(
+                    row.voltageEdit, LV_STATE_DISABLED);
+            }
+        }
+        if (row.currentEdit) {
+            if (calibrationAvailable &&
+                !currentDirectionDirty(row.physical)) {
+                lv_obj_clear_state(
+                    row.currentEdit, LV_STATE_DISABLED);
+            } else {
+                lv_obj_add_state(
+                    row.currentEdit, LV_STATE_DISABLED);
             }
         }
     }
@@ -378,11 +399,24 @@ void syncDraftControls() {
     } else {
         lv_obj_clear_state(balanceVisibleCheckbox, LV_STATE_CHECKED);
     }
+    if (draftCalibrationControlsVisible) {
+        lv_obj_add_state(
+            calibrationControlsVisibleCheckbox, LV_STATE_CHECKED);
+    } else {
+        lv_obj_clear_state(
+            calibrationControlsVisibleCheckbox, LV_STATE_CHECKED);
+    }
 }
 
 void balanceVisibleChangedCb(lv_event_t*) {
     draftBalanceVisible =
         lv_obj_has_state(balanceVisibleCheckbox, LV_STATE_CHECKED);
+    updateValidation();
+}
+
+void calibrationControlsVisibleChangedCb(lv_event_t*) {
+    draftCalibrationControlsVisible = lv_obj_has_state(
+        calibrationControlsVisibleCheckbox, LV_STATE_CHECKED);
     updateValidation();
 }
 
@@ -415,14 +449,18 @@ void closeCb(lv_event_t*) {
 void calibrateMeasurementCb(lv_event_t* event) {
     const auto* target =
         static_cast<CalibrationTarget*>(lv_event_get_user_data(event));
-    if (!target || mappingDirty() ||
+    if (!target ||
         (!sensor_mode::usesCalibration(profileMode) &&
-         profileMode != sensor_mode::Mode::Demo)) {
+         profileMode != sensor_mode::Mode::Demo) ||
+        (target->measurement ==
+             sensors::calibration::Measurement::Current &&
+         currentDirectionDirty(target->physical))) {
         return;
     }
     sensor_calibration_overlay::show(
         static_cast<sensors::mapping::PhysicalSensorId>(target->physical),
-        target->measurement);
+        target->measurement,
+        draftProfile.physical[target->physical].role);
 }
 
 void restartTimerCb(lv_timer_t* timer) {
@@ -433,11 +471,14 @@ void restartTimerCb(lv_timer_t* timer) {
 void saveCb(lv_event_t*) {
     if (!sensors::mapping::isValid(draftProfile) ||
         (profilesEqual(savedProfile, draftProfile) &&
-         savedBalanceVisible == draftBalanceVisible)) {
+         savedBalanceVisible == draftBalanceVisible &&
+         savedCalibrationControlsVisible ==
+             draftCalibrationControlsVisible)) {
         return;
     }
     if (!sensors::mapping::set(
-            profileMode, draftProfile, draftBalanceVisible)) {
+            profileMode, draftProfile, draftBalanceVisible,
+            draftCalibrationControlsVisible)) {
         lv_obj_clear_flag(validationLabel, LV_OBJ_FLAG_HIDDEN);
         lv_label_set_text(validationLabel, "Could not save sensor mapping.");
         lv_obj_set_style_text_color(
@@ -677,14 +718,34 @@ void createOverlay() {
     lv_obj_set_style_text_color(
         balanceHelpLabel, ui_theme::mutedText(), 0);
 
-    balanceVisibleCheckbox = lv_checkbox_create(overlay);
-    lv_obj_set_size(balanceVisibleCheckbox, lv_pct(100), 34);
+    lv_obj_t* displayOptions = lv_obj_create(overlay);
+    lv_obj_remove_style_all(displayOptions);
+    lv_obj_set_size(displayOptions, lv_pct(100), 34);
+    lv_obj_set_flex_flow(displayOptions, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(displayOptions, 4, 0);
+
+    balanceVisibleCheckbox = lv_checkbox_create(displayOptions);
+    lv_obj_set_size(balanceVisibleCheckbox, 0, 34);
+    lv_obj_set_flex_grow(balanceVisibleCheckbox, 1);
     lv_checkbox_set_text(
-        balanceVisibleCheckbox, "Show Balance in graphs");
+        balanceVisibleCheckbox, "Graph Balance");
     lv_obj_set_style_text_font(
         balanceVisibleCheckbox, &lv_font_montserrat_14, 0);
     lv_obj_add_event_cb(
         balanceVisibleCheckbox, balanceVisibleChangedCb,
+        LV_EVENT_VALUE_CHANGED, nullptr);
+
+    calibrationControlsVisibleCheckbox =
+        lv_checkbox_create(displayOptions);
+    lv_obj_set_size(calibrationControlsVisibleCheckbox, 0, 34);
+    lv_obj_set_flex_grow(calibrationControlsVisibleCheckbox, 1);
+    lv_checkbox_set_text(
+        calibrationControlsVisibleCheckbox, "Calibration icons");
+    lv_obj_set_style_text_font(
+        calibrationControlsVisibleCheckbox, &lv_font_montserrat_14, 0);
+    lv_obj_add_event_cb(
+        calibrationControlsVisibleCheckbox,
+        calibrationControlsVisibleChangedCb,
         LV_EVENT_VALUE_CHANGED, nullptr);
 
     lv_obj_t* actionSpacer = lv_obj_create(overlay);
@@ -749,6 +810,10 @@ void show() {
     draftProfile = savedProfile;
     savedBalanceVisible = sensors::mapping::balanceVisible();
     draftBalanceVisible = savedBalanceVisible;
+    savedCalibrationControlsVisible =
+        sensors::mapping::calibrationControlsVisible();
+    draftCalibrationControlsVisible =
+        savedCalibrationControlsVisible;
     lv_label_set_text(sourceLabel, sensor_mode::label());
     lv_label_set_text(saveButtonLabel, "Save & Reboot");
     lv_obj_center(saveButtonLabel);

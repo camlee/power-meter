@@ -40,8 +40,10 @@
   } from './lib/wifiDraft.js';
   import {
     adcInputFromEngineering,
+    calibrationValidationMessage,
     calibratedPreview,
     calculatedGain,
+    validateCalibration,
   } from './lib/calibrationMath.js';
   import { powerBalance } from './lib/powerFlow.js';
   import { AdaptiveHomeKpi } from './lib/homeKpi.js';
@@ -591,7 +593,18 @@
 
   function zeroCalibration() {
     if (Number.isFinite(calibrationInput)) {
-      calibrationEditor = { ...calibrationEditor, offset: calibrationInput };
+      const candidate = { ...calibrationEditor, offset: calibrationInput };
+      const validation = validateCalibration(
+        candidate.measurement, Number(candidate.gain), Number(candidate.offset),
+      );
+      if (!validation.valid) {
+        calibrationError = calibrationValidationMessage(
+          validation, candidate.measurement, 'Zero',
+        );
+        return;
+      }
+      calibrationEditor = candidate;
+      calibrationError = '';
     }
   }
 
@@ -602,12 +615,23 @@
       calibrationInput,
       calibrationEditor.offset,
       calibrationMultiplier(calibrationEditor, selectedChannel),
+      calibrationEditor.measurement === 'current',
     );
     if (!Number.isFinite(gain)) {
       calibrationError = 'Enter a positive reference while the measured input is away from the configured zero.';
       return;
     }
-    calibrationEditor = { ...calibrationEditor, gain };
+    const candidate = { ...calibrationEditor, gain };
+    const validation = validateCalibration(
+      candidate.measurement, Number(candidate.gain), Number(candidate.offset),
+    );
+    if (!validation.valid) {
+      calibrationError = calibrationValidationMessage(
+        validation, candidate.measurement, 'Gain',
+      );
+      return;
+    }
+    calibrationEditor = candidate;
     calibrationError = '';
   }
 
@@ -620,9 +644,16 @@
   }
 
   async function submitCalibration() {
-    if (!calibrationEditor || !Number.isFinite(calibrationEditor.gain) ||
-        calibrationEditor.gain <= 0 || calibrationEditor.gain > 100) {
-      calibrationError = 'Gain must be a positive number no greater than 100.';
+    if (!calibrationEditor) return;
+    const validation = validateCalibration(
+      calibrationEditor.measurement,
+      Number(calibrationEditor.gain),
+      Number(calibrationEditor.offset),
+    );
+    if (!validation.valid) {
+      calibrationError = calibrationValidationMessage(
+        validation, calibrationEditor.measurement,
+      );
       return;
     }
     calibrationBusy = true;
@@ -2245,11 +2276,14 @@
                 <input type="number" step="0.0001" min="0" max="3.3" bind:value={calibrationEditor.offset} />
               </label>
               <label>Gain ({calibrationEditor.measurement === 'voltage' ? 'V' : 'A'} per ADC V)
-                <input type="number" step="0.001" min="0.001" max="100" bind:value={calibrationEditor.gain} />
+                <input type="number" step="0.001" min="0.001" max="10000" bind:value={calibrationEditor.gain} />
               </label>
               <div class="calibration-reference">
                 <label>Trusted reference ({calibrationEditor.measurement === 'voltage' ? 'V' : 'A'})
-                  <input type="number" step="0.001" min="0" bind:value={calibrationReference} />
+                  <input type="number" step="0.001"
+                    min={calibrationEditor.measurement === 'voltage' ? 0.001 : -150}
+                    max={calibrationEditor.measurement === 'voltage' ? 250 : 150}
+                    bind:value={calibrationReference} />
                 </label>
                 <button type="button" on:click={calculateCalibration}>Calculate</button>
               </div>

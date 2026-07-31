@@ -251,6 +251,17 @@
       Show Balance in graphs
       <small>Usage and Power graphs</small>
     </label>
+    <label class="balance-visibility">
+      <input type="checkbox"
+        checked={draft.calibration_controls_visible !== false}
+        disabled={busy}
+        on:change={(event) => draft = {
+          ...draft,
+          calibration_controls_visible: event.currentTarget.checked,
+        }} />
+      Show calibration controls
+      <small>Sensors page edit icons</small>
+    </label>
 
     <div class="mapping-actions">
       <button type="button" class="secondary" disabled={busy} on:click={cancel}>

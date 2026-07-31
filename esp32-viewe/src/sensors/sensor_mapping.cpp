@@ -13,17 +13,21 @@ namespace {
 constexpr char kPreferencesNamespace[] = "sensor_map";
 constexpr char kProfileKey[] = "map_v1";
 constexpr uint32_t kMagic = 0x4D415031; // "MAP1"
-constexpr uint16_t kVersion = 2;
-constexpr uint16_t kLegacyVersion = 1;
+constexpr uint16_t kVersion = 3;
+constexpr uint16_t kLegacyVersion1 = 1;
+constexpr uint16_t kLegacyVersion2 = 2;
 constexpr uint8_t kModeCount = 4;
 
 struct StoredProfiles {
     uint32_t magic;
     uint16_t version;
     uint8_t balanceVisible;
-    uint8_t reserved;
+    uint8_t calibrationControlsVisible;
     Profile profiles[kModeCount];
 };
+
+static_assert(sizeof(StoredProfiles) == 32,
+              "Sensor mapping preference layout must remain migratable");
 
 StoredProfiles stored{};
 bool loaded = false;
@@ -35,6 +39,9 @@ constexpr uint8_t modeIndex(sensor_mode::Mode mode) {
 
 bool validStored(const StoredProfiles& value) {
     if (value.magic != kMagic || value.version != kVersion) return false;
+    if (value.balanceVisible > 1 || value.calibrationControlsVisible > 1) {
+        return false;
+    }
     for (uint8_t mode = 0; mode < kModeCount; ++mode) {
         if (!isValid(value.profiles[mode])) return false;
     }
@@ -46,6 +53,7 @@ void reset(StoredProfiles& value) {
     value.magic = kMagic;
     value.version = kVersion;
     value.balanceVisible = 0;
+    value.calibrationControlsVisible = 1;
     for (uint8_t mode = 0; mode < kModeCount; ++mode) {
         value.profiles[mode] = defaults(static_cast<sensor_mode::Mode>(mode));
     }
@@ -67,12 +75,19 @@ void loadIfNeeded() {
             sizeof(candidate);
     if (opened) preferences.end();
     if (read && candidate.magic == kMagic &&
-        candidate.version == kLegacyVersion) {
+        candidate.version == kLegacyVersion1) {
         // V1 used these two bytes as a zero-initialized reserved field. The
         // unchanged record size makes this a lossless in-place migration.
         candidate.version = kVersion;
         candidate.balanceVisible = 0;
-        candidate.reserved = 0;
+        candidate.calibrationControlsVisible = 1;
+    } else if (read && candidate.magic == kMagic &&
+               candidate.version == kLegacyVersion2) {
+        // V2 introduced Balance visibility and left the final header byte
+        // reserved. Existing devices should retain Balance and show the new
+        // calibration controls by default.
+        candidate.version = kVersion;
+        candidate.calibrationControlsVisible = 1;
     }
     if (!read || !validStored(candidate)) reset(candidate);
 
@@ -99,7 +114,7 @@ Profile get(sensor_mode::Mode mode) {
 }
 
 bool set(sensor_mode::Mode mode, const Profile& profile,
-         bool balanceIsVisible) {
+         bool balanceIsVisible, bool calibrationControlsAreVisible) {
     loadIfNeeded();
     const uint8_t index = modeIndex(mode);
     if (index >= kModeCount || !isValid(profile)) return false;
@@ -110,6 +125,8 @@ bool set(sensor_mode::Mode mode, const Profile& profile,
     portEXIT_CRITICAL(&mappingMux);
     candidate.profiles[index] = profile;
     candidate.balanceVisible = balanceIsVisible ? 1 : 0;
+    candidate.calibrationControlsVisible =
+        calibrationControlsAreVisible ? 1 : 0;
 
     Preferences preferences;
     if (!preferences.begin(kPreferencesNamespace, false)) return false;
@@ -135,13 +152,27 @@ bool set(sensor_mode::Mode mode, const Profile& profile,
 }
 
 bool set(sensor_mode::Mode mode, const Profile& profile) {
-    return set(mode, profile, balanceVisible());
+    return set(mode, profile, balanceVisible(), calibrationControlsVisible());
+}
+
+bool set(sensor_mode::Mode mode, const Profile& profile,
+         bool balanceIsVisible) {
+    return set(mode, profile, balanceIsVisible,
+               calibrationControlsVisible());
 }
 
 bool balanceVisible() {
     loadIfNeeded();
     portENTER_CRITICAL(&mappingMux);
     const bool result = stored.balanceVisible != 0;
+    portEXIT_CRITICAL(&mappingMux);
+    return result;
+}
+
+bool calibrationControlsVisible() {
+    loadIfNeeded();
+    portENTER_CRITICAL(&mappingMux);
+    const bool result = stored.calibrationControlsVisible != 0;
     portEXIT_CRITICAL(&mappingMux);
     return result;
 }

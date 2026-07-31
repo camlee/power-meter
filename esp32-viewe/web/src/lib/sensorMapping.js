@@ -30,7 +30,9 @@ export function mappingIsValid(mapping) {
 
 export function mappingsEqual(left, right) {
   if (!left || !right || left.source !== right.source ||
-      (left.balance_visible === true) !== (right.balance_visible === true)) {
+      (left.balance_visible === true) !== (right.balance_visible === true) ||
+      (left.calibration_controls_visible !== false) !==
+        (right.calibration_controls_visible !== false)) {
     return false;
   }
   const leftSensors = left.physical_sensors || [];

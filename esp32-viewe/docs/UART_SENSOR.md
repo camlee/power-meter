@@ -146,7 +146,7 @@ The ESP32 implementation must:
 2. discard and count an overlong line until the next LF;
 3. reject frames with invalid magic/version, field count, mask, checksum,
    numeric syntax, non-finite values, or incomplete voltage/current pairs;
-4. apply the shared 0–120 V, -50–50 A, and 0–1 duty calculation policy without
+4. apply the shared 0–250 V, -150–150 A, and 0–1 duty calculation policy without
    applying ESP32 ADC calibration; a finite out-of-range channel remains
    observable but ineligible for power/history;
 5. publish all channels from one accepted record as one coherent snapshot;
