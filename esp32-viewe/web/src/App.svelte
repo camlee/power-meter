@@ -1754,13 +1754,32 @@
   </header>
 
   <nav class="main-nav" aria-label="Main navigation">
-    <button class:active={route === 'overview'} on:click={() => navigate('overview')}>Home</button>
+    <button
+      class:active={route === 'overview'}
+      aria-label="Home"
+      title="Home"
+      on:click={() => navigate('overview')}
+    >
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M3 11.5 12 4l9 7.5M5.5 10v9.5h5v-6h3v6h5V10" />
+      </svg>
+    </button>
     <button class:active={route === 'history'} on:click={() => navigate('history')}>Usage</button>
     <button class:active={route === 'power'} on:click={() => navigate('power')}>Power</button>
     <button class:active={route === 'sensors' || route === 'raw'}
       on:click={() => navigate('sensors')}>Sensors</button>
     <button class:active={route === 'cycle'} on:click={() => navigate('cycle')}>Cycle</button>
-    <button class:active={SETTINGS_ROUTES.includes(route)} on:click={() => navigate('wifi')}>Settings</button>
+    <button
+      class:active={SETTINGS_ROUTES.includes(route)}
+      aria-label="Settings"
+      title="Settings"
+      on:click={() => navigate('wifi')}
+    >
+      <svg class="nav-icon" viewBox="0 0 24 24" aria-hidden="true">
+        <path d="M12 8.5a3.5 3.5 0 1 0 0 7 3.5 3.5 0 0 0 0-7Z" />
+        <path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 9 19.37a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.63 15 1.7 1.7 0 0 0 3.08 14H3v-4h.08A1.7 1.7 0 0 0 4.63 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.63 1.7 1.7 0 0 0 10 3.08V3h4v.08A1.7 1.7 0 0 0 15 4.63a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.37 9 1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" />
+      </svg>
+    </button>
   </nav>
 
   {#if SETTINGS_ROUTES.includes(route)}
@@ -2694,7 +2713,23 @@
 
   .main-nav button,
   .settings-nav button {
-    padding: 0.55rem 0.68rem;
+    padding: 0.55rem 0.5rem;
+  }
+
+  .main-nav button {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .nav-icon {
+    width: 1.15rem;
+    height: 1.15rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.8;
+    stroke-linecap: round;
+    stroke-linejoin: round;
   }
 
   .main-nav button.active,
