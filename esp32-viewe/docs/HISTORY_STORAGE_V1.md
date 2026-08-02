@@ -194,10 +194,14 @@ For ordinary recorded Real and Demo sessions, anchors follow the same rules:
 - compact an anchor only when neither dataset retains a referenced file.
 
 Before the current boot has an anchor, rolling queries aggregate only its
-matching session ID in the monotonic-minute domain. This placement is exact,
-not inferred. Previous sessions and fixture history remain absent because
-their relationship to current uptime cannot be known honestly. Calendar
-queries continue to require wall time.
+matching session ID exactly in the monotonic-minute domain. Usage rolling
+queries may additionally place unresolved prior sessions with an explicit
+one-minute assumed gap between retained session extents. This placement exists
+only in query scratch memory, carries a distinct assumed-time flag, and is
+discarded as soon as direct or bounded-inferred placement is available. It is
+never persisted or used by calendar and cycle queries. Fixture history remains
+absent until its fixed anchor can be established. Calendar queries continue to
+require wall time.
 
 Time is a device property, not a history-view property: NTP/browser contribution
 never depends on whether Real or Demo is being viewed. Reserved fixture session

@@ -10,6 +10,7 @@
 #include <freertos/semphr.h>
 
 #include "demo_history_profile.h"
+#include "history_time_placement.h"
 #include "memory/heap_policy.h"
 #include "../sensors/sensor_mode.h"
 #include "../time/time_service.h"
@@ -89,6 +90,7 @@ bool haveLastFrame = false;
 bool runBreakPending = false;
 
 CatalogEntry* catalogScratch = nullptr;
+history_time_placement::Session* placementScratch = nullptr;
 size_t catalogCount = 0;
 bool catalogValid = false;
 Dataset catalogDataset = Dataset::Real;
@@ -630,6 +632,96 @@ bool resolveEntry(Dataset dataset, const CatalogEntry* catalog, size_t count,
     return true;
 }
 
+size_t buildSessionPlacements(const CatalogEntry* catalog, size_t count,
+                              TimelineBasis basis, int64_t maxInferenceSlackMs,
+                              bool allowAssumedTime) {
+    if (!placementScratch) return 0;
+    size_t placementCount = 0;
+    for (size_t i = 0; i < count;) {
+        const uint32_t sessionId = catalog[i].sessionId;
+        if (!sessionId) {
+            ++i;
+            continue;
+        }
+        uint32_t firstMinute = UINT32_MAX;
+        uint32_t endMinute = 0;
+        size_t next = i;
+        while (next < count && catalog[next].sessionId == sessionId) {
+            firstMinute = std::min(firstMinute, catalog[next].firstMinute);
+            const uint32_t buffered = catalog[next].active ? ramCount : 0;
+            endMinute = std::max(endMinute, catalog[next].firstMinute +
+                                            catalog[next].records + buffered);
+            ++next;
+        }
+        auto& placement = placementScratch[placementCount++];
+        placement = {sessionId, firstMinute, endMinute, 0,
+                     history_time_placement::Kind::Unresolved};
+        int64_t resolved = 0;
+        if (basis == TimelineBasis::WallClock &&
+            time_service::resolveUnixTimeMs(
+                sessionId, static_cast<uint64_t>(firstMinute) * kMinuteUs, resolved)) {
+            placement.startTimeMs = resolved;
+            placement.kind = history_time_placement::Kind::Direct;
+        } else if (basis == TimelineBasis::CurrentSessionMonotonic &&
+                   sessionId == time_service::currentSessionId()) {
+            placement.startTimeMs = static_cast<int64_t>(firstMinute) * kMinuteMs;
+            placement.kind = history_time_placement::Kind::Direct;
+        }
+        i = next;
+    }
+
+    // A new boot often has no completed row yet. Its zero-length placement is
+    // still the right-hand boundary that lets optimistic rolling queries show
+    // the preceding saved session immediately after startup.
+    const uint32_t currentSession = time_service::currentSessionId();
+    bool haveCurrent = false;
+    for (size_t i = 0; i < placementCount; ++i) {
+        haveCurrent |= placementScratch[i].id == currentSession;
+    }
+    if (allowAssumedTime && !haveCurrent && placementCount < kCatalogCapacity + 1) {
+        auto& current = placementScratch[placementCount++];
+        current = {currentSession, 0, 0, 0, history_time_placement::Kind::Direct};
+        if (basis == TimelineBasis::WallClock &&
+            !time_service::resolveUnixTimeMs(currentSession, 0, current.startTimeMs)) {
+            --placementCount;
+        }
+        std::sort(placementScratch, placementScratch + placementCount,
+                  [](const auto& a, const auto& b) { return a.id < b.id; });
+    }
+
+    history_time_placement::inferBounded(
+        placementScratch, placementCount, maxInferenceSlackMs);
+    if (allowAssumedTime) {
+        history_time_placement::assumeUnresolved(
+            placementScratch, placementCount, kMinuteMs);
+    }
+    return placementCount;
+}
+
+bool resolvePlacedEntry(const CatalogEntry& entry,
+                        const history_time_placement::Session* placements,
+                        size_t placementCount, TimelineBasis basis,
+                        int64_t& startMs, uint8_t& flags) {
+    if (!entry.sessionId) return false;
+    for (size_t i = 0; i < placementCount; ++i) {
+        const auto& placement = placements[i];
+        if (placement.id != entry.sessionId ||
+            placement.kind == history_time_placement::Kind::Unresolved) continue;
+        startMs = placement.startTimeMs +
+            static_cast<int64_t>(entry.firstMinute - placement.firstMinute) * kMinuteMs;
+        switch (placement.kind) {
+            case history_time_placement::Kind::Direct:
+                flags = basis == TimelineBasis::WallClock ? TIME_ANCHORED : TIME_NONE;
+                break;
+            case history_time_placement::Kind::Inferred: flags = TIME_INFERRED; break;
+            case history_time_placement::Kind::Assumed: flags = TIME_ASSUMED; break;
+            default: return false;
+        }
+        return true;
+    }
+    return false;
+}
+
 bool overlapsRecordedDemo(const CatalogEntry* catalog, size_t count,
                           int64_t startMs, int64_t endMs) {
     for (size_t i = 0; i < count; ++i) {
@@ -761,7 +853,7 @@ bool seedDemoHistory(bool force = false) {
 size_t queryBuckets(Dataset dataset, PowerBucket* out, size_t maxBuckets,
                     int64_t startMs, int64_t endMs, int64_t nowMs,
                     uint16_t bucketMinutes, TimelineBasis basis,
-                    QueryStatus* status) {
+                    QueryStatus* status, bool allowAssumedTime = false) {
     if (status) *status = {};
     if (!out || !maxBuckets || !bucketMinutes || endMs <= startMs) return 0;
     const int64_t bucketMs = static_cast<int64_t>(bucketMinutes) * kMinuteMs;
@@ -780,19 +872,37 @@ size_t queryBuckets(Dataset dataset, PowerBucket* out, size_t maxBuckets,
 
     CatalogEntry* catalog = catalogScratch;
     const size_t files = buildCatalog(dataset, catalog, kCatalogCapacity);
-    uint64_t coveredMs = 0, inferredMs = 0;
+    const size_t placementCount = buildSessionPlacements(
+        catalog, files, basis, bucketMs, allowAssumedTime);
+    bool assumedOverlapsQuery = false;
+    if (allowAssumedTime) {
+        for (size_t f = 0; f < files; ++f) {
+            int64_t placedStart = 0;
+            uint8_t placedFlags = TIME_NONE;
+            if (!resolvePlacedEntry(catalog[f], placementScratch, placementCount, basis,
+                                    placedStart, placedFlags) ||
+                !(placedFlags & TIME_ASSUMED)) continue;
+            const uint32_t rows = catalog[f].records + (catalog[f].active ? ramCount : 0);
+            const int64_t placedEnd = placedStart + static_cast<int64_t>(rows) * kMinuteMs;
+            if (placedEnd > startMs && placedStart < endMs) {
+                assumedOverlapsQuery = true;
+                break;
+            }
+        }
+    }
+    uint64_t coveredMs = 0, inferredMs = 0, assumedMs = 0;
     const int64_t dataEndMs = std::min(endMs, nowMs);
     const int64_t dataStartMs = basis == TimelineBasis::CurrentSessionMonotonic
-        ? std::max<int64_t>(startMs, 0) : startMs;
-    const uint32_t currentSession = time_service::currentSessionId();
+        ? (assumedOverlapsQuery ? startMs : std::max<int64_t>(startMs, 0)) : startMs;
     for (size_t f = 0; f < files; ++f) {
         int64_t fileStart = 0;
         uint8_t flags = TIME_NONE;
-        if (basis == TimelineBasis::WallClock) {
-            if (!resolveEntry(dataset, catalog, files, catalog[f], fileStart, flags, bucketMs)) continue;
-        } else {
-            if (catalog[f].sessionId != currentSession) continue;
-            fileStart = static_cast<int64_t>(catalog[f].firstMinute) * kMinuteMs;
+        if (dataset == Dataset::Demo && isFixture(catalog[f])) {
+            if (basis != TimelineBasis::WallClock ||
+                !resolveFixtureEntry(catalog, files, catalog[f], fileStart, flags)) continue;
+        } else if (!resolvePlacedEntry(catalog[f], placementScratch, placementCount,
+                                       basis, fileStart, flags)) {
+            continue;
         }
         const uint16_t rows = catalog[f].records + (catalog[f].active ? ramCount : 0);
         const int64_t fileEnd = fileStart + static_cast<int64_t>(rows) * kMinuteMs;
@@ -831,6 +941,7 @@ size_t queryBuckets(Dataset dataset, PowerBucket* out, size_t maxBuckets,
                 out[b].timeFlags |= flags;
                 coveredMs += overlap;
                 if (flags & TIME_INFERRED) inferredMs += overlap;
+                if (flags & TIME_ASSUMED) assumedMs += overlap;
             }
             if ((r & 0x3fU) == 0x3fU) vTaskDelay(pdMS_TO_TICKS(1));
         }
@@ -857,8 +968,10 @@ size_t queryBuckets(Dataset dataset, PowerBucket* out, size_t maxBuckets,
         status->coveredMinutes = coveredMs / kMinuteMs;
         status->missingMinutes = missing / kMinuteMs;
         status->inferredMinutes = inferredMs / kMinuteMs;
+        status->assumedMinutes = assumedMs / kMinuteMs;
         status->incomplete = missing > kMaterialGapMs || measurementIncomplete;
         status->hasInferredTime = inferredMs != 0;
+        status->hasAssumedTime = assumedMs != 0;
     }
     return bucketCount;
 }
@@ -885,7 +998,10 @@ bool init() {
         heap_policy::callocPreferred(kRamCapacity, sizeof(MinuteEnergyRecord)));
     if (!catalogScratch) catalogScratch = static_cast<CatalogEntry*>(
         heap_policy::callocPreferred(kCatalogCapacity, sizeof(CatalogEntry)));
-    if (!ram || !catalogScratch) {
+    if (!placementScratch) placementScratch = static_cast<history_time_placement::Session*>(
+        heap_policy::callocPreferred(kCatalogCapacity + 1,
+                                     sizeof(history_time_placement::Session)));
+    if (!ram || !catalogScratch || !placementScratch) {
         Serial.println("historical_storage: buffer allocation failed");
         return false;
     }
@@ -1011,7 +1127,7 @@ void tick() {
 size_t getPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
                                  uint32_t lookbackMinutes, uint16_t bucketMinutes,
                                  uint32_t endOffsetMinutes, bool includePartial,
-                                 QueryStatus* status) {
+                                 QueryStatus* status, bool allowAssumedTime) {
     Lock lock;
     if (status) *status = {};
     if (!lock || !ready || !out || !maxBuckets || !lookbackMinutes || !bucketMinutes) return 0;
@@ -1029,15 +1145,16 @@ size_t getPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBu
     const int64_t startMs = endMs - static_cast<int64_t>(lookbackMinutes) * kMinuteMs;
     (void)includePartial;
     return queryBuckets(dataset, out, maxBuckets, startMs, endMs, nowMs,
-                        bucketMinutes, basis, status);
+                        bucketMinutes, basis, status, allowAssumedTime);
 }
 
 size_t getPowerBuckets(PowerBucket* out, size_t maxBuckets,
                        uint32_t lookbackMinutes, uint16_t bucketMinutes,
                        uint32_t endOffsetMinutes, bool includePartial,
-                       QueryStatus* status) {
+                       QueryStatus* status, bool allowAssumedTime) {
     return getPowerBucketsForDataset(activeDataset(), out, maxBuckets, lookbackMinutes,
-                                     bucketMinutes, endOffsetMinutes, includePartial, status);
+                                     bucketMinutes, endOffsetMinutes, includePartial, status,
+                                     allowAssumedTime);
 }
 
 size_t getCalendarPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,

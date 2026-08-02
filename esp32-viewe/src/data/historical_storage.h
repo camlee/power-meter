@@ -63,6 +63,7 @@ enum TimeFlags : uint8_t {
     TIME_ANCHORED = 1 << 0,
     TIME_INFERRED = 1 << 1,
     TIME_INCOMPLETE = 1 << 2,
+    TIME_ASSUMED = 1 << 3,
 };
 
 enum class TimelineBasis : uint8_t {
@@ -101,10 +102,12 @@ struct QueryStatus {
     uint32_t coveredMinutes;
     uint32_t missingMinutes;
     uint32_t inferredMinutes;
+    uint32_t assumedMinutes;
     uint32_t recordsRead;
     uint16_t filesRead;
     bool incomplete;
     bool hasInferredTime;
+    bool hasAssumedTime;
 };
 
 enum class FileState : uint8_t { Closed, Interrupted, Active };
@@ -144,7 +147,7 @@ void tick();
 size_t getPowerBuckets(PowerBucket* out, size_t maxBuckets,
                        uint32_t lookbackMinutes, uint16_t bucketMinutes,
                        uint32_t endOffsetMinutes = 0, bool includePartial = true,
-                       QueryStatus* status = nullptr);
+                       QueryStatus* status = nullptr, bool allowAssumedTime = false);
 size_t getCalendarPowerBuckets(PowerBucket* out, size_t maxBuckets,
                                CalendarRange range, uint16_t bucketMinutes,
                                QueryStatus* status = nullptr);
@@ -158,7 +161,8 @@ size_t getSinceBootPowerBuckets(PowerBucket* out, size_t maxBuckets,
 size_t getPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
                                  uint32_t lookbackMinutes, uint16_t bucketMinutes,
                                  uint32_t endOffsetMinutes = 0, bool includePartial = true,
-                                 QueryStatus* status = nullptr);
+                                 QueryStatus* status = nullptr,
+                                 bool allowAssumedTime = false);
 size_t getCalendarPowerBucketsForDataset(Dataset dataset, PowerBucket* out, size_t maxBuckets,
                                          CalendarRange range, uint16_t bucketMinutes,
                                          QueryStatus* status = nullptr);

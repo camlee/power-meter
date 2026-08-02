@@ -3,6 +3,7 @@
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <Preferences.h>
+#include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -22,6 +23,7 @@ constexpr int16_t kDefaultUtcOffsetMinutes = -7 * 60;
 constexpr int16_t kMinUtcOffsetMinutes = -14 * 60;
 constexpr int16_t kMaxUtcOffsetMinutes = 14 * 60;
 constexpr int64_t kEarliestAcceptedUnixMs = 1577836800000LL;
+constexpr int64_t kLatestAcceptedUnixMs = 4102444800000LL;
 constexpr uint32_t kLedgerMagic = 0x33415448; // HTA3 on little-endian ESP32
 constexpr uint16_t kLedgerVersion = 1;
 constexpr size_t kMaxRetainedAnchors = 200;
@@ -151,31 +153,61 @@ bool saveLedger() {
 
 void init() {
     if (!mutex) mutex = xSemaphoreCreateMutex();
-    Lock lock;
-    if (!lock || initialized) return;
+    bool restoreRetainedTime = false;
+    int64_t retainedUnixMs = 0;
+    esp_reset_reason_t resetReason = ESP_RST_UNKNOWN;
+    {
+        Lock lock;
+        if (!lock || initialized) return;
 
-    Preferences preferences;
-    if (preferences.begin(kPreferencesNamespace, false)) {
-        configuredUtcOffsetMinutes = preferences.getShort(kOffsetKey, kDefaultUtcOffsetMinutes);
-        if (!offsetIsValid(configuredUtcOffsetMinutes)) configuredUtcOffsetMinutes = kDefaultUtcOffsetMinutes;
-        sessionId = preferences.getUInt(kSessionKey, 0) + 1;
-        if (!sessionId) sessionId = 1;
-        preferences.putUInt(kSessionKey, sessionId);
-        preferences.putShort(kOffsetKey, configuredUtcOffsetMinutes);
-        preferences.end();
-    } else {
-        sessionId = 1;
+        Preferences preferences;
+        if (preferences.begin(kPreferencesNamespace, false)) {
+            configuredUtcOffsetMinutes = preferences.getShort(kOffsetKey, kDefaultUtcOffsetMinutes);
+            if (!offsetIsValid(configuredUtcOffsetMinutes)) configuredUtcOffsetMinutes = kDefaultUtcOffsetMinutes;
+            sessionId = preferences.getUInt(kSessionKey, 0) + 1;
+            if (!sessionId) sessionId = 1;
+            preferences.putUInt(kSessionKey, sessionId);
+            preferences.putShort(kOffsetKey, configuredUtcOffsetMinutes);
+            preferences.end();
+        } else {
+            sessionId = 1;
+        }
+
+        if (!loadLedgerFile(kLedgerPath)) {
+            anchorCount = 0;
+            // Complete an interrupted atomic rewrite when its temporary/backup is valid.
+            if (loadLedgerFile(kLedgerTempPath) || loadLedgerFile(kLedgerBackupPath)) saveLedger();
+        }
+        applyFixedTimezone(configuredUtcOffsetMinutes);
+
+        // With the default RTC + high-resolution libc time source, ESP-IDF
+        // retains gettimeofday() across every reset except a power-on reset.
+        // Require ledger evidence that this firmware previously established a
+        // trustworthy epoch, so a plausible-looking uninitialized RTC value or
+        // an explicit history reset cannot silently become an anchor.
+        resetReason = esp_reset_reason();
+        timeval retained{};
+        gettimeofday(&retained, nullptr);
+        retainedUnixMs = static_cast<int64_t>(retained.tv_sec) * 1000LL +
+                         retained.tv_usec / 1000;
+        restoreRetainedTime = anchorCount && resetReason != ESP_RST_POWERON &&
+            resetReason != ESP_RST_UNKNOWN && retainedUnixMs >= kEarliestAcceptedUnixMs &&
+            retainedUnixMs < kLatestAcceptedUnixMs;
+        initialized = true;
+        Serial.printf("time_service: session %lu, offset %+d, %u anchors\n",
+                      static_cast<unsigned long>(sessionId), configuredUtcOffsetMinutes, anchorCount);
     }
 
-    if (!loadLedgerFile(kLedgerPath)) {
-        anchorCount = 0;
-        // Complete an interrupted atomic rewrite when its temporary/backup is valid.
-        if (loadLedgerFile(kLedgerTempPath) || loadLedgerFile(kLedgerBackupPath)) saveLedger();
+    if (restoreRetainedTime) {
+        constexpr uint32_t kRetainedRtcUncertaintyMs = 2000;
+        if (!submitAnchor(retainedUnixMs, AnchorSource::Rtc,
+                          configuredUtcOffsetMinutes, kRetainedRtcUncertaintyMs)) {
+            Serial.println("time_service: retained RTC time was valid but could not be persisted");
+        } else {
+            Serial.printf("time_service: restored retained RTC after reset reason %d\n",
+                          static_cast<int>(resetReason));
+        }
     }
-    applyFixedTimezone(configuredUtcOffsetMinutes);
-    initialized = true;
-    Serial.printf("time_service: session %lu, offset %+d, %u anchors\n",
-                  static_cast<unsigned long>(sessionId), configuredUtcOffsetMinutes, anchorCount);
 }
 
 uint32_t currentSessionId() {

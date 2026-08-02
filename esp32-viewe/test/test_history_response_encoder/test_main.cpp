@@ -40,6 +40,7 @@ void testHeaderPreservesVph3WallClockLayout() {
     status.timelineBasis = historical_storage::TimelineBasis::WallClock;
     status.incomplete = true;
     status.hasInferredTime = true;
+    status.hasAssumedTime = true;
 
     uint8_t output[history_response_encoder::kHeaderBytes];
     history_response_encoder::encodeHeader(output, 0x12345678, 336, status);
@@ -47,7 +48,7 @@ void testHeaderPreservesVph3WallClockLayout() {
     TEST_ASSERT_EQUAL_HEX32(0x33485056, readLe32(output));
     TEST_ASSERT_EQUAL_UINT8(3, output[4]);
     TEST_ASSERT_EQUAL_UINT8(2, output[5]);
-    TEST_ASSERT_EQUAL_HEX16(3, readLe16(output + 6));
+    TEST_ASSERT_EQUAL_HEX16(11, readLe16(output + 6));
     TEST_ASSERT_EQUAL_UINT16(336, readLe16(output + 8));
     TEST_ASSERT_EQUAL_UINT16(80, readLe16(output + 10));
     TEST_ASSERT_EQUAL_HEX32(0x12345678, readLe32(output + 12));

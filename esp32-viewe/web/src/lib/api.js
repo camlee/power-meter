@@ -394,7 +394,11 @@ function parseHistory(buffer) {
     : (count === 1 && endTimeMs > startTimeMs
       ? Math.max(1, Math.round((endTimeMs - startTimeMs) / 60_000))
       : 0);
-  return { flags, timelineBasis, startTimeMs, endTimeMs, bucketMinutes, buckets };
+  return {
+    flags, timelineBasis, startTimeMs, endTimeMs, bucketMinutes, buckets,
+    hasInferredTime: Boolean(flags & 2),
+    hasAssumedTime: Boolean(flags & 8),
+  };
 }
 
 export async function getCycles() {

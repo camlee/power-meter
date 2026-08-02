@@ -275,8 +275,10 @@ otherwise valid energy without placing it falsely at now.
 While the current boot itself is unanchored, Usage still queries that session
 directly in its monotonic domain. Both LVGL and Web show rolling ranges with
 relative labels plus a Since Boot view; calendar-only choices appear after an
-anchor is available. Older sessions are never compressed onto that relative
-axis.
+anchor is available. Rolling Usage may also place unresolved older sessions on
+that relative axis with a clearly flagged, ephemeral one-minute restart-gap
+assumption. Since Boot, calendar ranges, and cycles do not consume that
+assumption.
 Missing or uncertain coverage is considered user-significant only when it exceeds
 one minute; smaller restart gaps remain in the data model but do not raise the UI
 warning symbol.

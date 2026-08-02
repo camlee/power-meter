@@ -69,7 +69,7 @@ bool runJob(const Job& job, Timing& timing) {
             case UsageQueryKind::Rolling:
                 count = historical_storage::getPowerBuckets(
                     usageBuffer, kMaxUsageBuckets, job.usage.lookbackMinutes,
-                    job.usage.bucketMinutes, 0, true, &status);
+                    job.usage.bucketMinutes, 0, true, &status, true);
                 break;
         }
         timing.lastDurationMs = millis() - started;

@@ -27,14 +27,23 @@ unanchored block is placed only when anchored data surrounds it and its
 unexplained downtime fits the selected graph bucket. Reserved session-zero Demo
 fixtures have separate fixed-anchor metadata.
 
+On a reset that preserves the ESP32 RTC timebase, a plausible retained system
+clock plus evidence of a previously persisted anchor creates an RTC-sourced
+anchor for the new session before networking starts. Power-on and unknown reset
+reasons never use retained time. A later browser or NTP sample can replace the
+RTC anchor when it is materially more precise.
+
 Rolling ranges remain useful before wall time is known: they use the current
-boot's exact monotonic timeline, show relative labels, and do not include older
-sessions whose intervening downtime is unknown. The unanchored Usage selector
+boot's exact monotonic timeline and show relative labels. Usage queries place
+otherwise unresolved older sessions ephemerally with a one-minute gap between
+retained session extents, mark those intervals as assumed, and never write that
+placement to history or the anchor ledger. The unanchored Usage selector
 offers Last 1 Hour, Last 6 Hours, Last 24 Hours, Last 2 Days, Last Week, and
 Since Boot. Once wall time is available, those rolling ranges can span resolved
 sessions and Today, Yesterday, and All History replace Since Boot. Calendar
-views use a persisted fixed UTC offset. Full timezone/DST rules remain future
-work.
+views and energy cycles remain strict and never consume assumed placements.
+Calendar views use a persisted fixed UTC offset. Full timezone/DST rules remain
+future work.
 
 Last 1 Hour uses the stored one-minute precision. Last 6 Hours uses ten-minute
 buckets; longer ranges use progressively wider buckets to keep the chart and
@@ -44,6 +53,7 @@ Time uncertainty and measurement availability are independent:
 
 - an anchored minute can still have a sensor-coverage gap;
 - a fully measured minute can still have inferred wall time;
+- a Usage minute can have an explicitly assumed query-time placement;
 - configured zero power has coverage and zero energy;
 - an absent channel is unavailable, not zero and not a sensor failure.
 

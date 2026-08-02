@@ -263,11 +263,18 @@ void renderChart(const historical_storage::PowerBucket* buckets, size_t count,
     }
     const bool relative =
         status.timelineBasis == historical_storage::TimelineBasis::CurrentSessionMonotonic;
-    if (status.hasInferredTime) setStatus("some timestamps inferred", true);
-    else if (status.incomplete) setStatus("sensor data gaps", true);
+    if (status.hasAssumedTime && status.incomplete) {
+        setStatus("History timing estimated; gaps", true);
+    }
+    else if (status.hasAssumedTime) setStatus("History timing estimated", true);
+    else if (relative && status.incomplete) setStatus("Clock not synced; gaps", true);
+    else if (relative && !status.coveredMinutes) setStatus("Clock not synced; collecting", true);
+    else if (relative) setStatus("Clock not synced", true);
+    else if (status.hasInferredTime) setStatus("Some history times estimated", true);
+    else if (status.incomplete) setStatus("Data has gaps", true);
     // Keep time inference and measurement gaps explicit rather than rendering
     // missing coverage as a zero-height observation.
-    else if (!status.coveredMinutes) setStatus("No complete intervals yet");
+    else if (!status.coveredMinutes) setStatus("Collecting data");
     else setStatus("");
     const uint16_t tickMinutes = range.tickMinutes
         ? range.tickMinutes : automaticTickMinutes(axisMinutes);

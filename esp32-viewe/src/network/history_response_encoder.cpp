@@ -40,7 +40,8 @@ void encodeHeader(uint8_t (&output)[kHeaderBytes], uint32_t jobId, size_t count,
     const uint16_t flags = (status.incomplete ? 1 : 0) |
                            (status.hasInferredTime ? 2 : 0) |
                            (status.timelineBasis ==
-                                historical_storage::TimelineBasis::CurrentSessionMonotonic ? 4 : 0);
+                                historical_storage::TimelineBasis::CurrentSessionMonotonic ? 4 : 0) |
+                           (status.hasAssumedTime ? 8 : 0);
     putLe16(output + 6, flags);
     putLe16(output + 8, static_cast<uint16_t>(count));
     putLe16(output + 10, kRecordBytes);

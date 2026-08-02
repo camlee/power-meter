@@ -46,8 +46,11 @@ sessions, and anchors through test-only helpers or a host-side harness.
   file or protected Demo fixtures and never evicting across datasets.
 - Compact anchors that no retained file in either dataset references.
 - Query rolling and calendar boundaries with direct, inferred, and missing time.
-- Query unanchored rolling and Since Boot ranges from only the current session,
-  using relative positions without treating pre-boot portions as sensor gaps.
+- Query unanchored Since Boot from only the current session and rolling Usage
+  with older unresolved sessions placed at explicit one-minute assumed restart
+  gaps, using relative positions without persisting those assumptions.
+- Preserve direct anchors, exercise forward/backward assumed blocks, and leave
+  conflicting blocks unresolved rather than overlapping fixed placements.
 - Accepting a current-session anchor switches LVGL and Web to wall-clock labels
   and calendar choices without changing stored energy or coverage.
 - Preserve time gaps, per-channel/component coverage, configured masks, and

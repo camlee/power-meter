@@ -2501,6 +2501,13 @@
           {pwmUiEnabled}
           showBalance={balanceVisible}
         />
+        {#if history.hasAssumedTime}
+          <p class="note">Times are estimated using a 1-minute gap per restart.</p>
+        {:else if history.timelineBasis === 'relative'}
+          <p class="note">Device clock is not set; showing this restart only.</p>
+        {:else if history.hasInferredTime}
+          <p class="note">Some timestamps were inferred between known clock anchors.</p>
+        {/if}
         {#if history.flags & 1}
           <p class="note">Some intervals have incomplete coverage.</p>
         {/if}

@@ -268,7 +268,9 @@ and colours as the LVGL Usage screen.
 VPH3 replaces VPH2 by making the timestamp domain explicit. Header flag bit 2
 selects current-session monotonic milliseconds; when clear, timestamps are Unix
 milliseconds. Header flag bits 0 and 1 continue to mean incomplete coverage and
-inferred wall time. Its 80-byte record keeps the
+inferred wall time. Header flag bit 3 means at least one returned interval uses
+the Usage-only, ephemeral one-minute restart-gap assumption. Its 80-byte record
+keeps the
 energy fields together and adds configured/time/quality flags plus independent
 channel and component coverage:
 
