@@ -117,8 +117,10 @@ The command:
 
 1. Requires committed source, the local signing key, and authenticated `gh`.
 2. Runs the native, signing, and web tests.
-3. Builds and signs both PlatformIO environments while suppressing developer
-   `.env` AP credentials from the public binaries.
+3. Builds and signs both PlatformIO environments in a fresh temporary project
+   workspace while suppressing developer `.env` AP credentials from the public
+   binaries. Per-user compiler and framework downloads remain cached, but no
+   project objects or library checkout is reused from `.pio`.
 4. Creates the annotated `v0.1.2` tag only after the tests pass.
 5. Atomically pushes the current branch and tag to its configured upstream.
 6. Creates a draft release in the repository configured by `platformio.ini`
@@ -169,7 +171,20 @@ releases.
 
 After publishing, use **Check now** on the first device and observe download,
 reboot, confirmation, and network recovery before allowing the second device
-to update.
+to update. Then run the real-device acceptance suite:
+
+```sh
+python3 tools/device_acceptance.py meter2 \
+  --expected-device meter2 --expected-profile meter-viewe
+```
+
+The suite performs read-only, high-level checks of UI delivery, device identity,
+confirmed OTA and mounted storage health, the versioned sensor response, and a
+real binary live frame whose open client is reflected in HTTP status. Local
+updates through `tools/ota.py` run it automatically after the new firmware
+confirms; `--skip-acceptance` is available for recovery. A published release
+should not be promoted beyond the first designated meter until these checks
+pass on its installed image.
 
 `tools/build_github_release.py` remains available as a lower-level,
 build-and-sign-only command for recovery or inspection. It expects the matching

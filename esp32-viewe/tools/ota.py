@@ -35,6 +35,8 @@ def main():
     parser.add_argument("-e", "--environment", default="viewe",
                         help="PlatformIO environment to build (default: viewe)")
     parser.add_argument("--no-wait", action="store_true", help="do not wait for the device to reboot")
+    parser.add_argument("--skip-acceptance", action="store_true",
+                        help="skip the post-update real-device acceptance suite")
     args = parser.parse_args()
     if not args.device and not args.host:
         parser.error("specify at least one device name or --host")
@@ -72,11 +74,15 @@ def main():
         if args.no_wait:
             upload_command.extend(["--wait", "0"])
         run(upload_command)
+        if not args.no_wait and not args.skip_acceptance:
+            run([sys.executable, "tools/device_acceptance.py", device])
     for host in args.host:
         upload_command = [sys.executable, "tools/ota_upload.py", "--release", str(release_dir), "--host", host]
         if args.no_wait:
             upload_command.extend(["--wait", "0"])
         run(upload_command)
+        if not args.no_wait and not args.skip_acceptance:
+            run([sys.executable, "tools/device_acceptance.py", host])
 
 
 if __name__ == "__main__":

@@ -15,6 +15,7 @@ namespace {
 constexpr uint16_t kPort = 81;
 constexpr uint32_t kIntervalMs = 500;
 constexpr size_t kMaxClients = 5;
+constexpr size_t kMaxOpenSockets = 8;
 constexpr size_t kReplayFrameCount = 60; // 30 seconds at the 2 Hz publish rate.
 constexpr uint8_t kReplayFramesPerWork = 20;
 constexpr uint32_t kLiveMagicV4 = 0x344d5056; // "VPM4" little endian
@@ -130,6 +131,46 @@ bool addClient(int fd) {
     }
     portEXIT_CRITICAL(&stateMux);
     return false;
+}
+
+bool containsFd(const int* fds, size_t count, int fd) {
+    for (size_t i = 0; i < count; ++i) if (fds[i] == fd) return true;
+    return false;
+}
+
+// IDF 5.5.5 stopped invoking the URI handler after a successful handshake.
+// Its replacement post-handshake hook is disabled in pioarduino's precompiled
+// IDF, so discover upgraded sessions through the public HTTPD session APIs.
+// This also remains compatible with the older handler behavior.
+void syncClients() {
+    int openFds[kMaxOpenSockets] = {};
+    size_t openCount = kMaxOpenSockets;
+    if (httpd_get_client_list(server, &openCount, openFds) != ESP_OK) return;
+
+    int websocketFds[kMaxOpenSockets] = {};
+    size_t websocketCount = 0;
+    for (size_t i = 0; i < openCount; ++i) {
+        if (httpd_ws_get_fd_info(server, openFds[i]) == HTTPD_WS_CLIENT_WEBSOCKET) {
+            websocketFds[websocketCount++] = openFds[i];
+        }
+    }
+
+    portENTER_CRITICAL(&stateMux);
+    for (Client& client : clients) {
+        if (client.fd >= 0 && !containsFd(websocketFds, websocketCount, client.fd)) {
+            client = {};
+        }
+    }
+    portEXIT_CRITICAL(&stateMux);
+
+    for (size_t i = 0; i < websocketCount; ++i) {
+        const int fd = websocketFds[i];
+        if (addClient(fd)) continue;
+        if (httpd_queue_work(server, rejectClient,
+                             reinterpret_cast<void*>(static_cast<intptr_t>(fd))) != ESP_OK) {
+            httpd_sess_trigger_close(server, fd);
+        }
+    }
 }
 
 bool hasClients() {
@@ -327,7 +368,7 @@ bool begin() {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.server_port = kPort;
     config.ctrl_port = kPort + 1;
-    config.max_open_sockets = 8; // five browser clients plus HTTPD reserves
+    config.max_open_sockets = kMaxOpenSockets; // five browser clients plus HTTPD reserves
     config.max_uri_handlers = 2;
     config.stack_size = 4096;
     config.lru_purge_enable = true;
@@ -358,6 +399,7 @@ bool stop() {
 
 void update() {
     if (!server || sendQueued || millis() - lastPublishMs < kIntervalMs) return;
+    syncClients();
     LiveFrameV5 frame{};
     if (!buildFrame(frame)) return;
     lastPublishMs = millis();

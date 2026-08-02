@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tempfile
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
@@ -73,18 +74,25 @@ def main():
     build_environment["SOURCE_DATE_EPOCH"] = source_epoch
     # Public firmware must never inherit a developer's local AP defaults.
     build_environment["VIEWE_PUBLIC_RELEASE"] = "1"
-    for environment, board in TARGETS:
-        run(["pio", "run", "-e", environment], env=build_environment)
-        firmware = PROJECT_DIR / ".pio" / "build" / environment / "firmware.bin"
-        run([
-            sys.executable, "tools/release.py",
-            "--internet",
-            "--firmware", str(firmware),
-            "--private-key", str(args.private_key),
-            "--output", str(output),
-            "--version", args.version,
-            "--board", board,
-        ], env=build_environment)
+    # A signed release must not reuse project objects or libraries from the
+    # shared checkout. Compiler/framework packages remain cached per user in
+    # PLATFORMIO_CORE_DIR, while this temporary project workspace starts clean.
+    with tempfile.TemporaryDirectory(prefix="power-meter-release-pio-") as workspace:
+        build_environment["PLATFORMIO_WORKSPACE_DIR"] = workspace
+        build_dir = Path(workspace) / "build"
+        print("Using isolated PlatformIO workspace {}".format(workspace))
+        for environment, board in TARGETS:
+            run(["pio", "run", "-e", environment], env=build_environment)
+            firmware = build_dir / environment / "firmware.bin"
+            run([
+                sys.executable, "tools/release.py",
+                "--internet",
+                "--firmware", str(firmware),
+                "--private-key", str(args.private_key),
+                "--output", str(output),
+                "--version", args.version,
+                "--board", board,
+            ], env=build_environment)
 
     assets = sorted(path.name for path in output.iterdir())
     print("\nCreated GitHub release assets in {}".format(output))
