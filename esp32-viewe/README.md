@@ -1,7 +1,38 @@
 # ESP32 Power Meter Firmware
 
-PlatformIO Arduino project with two hardware profiles sharing one runtime and
-embedded web application.
+PlatformIO Arduino project for ESP32 with both built-in display support and rich web app.
+This project is a modern and more feature-complete incarnation of the esp32-micropython version. Key features include:
+
+* 3.5" touch display (Viewe) shows live and historical data and allows for setup and configuration. Uses [LVGL](https://lvgl.io).
+* Web App has 1:1 feature parity with the touch display, plus remote display and full control.
+* Both Station and Access Point Wi-Fi modes, multiple saved networks and automatic reconnection.
+* Realtime visualization of voltage, current, and power for multiple sensors.
+* Average power use (1 minute granularity) stored to track energy over time. Both relative (since last boot) and anchored (wall clock time) supported.
+* Time reference set flexibly with either NTP (when internet connection exists) or web app (simply open on a smartphone or other device).
+* Calibration UI, flexible sensor mapping UI, raw sensor capture + visualization.
+* Supports both ESP32 built-in ADC and external ADC (ADS1115), also demo mode.
+* Nice-to-haves like brightness, day/night mode.
+* OTA updates, both over local network and through the internet using Github releases.
+
+![wifi_power_meter](docs/hardware/rev1/pictures/viewe_usage.jpg)
+
+## Example Screenshots
+
+### Built-in Display
+
+![LVGL touch display home screen showing live charging power](docs/screenshots/lvgl_home.png)
+
+![LVGL touch display sensor mapping and calibration screen](docs/screenshots/lvgl_sensor_mapping.png)
+
+![LVGL touch display usage screen showing historical power data](docs/screenshots/lvgl_usage.png)
+
+### Web UI
+
+![Web app usage dashboard showing historical power data](docs/screenshots/web_usage.png)
+
+![Web app sensor configuration and live readings](docs/screenshots/web_sensors.png)
+
+![Web app data file management](docs/screenshots/web_data_files.png)
 
 ## Hardware targets
 
