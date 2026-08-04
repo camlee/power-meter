@@ -15,10 +15,11 @@ bool pulseTouchReset() {
         gpio_set_level(kTouchResetPin, 0) != ESP_OK) {
         return false;
     }
-    // Match the conservative reset timing used by ESP32_Display_Panel.
-    delay(200);
+    // UEDX32480035E-WB-A TP-RST is GPIO2, active low. CHSC6540 requires
+    // at least 500 us low and can take up to 200 ms to resume reporting.
+    delay(5);
     if (gpio_set_level(kTouchResetPin, 1) != ESP_OK) return false;
-    delay(200);
+    delay(250);
     return true;
 }
 
