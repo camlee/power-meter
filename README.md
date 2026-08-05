@@ -6,9 +6,11 @@ Uses DC voltage and current sensors to measure power for both input (ex. from a 
 
 ## esp32-viewe:
 ![wifi_power_meter](esp32-viewe/docs/hardware/rev1/pictures/viewe_usage.jpg)
+![wifi_power_meter](esp32-viewe/docs/screenshots/web_usage.png)
 
 
 ## esp32-micropython:
+![wifi_power_meter](esp32-micropython/hardware/rev1/pictures/front.jpg)
 ![wifi_power_meter](esp32-micropython/hardware/rev1/pictures/historical.png)
 
 
