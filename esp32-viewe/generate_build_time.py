@@ -40,12 +40,13 @@ if not build_version:
             revision = "unknown"
         build_version = "0.0.0-dev+g{}".format(revision)
 
-# Match the Info screen's date followed by time presentation.
+# Match the Info screen's local date and time presentation.
 source_epoch = os.environ.get("SOURCE_DATE_EPOCH")
 now = (datetime.datetime.fromtimestamp(int(source_epoch), datetime.timezone.utc)
        if source_epoch else datetime.datetime.now(datetime.timezone.utc))
-build_date = now.strftime("%b %d %Y")
-build_time = now.strftime("%I:%M:%S %p UTC")
+now = now.astimezone()
+build_date = f"{now:%b} {now.day} {now:%Y}"
+build_time = now.strftime("%I:%M:%S %p %Z")
 
 # Resolve the include directory
 include_dir = env.subst("$PROJECT_INCLUDE_DIR")
