@@ -1,20 +1,19 @@
-# Signed local and Internet OTA updates
+# Signed OTA updates
 
-Power-meter devices accept an application image only when:
+The firmware accepts an application image only when all of these checks pass:
 
-- its canonical manifest has a valid ECDSA P-256/SHA-256 signature;
-- the signed board is `meter-viewe` or `meter-wroom` and matches the device;
-- the streamed firmware SHA-256 and exact byte count match the manifest; and
-- its Semantic Versioning precedence is newer than the installed/highest
-  confirmed version.
+- the canonical manifest has a valid ECDSA P-256/SHA-256 signature;
+- the signed board identity matches `meter-viewe` or `meter-wroom`;
+- the streamed image hash and exact byte count match the manifest; and
+- the version is newer than the installed/highest confirmed version.
 
-Both LAN uploads and automatic GitHub downloads use the same verifier and
-inactive-slot writer. The signing private key is the update authorization
-boundary. There is no compiled shared bearer token.
+LAN uploads and Internet downloads use the same verifier and inactive-slot
+writer. The private signing key is the update authorization boundary; there is
+no compiled shared bearer token.
 
 ## One-time setup
 
-Install PlatformIO, Python 3, and OpenSSL, then create the signing key:
+On a trusted build machine:
 
 ```sh
 cd esp32-viewe
@@ -22,190 +21,62 @@ cp .env.example .env
 python3 tools/create_ota_keys.py
 ```
 
-`secrets/ota_signing_private.pem` must stay on trusted build machines and have
-a secure backup. `keys/ota_signing_public.pem` is intentionally committed and
-embedded in firmware.
+Keep `.env` and `secrets/ota_signing_private.pem` off the device and out of
+Git. The public key in `keys/ota_signing_public.pem` is committed and embedded
+in the firmware. Every existing device needs one USB or compatible signed
+update containing the current OTA verifier; older bootloaders/partition tables
+also require USB flashing.
 
-Every existing device needs one USB or signed LAN update containing the
-Internet updater before it can update itself. A device with an older bootloader
-also needs one USB flash so rollback support and the current partition table
-are installed:
+Do not rotate the key casually. A planned rotation needs an intermediate image
+that trusts both keys; a compromised key requires trusted USB recovery.
 
-```sh
-pio run -e viewe -t upload
-```
+## Local updates
 
-Do not rotate the key casually. A planned rotation requires an intermediate
-firmware that trusts both old and new public keys; recovery from a compromised
-key requires a trusted USB flash.
-
-## Local signed updates
-
-Build, sign, upload, reboot, and confirm one or more devices:
+Build, sign, upload, reboot, and check a device with:
 
 ```sh
-python3 tools/ota.py meter1 meter2
+python3 tools/ota.py meter1
 python3 tools/ota.py --host 192.168.4.1
 python3 tools/ota.py -e wroom meter-wroom-1
 ```
 
-The uploader resolves `.local` names itself and falls back to the system
-resolver. Use the displayed/serial IP when multicast DNS is unavailable.
-
-A development build derives a short SemVer-compatible identity from the nearest
-`v*` tag using `git describe`, such as `0.1.0-3+g1a2b3c4`. Local OTA only
-accepts a newer version; USB is the intentional downgrade/recovery path.
-
-Create or upload a retained local release:
+Use `--host` when mDNS is unavailable. The tool can upload several devices
+from one build. A previously signed release can be reused with:
 
 ```sh
-pio run -e viewe -t release
-python3 tools/ota_upload.py --device meter1 --release dist/<version>
+python3 tools/ota_upload.py --device meter2 --release dist/latest
 ```
 
-The local release contains `firmware.bin`, `manifest.json`, and
-`manifest.sig`. `POST /api/v1/update` is reachable on the trusted LAN but will
-write only an image authorized by the embedded public key.
+Local OTA intentionally rejects equal or older versions; USB is the downgrade
+and recovery path.
 
-## Internet update behavior
+## Internet releases
 
-The device checks this small board-specific descriptor:
-
-```text
-https://github.com/camlee/power-meter/releases/latest/download/ota-meter-viewe.json
-```
-
-The descriptor carries base64 of the exact signed manifest and its detached
-signature. After verification, the device constructs a version-specific
-firmware URL from the signed release tag and fixed asset name.
-
-Automatic behavior:
-
-- wait for a confirmed running image, Internet connectivity, and credible
-  network time before HTTPS;
-- on Internet acquisition, check after one to five minutes only when due;
-- check every 24 hours after the last successful check;
-- retry failures after roughly 5 minutes, 15 minutes, 1 hour, then 6 hours;
-- install stable releases automatically when the setting is enabled;
-- never retry a version that caused rollback; and
-- allow Check now and Install controls from both Info screens.
-
-The HTTPS client uses the ESP certificate bundle, verifies hostnames, limits
-redirects, and streams directly into the inactive OTA slot. A failed or
-interrupted transfer is discarded and restarted from byte zero later.
-
-`GET /api/v1/updates` reports the state. The command endpoints are:
-
-```text
-POST /api/v1/updates/check
-POST /api/v1/updates/install
-PUT  /api/v1/updates/settings   {"automatic":true}
-```
-
-## Publish a GitHub release
-
-Stable release identity comes from one `MAJOR.MINOR.PATCH` argument, ensuring
-both hardware builds and the Git tag contain the same version.
-
-Commit the intended release, then:
+Stable releases are built and published with one version argument:
 
 ```sh
 python3 tools/publish_github_release.py 0.1.2
 ```
 
-The command:
+The command runs the release checks, builds and signs both targets, creates the
+version tag, pushes the current branch/tag, and creates a draft GitHub release.
+Review and publish the draft. `--dry-run` prints the resolved release plan;
+`--skip-tests` is for recovery only.
 
-1. Requires committed source, the local signing key, and authenticated `gh`.
-2. Runs the native, signing, and web tests.
-3. Builds and signs both PlatformIO environments in a fresh temporary project
-   workspace while suppressing developer `.env` AP credentials from the public
-   binaries. Per-user compiler and framework downloads remain cached, but no
-   project objects or library checkout is reused from `.pio`.
-4. Creates the annotated `v0.1.2` tag only after the tests pass.
-5. Atomically pushes the current branch and tag to its configured upstream.
-6. Creates a draft release in the repository configured by `platformio.ini`
-   and uploads all eight assets.
+Devices consume a board-specific descriptor from the configured public GitHub
+release repository. They verify the descriptor and signed manifest before
+constructing the fixed asset URL. Internet updates wait for a confirmed image,
+network connectivity, and credible time; stable automatic updates can be
+enabled from the Info screen. Failed downloads are discarded, and an image
+that resets before confirmation rolls back and is blocked from automatic retry.
 
-It prints the draft URL when it finishes. Inspect the draft, confirm all eight
-assets are present, and publish it as the latest release. Drafts and
-prereleases are not consumed by the stable updater.
+## Recovery boundary
 
-The generated files are retained locally in:
+The inactive slot is not selected until signature, size, and hash checks pass.
+The new image must run healthily for its confirmation window before becoming
+the active rollback target.
 
-```text
-dist/v0.1.2/
-  firmware-meter-viewe.bin
-  firmware-meter-wroom.bin
-  manifest-meter-viewe.json
-  manifest-meter-viewe.sig
-  manifest-meter-wroom.json
-  manifest-meter-wroom.sig
-  ota-meter-viewe.json
-  ota-meter-wroom.json
-```
-
-The `manifest-*` files are retained for inspection; devices download only the
-small `ota-*` descriptor and their matching firmware asset.
-
-If a push or GitHub upload fails, run the same command again. It validates and
-reuses assets only when they were built from the current tagged commit, and it
-can resume an existing draft release. Use `--dry-run` to inspect the resolved
-version, branch, remote, repository, and output path without changing anything.
-`--skip-tests` is available for recovery but should not be used for a normal
-release.
-
-The configured release repository must be public for token-free device
-downloads. If the source must remain private, create a dedicated public
-binary-release repository and change `custom_ota_release_repo` in both
-PlatformIO environments before the first Internet-capable device build.
-
-One-time GitHub setup:
-
-```sh
-gh auth login
-```
-
-In GitHub, enable **Settings → General → Releases → Release immutability**
-before publishing the first immutable release. It applies only to future
-releases.
-
-After publishing, use **Check now** on the first device and observe download,
-reboot, confirmation, and network recovery before allowing the second device
-to update. Then run the real-device acceptance suite:
-
-```sh
-python3 tools/device_acceptance.py meter2 \
-  --expected-device meter2 --expected-profile meter-viewe
-```
-
-The suite performs read-only, high-level checks of UI delivery, device identity,
-confirmed OTA and mounted storage health, the versioned sensor response, and a
-real binary live frame whose open client is reflected in HTTP status. Local
-updates through `tools/ota.py` run it automatically after the new firmware
-confirms; `--skip-acceptance` is available for recovery. A published release
-should not be promoted beyond the first designated meter until these checks
-pass on its installed image.
-
-`tools/build_github_release.py` remains available as a lower-level,
-build-and-sign-only command for recovery or inspection. It expects the matching
-tag to already point at `HEAD`; normal releases should use
-`tools/publish_github_release.py`.
-
-## Failure and recovery
-
-The inactive slot is not selected until signature, size, and hash checks have
-all passed. A new image remains pending for 30 seconds of normal main-loop
-operation. A crash/reset before confirmation rolls back to the prior image.
-The failed version is persisted and blocked from automatic retry.
-
-Use Settings → Debug, `/api/v1/debug`, serial logs, or `/api/v1/info` to inspect
-health, slots, image state, and rollback. USB remains the recovery route for:
-
-- an intentional downgrade;
-- bootloader or partition changes;
-- LittleFS images;
-- signing-key changes; or
-- a device that cannot boot or join the LAN.
-
-This project does not enable hardware Secure Boot or flash encryption. A party
-with physical flash-write access remains outside this OTA threat model.
+Use USB for intentional downgrades, bootloader/partition changes, LittleFS
+changes, signing-key changes, or devices that cannot boot or join the LAN.
+This project does not enable Secure Boot or flash encryption; physical
+flash-write access is outside this OTA threat model.

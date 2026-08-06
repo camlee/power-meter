@@ -1,89 +1,34 @@
-# Sensor data and calculation policy
+# Sensor data policy
 
-## Purpose
+The sensor layer separates what a source observed from what the meter is
+allowed to calculate. A finite or plausible value is not proof that a sensor
+is correctly installed or calibrated.
 
-Sensor acquisition, display, calculation, and history have different trust
-requirements. This policy lets developers see what the hardware actually
-reported without allowing an impossible, stale, or missing observation to
-fabricate power or energy.
+## Channels and states
 
-The policy applies equally to realtime Demo, ESP32 ADC, and UART
-sources. Passing plausibility checks means only that a value is eligible for
-calculation; it does not prove that a sensor is correctly installed or
-calibrated.
+The stable channels are `In`/Solar, `Out`/Load, and `Aux`/Battery. Presence is
+explicit and independent for each channel. A missing channel is unavailable,
+not zero; a floating ADC input is not attachment detection.
 
-## Channel configuration and state
-
-The stable `In`, `Out`, and `Aux` identifiers are displayed as **Solar**,
-**Load**, and **Battery** respectively. They have independent presence/state.
-The completed runtime
-contract accepts the channels a source supports or currently advertises. The
-remaining configuration follow-up will make effective configuration the
-intersection of two masks:
-
-- the channels a source supports or currently advertises;
-- the channels locally enabled for that source in device Setup.
-
-A channel must not ultimately be configured merely because an ADC pin produced
-a value; floating pins are not attachment detection. Persisted per-source local
-enable masks are not implemented yet. Until they are, the runtime behavior is:
-
-| Source | Current effective presence |
-| --- | --- |
-| Realtime Demo | `In`, `Out`, and `Aux` are configured. |
-| UART | Each valid frame's advertised mask is authoritative. |
-| ESP32 ADC | All three provisional channels are configured pending installer enable-mask support. |
-
-The follow-up Setup control will persist masks independently so switching
-sources does not overwrite another source's choices. It may disable a
-UART-advertised, ADC, or Demo channel, but may not enable a channel the source
-does not advertise. UART disappearance from an otherwise valid frame is already
-a presence/configuration diagnostic and is never treated as a zero observation.
-
-Each configured channel has one of these runtime states:
+Each channel has one of these states:
 
 | State | Meaning |
 | --- | --- |
-| `Waiting` | The source has not supplied its first syntactically valid observation. |
-| `Valid` | Voltage/current are finite, fresh, and eligible for calculations. |
-| `OutOfRange` | Finite observations exist but violate calculation limits. |
-| `Invalid` | The source supplied malformed or non-finite observations, or reported a hardware error. |
-| `Stale` | No acceptable observation arrived within the source's timeout. |
-| `NotConfigured` | The channel is unsupported or intentionally disabled for this source. |
+| `NotConfigured` | Unsupported or intentionally absent for the active source |
+| `Waiting` | Configured, but no acceptable observation has arrived |
+| `Valid` | Fresh finite voltage/current within the calculation limits |
+| `OutOfRange` | Finite observation exists but violates a calculation limit |
+| `Invalid` | Malformed, non-finite, or source-reported hardware failure |
+| `Stale` | No acceptable observation arrived before the source timeout |
 
-Source-level diagnostics additionally retain the available last-valid age,
-invalid/rejected counts, and source-specific errors. A malformed UART
-frame is a source transport error; an individually implausible parsed value is
-a channel data-quality error.
+Source-specific presence rules remain in the source implementations. UART
+presence comes from the frame mask; the ADC profiles currently expose their
+configured physical channels. Consumers must use the state and configured
+flag, not infer presence from a numeric value.
 
-## Observation and display policy
+## Observations versus calculations
 
-The Sensors screen is diagnostic and shows the latest finite engineering-unit
-observation even when it is outside calculation limits. It must mark the value
-and channel state clearly rather than silently clipping it. Calibration preview
-also retains raw ADC input and the unbounded converted observation.
-
-- A finite negative voltage or 300 V observation may be shown on Sensors as
-  observed, with `Out of range` state.
-- Non-finite values are shown as `Invalid`, not formatted as a number or added
-  to charts.
-- `NotConfigured`, `Waiting`, and `Stale` show `--` for a current calculated
-  value; an optional last-valid value must be explicitly labeled as stale.
-- Charts protect their numeric ranges from overflow but do not replace an
-  out-of-range observation with a boundary value.
-
-This raw visibility is important during calibration and on-site diagnosis.
-
-High-rate ADC observations are reduced into 500 ms readings. A window is valid
-when at least 80% of its observations are valid; rejected observations are
-excluded from the valid mean. Below that threshold the window remains
-ineligible, while finite out-of-range observations remain available as a
-diagnostic mean. This prevents a single electrical/scheduling spike from
-creating a chart gap without concealing sustained bad input.
-
-## Calculation eligibility
-
-The inclusive calculation limits are:
+The inclusive calculation limits are defined in `src/sensors/sensor_limits.h`:
 
 | Measurement | Minimum | Maximum |
 | --- | ---: | ---: |
@@ -91,80 +36,41 @@ The inclusive calculation limits are:
 | Current | -150 A | 150 A |
 | Direct duty | 0 | 1 |
 
-Values inside these bounds include expected 12–14 V and 20–40 V systems, zero
-current, approximately -0.5 A solar back-leakage, and the rare case of a sensor
-installed backward. Voltage/current limits are centrally defined so the final
-hardware milestone can refine them from electrical ratings without scattering
-constants through sources or UI code.
+The Sensors UI and diagnostics may show finite out-of-range observations, with
+their state clearly marked. Power, energy, and operational live values use only
+eligible readings. Values are rejected rather than clamped; clamping would
+fabricate power.
 
-Power is calculated only when voltage and current are both eligible:
+For physical ADC sources, high-rate samples are reduced into 500 ms readings.
+A window is eligible only when at least 80% of its observations are valid;
+rejected samples are excluded from the mean. The diagnostic path may retain a
+finite out-of-range mean so installation problems remain visible.
 
-```text
-power_W = voltage_V * current_A
-```
+Calibration is applied once per physical source/channel. Current direction is
+applied after calibration, and logical remapping does not move or rewrite the
+physical calibration profile. Demo and UART sources provide engineering units
+and do not receive ADC calibration.
 
-The resulting power range is therefore -37,500 W to 37,500 W. Values are
-never clamped to those boundaries: clamping would fabricate power and energy.
-An out-of-range input makes calculated power unavailable until a valid sample
-arrives.
+## Derived values
 
-Direct duty is independently optional. Missing or invalid duty does not discard
-otherwise valid voltage/current/power; duty-dependent available-power metrics
-are derived from eligible history where meaningful or shown unavailable.
-
-## Derived metrics
-
-- Channel power requires that channel's valid voltage and current.
-- Legacy API net battery power requires valid `In` and `Out`.
-- User-facing system net power uses valid Battery/`Aux` power first, where
-  positive means charging, and falls back to `In - Out`.
-- Battery charging/usage components require the same valid inputs used by their
-  formulas.
-- Panel duty/available power requires valid `In` power plus valid direct or
-  defensibly derived duty.
-- A missing dependency produces unavailable output, never zero.
-
-The Power screen and public live API use only eligible calculations. They may
-link back to the Sensors screen/source diagnostics when a value is unavailable.
+- Channel power is `voltage * current` and requires eligible voltage and current.
+- User-facing system net power uses eligible Battery power first, with Solar
+  minus Load as the fallback when Battery is unavailable.
+- Battery charge/usage and duty-derived values require their own dependencies.
+- A missing dependency yields unavailable output, never zero.
 
 ## Energy and history
 
-Energy integration uses only elapsed intervals bounded by eligible samples. It
-does not bridge source startup, stale timeouts, invalid/out-of-range intervals,
-or channel absence.
+Energy integrates only elapsed intervals bounded by eligible samples. It does
+not bridge startup, stale timeouts, invalid/out-of-range intervals, or channel
+absence. Negative power can produce negative energy.
 
-When no channel is effectively configured, history does not create empty rows
-or files. Once any channel is configured, minute rows may retain zero coverage
-for a configured-but-failed channel alongside valid coverage for other channels.
+History keeps energy and valid coverage separately for each channel and
+derived component. Coverage distinguishes a configured channel that measured
+zero from one that had no usable observation. A configured source may therefore
+produce a minute with valid coverage for one channel and a gap for another;
+an entirely unconfigured source produces no history rows.
 
-History records, per channel and derived component:
-
-- accumulated energy for the valid portion of each minute;
-- valid coverage milliseconds for that minute;
-- which channels were configured;
-- minute quality flags indicating rejected or stale intervals.
-
-No cumulative energy cap is applied. Negative power may produce negative
-channel energy. Coverage, rather than a zero value, distinguishes genuine zero
-power from missing data. Queries propagate per-channel/component coverage so a
-partially configured device can retain useful history without claiming that an
-absent channel measured zero.
-
-## Calibration implications
-
-Plausibility filtering is not calibration validation. A miscalibrated reading
-inside the broad limits remains eligible and may be historically wrong. The
-future on-site milestone must establish calibration defaults, reference
-equipment, and acceptance tolerances.
-
-Until then:
-
-- ADC observations expose raw millivolts and calibrated engineering values;
-- calibration candidates validate the complete theoretical `0–3.3 V` ADC
-  input range against the `±250 V` / `±150 A` calibration sanity envelopes;
-  incidental live readings update the preview but never determine whether a
-  candidate can be committed;
-- UART observations are treated as already calibrated by the source producer;
-- source provenance and calibration state remain visible in diagnostics;
-- development history can be wiped without migration before candidate V1 is
-  treated as production data.
+The exact storage and query contract is in [HISTORY.md](HISTORY.md). The exact
+source and mapping implementations are authoritative when this summary and
+code ever disagree.
